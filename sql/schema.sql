@@ -77,6 +77,83 @@ CREATE TABLE IF NOT EXISTS `audit_logs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作稽核';
 
 -- ---------------------------------------------------------------------
+-- AISLE Pending Issue Summary（modules/pending_issue）
+--   category : hl / tool_select / aging_parts / other
+--              (產品HL / 選機表 / aging parts / 其他，顯示名稱定義在 controller)
+--   status   : open / pending / close
+--   version  : 樂觀鎖。每次修改 +1，存檔時帶回讀取當下的 version，
+--              不一致代表別人已先改過，程式會拒絕覆蓋並提示重新載入
+--   刪除採軟刪除 (deleted_at)，誤刪時可由 DB 還原；圖片檔案同時保留
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issues` (
+  `id`           INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `tool_id`      VARCHAR(64)   NOT NULL COMMENT '機台 ToolID',
+  `category`     VARCHAR(16)   NOT NULL COMMENT 'hl / tool_select / aging_parts / other',
+  `title`        VARCHAR(200)  NOT NULL,
+  `description`  TEXT          NULL,
+  `status`       VARCHAR(16)   NOT NULL DEFAULT 'open' COMMENT 'open / pending / close',
+  `sponsor`      VARCHAR(100)  NOT NULL DEFAULT '',
+  `owner`        VARCHAR(100)  NOT NULL DEFAULT '' COMMENT '現在處理者',
+  `remark`       TEXT          NULL,
+  `occurred_on`  DATE          NOT NULL COMMENT '發生日期',
+  `closed_at`    DATETIME      NULL DEFAULT NULL,
+  `version`      INT UNSIGNED  NOT NULL DEFAULT 1 COMMENT '樂觀鎖版本',
+  `created_by`   INT UNSIGNED  NULL DEFAULT NULL,
+  `updated_by`   INT UNSIGNED  NULL DEFAULT NULL,
+  `deleted_by`   INT UNSIGNED  NULL DEFAULT NULL,
+  `created_at`   DATETIME      NOT NULL,
+  `updated_at`   DATETIME      NOT NULL COMMENT '由程式寫入，輪詢比對用',
+  `deleted_at`   DATETIME      NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pi_tool` (`tool_id`),
+  KEY `idx_pi_filter` (`deleted_at`, `category`, `status`),
+  KEY `idx_pi_occurred` (`occurred_on`),
+  KEY `idx_pi_updated` (`updated_at`),
+  CONSTRAINT `fk_pi_created_by` FOREIGN KEY (`created_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_updated_by` FOREIGN KEY (`updated_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_deleted_by` FOREIGN KEY (`deleted_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue';
+
+-- ---------------------------------------------------------------------
+-- Issue 圖片：檔案存在 storage/uploads/pending_issue/<年月>/，這裡只記路徑
+--   貼上圖片時先上傳（issue_id 為 NULL），存檔時才綁定到 issue；
+--   超過一天仍未綁定的暫存圖會在下次上傳時清除
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_images` (
+  `id`            INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `issue_id`      INT UNSIGNED  NULL DEFAULT NULL,
+  `file_path`     VARCHAR(191)  NOT NULL COMMENT '相對於 storage/uploads/',
+  `original_name` VARCHAR(191)  NOT NULL DEFAULT '',
+  `mime`          VARCHAR(32)   NOT NULL,
+  `size`          INT UNSIGNED  NOT NULL,
+  `width`         SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `height`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `uploaded_by`   INT UNSIGNED  NULL DEFAULT NULL,
+  `created_at`    DATETIME      NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pii_issue` (`issue_id`),
+  KEY `idx_pii_orphan` (`issue_id`, `created_at`),
+  CONSTRAINT `fk_pii_issue` FOREIGN KEY (`issue_id`)
+    REFERENCES `pending_issues` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pii_user` FOREIGN KEY (`uploaded_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 圖片';
+
+-- ---------------------------------------------------------------------
+-- 誰正在編輯哪一筆（頁面輪詢時更新，超過 30 秒沒更新視為離開）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_presence` (
+  `issue_id`     INT UNSIGNED  NOT NULL,
+  `user_id`      INT UNSIGNED  NOT NULL,
+  `seen_at`      DATETIME      NOT NULL,
+  PRIMARY KEY (`issue_id`, `user_id`),
+  KEY `idx_pip_seen` (`seen_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 編輯中狀態';
+
+-- ---------------------------------------------------------------------
 -- 建立應用程式專用帳號 (依實際環境修改密碼與來源主機後再執行)
 -- ---------------------------------------------------------------------
 -- CREATE USER 'aisle_app'@'localhost' IDENTIFIED BY '請改成強密碼';

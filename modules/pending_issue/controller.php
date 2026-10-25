@@ -1,6 +1,6 @@
 <?php
 /**
- * AISLE Pending Issue Summary（config.ini：EE、PE）
+ * AISLE Pending Issue Summary（config.ini：只有 EE）
  * 紀錄各機台 (ToolID) 發生的 issue、狀態、sponsor、處理者、remark，可貼上圖片
  *
  *   index   頁面（列表、搜尋、編輯視窗都由 jQuery 操作下列 JSON 動作）

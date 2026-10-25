@@ -1,0 +1,314 @@
+/* =====================================================================
+   AISLE :: Matrix Theme
+   綠色磷光終端機風格。刻意不用 CSS 變數，以相容較舊的瀏覽器。
+   主色   #00ff41   亮綠（文字、邊框）
+   次色   #00b82e   中綠
+   暗色   #008f11   暗綠（輔助文字）
+   深底   #001a07   面板底色
+   警示   #ff3b3b   紅藥丸
+   ===================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #000;
+    color: #00ff41;
+    font-family: "Share Tech Mono", "Consolas", "Courier New", "Microsoft JhengHei", monospace;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+a { color: #00ff41; text-decoration: none; }
+a:hover { color: #b6ffc8; text-shadow: 0 0 8px #00ff41; }
+
+::selection { background: #00ff41; color: #000; }
+
+/* ---------- 背景：數位雨與 CRT 掃描線 ---------- */
+#matrix-rain {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+    opacity: 0.18;
+    pointer-events: none;
+}
+body.is-guest #matrix-rain { opacity: 0.55; }
+
+.crt-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.25) 3px
+    );
+}
+
+/* ---------- 頂部列 ---------- */
+.topbar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid #00b82e;
+    background: rgba(0, 10, 3, 0.92);
+    box-shadow: 0 0 18px rgba(0, 255, 65, 0.25);
+}
+.brand {
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    text-shadow: 0 0 10px #00ff41;
+}
+.topbar-status > * { margin-left: 12px; vertical-align: middle; }
+#clock { color: #008f11; }
+
+.cursor { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 主框架 ---------- */
+.shell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    min-height: calc(100vh - 52px);
+}
+.sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid #003b00;
+    background: rgba(0, 10, 3, 0.85);
+    padding: 16px 0;
+}
+.nav-title {
+    padding: 0 20px 10px;
+    color: #008f11;
+    font-size: 12px;
+    letter-spacing: 2px;
+}
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li a {
+    display: block;
+    padding: 9px 20px;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sidebar li a:hover { background: #001a07; border-left-color: #008f11; }
+.sidebar li.active a {
+    background: #002a0b;
+    border-left-color: #00ff41;
+    text-shadow: 0 0 8px #00ff41;
+}
+.nav-icon { display: inline-block; width: 18px; color: #008f11; }
+
+.main {
+    flex: 1;
+    min-width: 0;
+    padding: 24px 32px;
+}
+.guest {
+    position: relative;
+    z-index: 2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+/* ---------- 標題 glitch ---------- */
+.page-title {
+    position: relative;
+    margin: 0 0 20px;
+    font-size: 24px;
+    letter-spacing: 3px;
+    text-shadow: 0 0 12px #00ff41;
+}
+.glitch::before,
+.glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    overflow: hidden;
+    opacity: 0;
+}
+.glitch:hover::before { opacity: 0.8; color: #b6ffc8; animation: glitch 0.3s infinite; }
+.glitch:hover::after  { opacity: 0.6; color: #008f11; animation: glitch 0.3s infinite reverse; }
+@keyframes glitch {
+    0%   { clip: rect(0, 9999px, 6px, 0);   transform: translate(-2px, 0); }
+    50%  { clip: rect(12px, 9999px, 20px, 0); transform: translate(2px, 0); }
+    100% { clip: rect(4px, 9999px, 14px, 0);  transform: translate(-1px, 0); }
+}
+
+/* ---------- 面板 / 終端機 ---------- */
+.panel {
+    border: 1px solid #00b82e;
+    background: rgba(0, 20, 6, 0.88);
+    box-shadow: 0 0 12px rgba(0, 255, 65, 0.15), inset 0 0 20px rgba(0, 255, 65, 0.05);
+    margin-bottom: 20px;
+}
+.panel-head {
+    padding: 8px 14px;
+    border-bottom: 1px solid #003b00;
+    color: #000;
+    background: #00b82e;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+.panel-body { padding: 14px; }
+.terminal .panel-body { font-size: 14px; }
+.terminal .line { white-space: pre-wrap; margin: 0; }
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0 -10px;
+}
+.grid > .col {
+    flex: 1 1 260px;
+    padding: 0 10px;
+}
+
+.card-link {
+    display: block;
+    padding: 18px;
+    border: 1px dashed #008f11;
+    margin-bottom: 20px;
+    background: rgba(0, 20, 6, 0.7);
+    transition: all 0.15s;
+}
+.card-link:hover {
+    border-style: solid;
+    border-color: #00ff41;
+    box-shadow: 0 0 16px rgba(0, 255, 65, 0.4);
+}
+.card-link .big { font-size: 28px; display: block; }
+
+/* ---------- 表格 ---------- */
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #003b00;
+    text-align: left;
+}
+.table th { color: #008f11; font-weight: normal; letter-spacing: 1px; }
+.table tbody tr:hover { background: #002a0b; }
+
+/* ---------- 表單 ---------- */
+label { display: block; margin: 12px 0 4px; color: #008f11; font-size: 13px; letter-spacing: 1px; }
+input[type=text], input[type=password], input[type=email], select, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: #00ff41;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+.inline { display: inline; }
+
+.btn {
+    display: inline-block;
+    padding: 7px 16px;
+    border: 1px solid #00ff41;
+    background: transparent;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 14px;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+.btn:hover { background: #00ff41; color: #000; text-shadow: none; box-shadow: 0 0 14px #00ff41; }
+.btn-ghost { border-color: transparent; }
+.btn-ghost:hover { border-color: #00ff41; }
+.btn-sm { padding: 3px 8px; font-size: 13px; }
+.btn-red { border-color: #ff3b3b; color: #ff3b3b; }
+.btn-red:hover { background: #ff3b3b; color: #000; box-shadow: 0 0 14px #ff3b3b; }
+
+/* ---------- 訊息 ---------- */
+.alert {
+    padding: 10px 14px;
+    margin-bottom: 18px;
+    border: 1px solid #00ff41;
+    background: rgba(0, 40, 10, 0.9);
+}
+.alert-error { border-color: #ff3b3b; color: #ff3b3b; background: rgba(40, 0, 0, 0.85); }
+.text-red { color: #ff3b3b; }
+.dim { color: #008f11; }
+
+/* ---------- 角色徽章 ---------- */
+.role-badge {
+    display: inline-block;
+    padding: 0 8px;
+    border: 1px solid #00ff41;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.role-EE    { color: #00ff41; border-color: #00ff41; }
+.role-PE    { color: #7dffb0; border-color: #7dffb0; }
+.role-ADMIN { color: #ff3b3b; border-color: #ff3b3b; }
+
+/* 狀態燈 */
+.led { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.led-run   { background: #00ff41; box-shadow: 0 0 8px #00ff41; }
+.led-idle  { background: #008f11; }
+.led-down  { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: blink 0.8s steps(1) infinite; }
+
+/* ---------- 登入頁 ---------- */
+.login-box {
+    width: 380px;
+    max-width: 100%;
+}
+.login-box .logo {
+    text-align: center;
+    font-size: 40px;
+    letter-spacing: 14px;
+    margin-bottom: 4px;
+    text-shadow: 0 0 18px #00ff41, 0 0 4px #00ff41;
+}
+.login-box .tagline { text-align: center; color: #008f11; margin-bottom: 20px; min-height: 1.6em; }
+.login-box .btn { width: 100%; margin-top: 18px; padding: 10px; }
+
+/* ---------- 表單驗證 ---------- */
+.field-error { min-height: 1.2em; color: #ff3b3b; font-size: 13px; margin-top: 2px; }
+input.is-invalid, select.is-invalid { border-color: #ff3b3b; box-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+input.is-valid { border-color: #00ff41; }
+.hint { float: right; color: #00ff41; letter-spacing: 1px; }
+.hint.text-red { color: #ff3b3b; }
+.meter { height: 3px; background: #001a07; margin-top: 4px; }
+.meter span { display: block; height: 100%; width: 0; background: #00ff41; box-shadow: 0 0 6px #00ff41; transition: width 0.2s; }
+.meter span.weak { background: #ff3b3b; box-shadow: 0 0 6px #ff3b3b; }
+.btn:disabled { opacity: 0.6; cursor: wait; }
+.form-foot { margin: 14px 0 0; text-align: center; }
+.register-box { width: 440px; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }
+    .sidebar ul { display: flex; overflow-x: auto; }
+    .sidebar li a { border-left: 0; border-bottom: 2px solid transparent; padding: 6px 12px; }
+    .sidebar li.active a { border-bottom-color: #00ff41; }
+    .nav-title { display: none; }
+    .main { padding: 16px; }
+    .hide-sm { display: none; }
+    .topbar { padding: 8px 16px; }
+    .topbar-status > * { margin-left: 6px; }
+    .table { font-size: 13px; }
+}

@@ -1,0 +1,33 @@
+; =====================================================================
+; AISLE 主設定檔範本
+; 部署時複製為 config/app.ini 並填入實際值（app.ini 不要進版控）
+;   cp config/app.ini.example config/app.ini && chmod 640 config/app.ini
+; =====================================================================
+
+[app]
+name      = "AISLE"
+timezone  = "Asia/Taipei"
+; production 時請設為 0
+debug     = 0
+; 網站根網址（public/ 對應的 URL），結尾不加斜線
+base_url  = ""
+
+[database]
+host     = "127.0.0.1"
+port     = 3306
+name     = "aisle"
+user     = "aisle_app"
+password = "請改成強密碼"
+charset  = "utf8mb4"
+
+[security]
+; bcrypt 成本，10~12 之間；越高越安全但登入越慢
+bcrypt_cost      = 10
+; 連續失敗幾次後鎖定
+max_failed_login = 5
+; 鎖定分鐘數
+lock_minutes     = 15
+; 閒置幾秒自動登出
+session_idle     = 1800
+; HTTPS 環境請設為 1
+cookie_secure    = 0

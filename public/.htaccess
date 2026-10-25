@@ -1,0 +1,16 @@
+Options -Indexes
+DirectoryIndex index.php
+
+# 覆蓋上層 .htaccess 的拒絕規則，只開放 public/
+<IfModule mod_authz_core.c>
+    Require all granted
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Allow from all
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-Content-Type-Options "nosniff"
+</IfModule>

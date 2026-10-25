@@ -1,0 +1,6 @@
+config/app.ini
+storage/logs/*
+storage/backups/*
+!storage/logs/.gitkeep
+!storage/backups/.gitkeep
+.DS_Store

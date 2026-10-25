@@ -104,7 +104,7 @@ chown -R apache:apache storage
 chmod -R 775 storage
 ```
 
-`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用。
+`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用，`storage/uploads` 存放 Pending Issue 的圖片（php.ini 需 `file_uploads = On`、`upload_max_filesize` ≥ 5M、`post_max_size` ≥ 6M）。
 
 ## 11. 設定 Apache
 

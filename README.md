@@ -40,7 +40,7 @@ AISLE/
 │   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
 │   ├── dashboard/             # EE + PE
 │   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
-│   ├── pending_issue/         # EE + PE：AISLE Pending Issue Summary（見第 10 節）
+│   ├── pending_issue/         # 只有 EE：AISLE Pending Issue Summary（見第 10 節）
 │   ├── profile/               # EE + PE（改密碼）
 │   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
 │   ├── pe_recipe/             # 只有 PE
@@ -183,7 +183,7 @@ auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出�
 |---|:-:|:-:|:-:|
 | 主控台 dashboard | ✓ | ✓ | ✓ |
 | 共用報表 shared_report | ✓（不可匯出） | ✓ | ✓ |
-| AISLE Pending Issue Summary pending_issue | ✓ | ✓ | ✓ |
+| AISLE Pending Issue Summary pending_issue | ✓ | | ✓ |
 | 個人設定 profile | ✓ | ✓ | ✓ |
 | 設備狀態 ee_equipment | ✓ | | ✓ |
 | 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
@@ -368,7 +368,7 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 
 ## 10. AISLE Pending Issue Summary（`modules/pending_issue`）
 
-紀錄各機台 (ToolID) 在不同時間發生的 issue，EE、PE 都可以查詢、新增、編輯、刪除。
+紀錄各機台 (ToolID) 在不同時間發生的 issue，只有 EE（與 ADMIN）可以查詢、新增、編輯、刪除；PE 看不到選單，直接開網址會得到 403。
 
 ![Pending Issue Summary](docs/screenshots/pending_issue.png)
 
@@ -380,7 +380,7 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 | 總覽 | 上方四張卡片是各分類的 OPEN / PENDING / CLOSE 件數，點卡片可篩選該分類 |
 | 搜尋 | 關鍵字（ToolID、標題、說明、remark、sponsor、處理者）、ToolID、分類、狀態、發生日期區間；預設不顯示 CLOSE |
 | 圖片 | 編輯視窗內任何地方按 Ctrl+V 貼上截圖，或拖曳、選檔；PNG / JPG / GIF、單張 ≤ 5 MB、每筆 ≤ 20 張 |
-| 刪除 | 軟刪除（`deleted_at`），誤刪可由 DB 還原。只想讓特定身份刪除時，在 `[page.pending_issue]` 加 `action.delete = "PE"` |
+| 刪除 | 軟刪除（`deleted_at`），誤刪可由 DB 還原。開放給其他身份時，把 `pending_issue` 加到 `[access]` 該身份的清單即可 |
 
 ### 多人同時操作
 

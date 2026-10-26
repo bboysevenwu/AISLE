@@ -375,7 +375,7 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 | 項目 | 說明 |
 |---|---|
 | 欄位 | ToolID、分類、Issue 標題、說明、狀態、Sponsor、現在處理者、Remark、發生日期、圖片；自動記錄建立 / 修改者與時間、結案時間 |
-| 分類 | 產品HL / 選機表 / Aging Parts / 其他（定義在 controller 的 `$categories`，代號寫入 DB 後不要改） |
+| 分類 | 產品HL / 選機表 / Aging Parts / Others（定義在 controller 的 `$categories`，代號寫入 DB 後不要改） |
 | 狀態 | OPEN / PENDING / CLOSE；改成 CLOSE 時記下結案時間 |
 | 總覽 | 上方四張卡片是各分類的 OPEN / PENDING / CLOSE 件數，點卡片可篩選該分類 |
 | 搜尋 | 關鍵字（ToolID、標題、說明、remark、sponsor、處理者）、ToolID、分類、狀態、發生日期區間；預設不顯示 CLOSE |

@@ -19,7 +19,7 @@ class PendingIssueController extends Controller
         'hl'          => '產品HL',
         'tool_select' => '選機表',
         'aging_parts' => 'Aging Parts',
-        'other'       => '其他',
+        'other'       => 'Others',
     );
 
     private static $statuses = array(

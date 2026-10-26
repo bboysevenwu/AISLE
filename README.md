@@ -40,6 +40,7 @@ AISLE/
 │   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
 │   ├── dashboard/             # EE + PE
 │   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── pending_issue/         # 只有 EE：AISLE Pending Issue Summary（見第 10 節）
 │   ├── profile/               # EE + PE（改密碼）
 │   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
 │   ├── pe_recipe/             # 只有 PE
@@ -88,13 +89,16 @@ AISLE/
 
 ## 2. 資料庫
 
-`sql/schema.sql` 建立三張表：
+`sql/schema.sql` 建立下列資料表（全部 `CREATE TABLE IF NOT EXISTS`，既有資料庫重跑一次即可補上新表）：
 
 | 資料表 | 用途 |
 |---|---|
 | `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
 | `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
 | `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+| `pending_issues` | Pending Issue：ToolID、分類、狀態、sponsor、處理者、remark、發生日期、`version` 樂觀鎖、軟刪除 |
+| `pending_issue_images` | Issue 圖片的檔案路徑（檔案本身在 `storage/uploads/`） |
+| `pending_issue_presence` | 誰正在編輯哪一筆（輪詢時更新） |
 
 設計重點：
 
@@ -179,6 +183,7 @@ auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出�
 |---|:-:|:-:|:-:|
 | 主控台 dashboard | ✓ | ✓ | ✓ |
 | 共用報表 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| AISLE Pending Issue Summary pending_issue | ✓ | | ✓ |
 | 個人設定 profile | ✓ | ✓ | ✓ |
 | 設備狀態 ee_equipment | ✓ | | ✓ |
 | 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
@@ -358,3 +363,35 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
 
 截圖見 `docs/screenshots/`。
+
+---
+
+## 10. AISLE Pending Issue Summary（`modules/pending_issue`）
+
+紀錄各機台 (ToolID) 在不同時間發生的 issue，只有 EE（與 ADMIN）可以查詢、新增、編輯、刪除；PE 看不到選單，直接開網址會得到 403。
+
+![Pending Issue Summary](docs/screenshots/pending_issue.png)
+
+| 項目 | 說明 |
+|---|---|
+| 欄位 | ToolID、分類、Issue 標題、說明、狀態、Sponsor、現在處理者、Remark、發生日期、圖片；自動記錄建立 / 修改者與時間、結案時間 |
+| 分類 | 產品HL / 選機表 / Aging Parts / Others（定義在 controller 的 `$categories`，代號寫入 DB 後不要改） |
+| 狀態 | OPEN / PENDING / CLOSE；改成 CLOSE 時記下結案時間 |
+| 總覽 | 上方四張卡片是各分類的 OPEN / PENDING / CLOSE 件數，點卡片可篩選該分類 |
+| 搜尋 | 關鍵字（ToolID、標題、說明、remark、sponsor、處理者）、ToolID、分類、狀態、發生日期區間；預設不顯示 CLOSE |
+| 圖片 | 編輯視窗內任何地方按 Ctrl+V 貼上截圖，或拖曳、選檔；PNG / JPG / GIF、單張 ≤ 5 MB、每筆 ≤ 20 張 |
+| 刪除 | 軟刪除（`deleted_at`），誤刪可由 DB 還原。開放給其他身份時，把 `pending_issue` 加到 `[access]` 該身份的清單即可 |
+
+### 多人同時操作
+
+- **樂觀鎖**：每筆有 `version`，存檔時帶回開啟時的版本。若別人已先存檔，伺服器拒絕覆蓋（HTTP 409），畫面提示「某人已在某時間修改」，可選擇用自己的內容覆蓋，或放棄並載入最新內容。刪除也做相同檢查。
+- **自動同步**：頁面每 10 秒輪詢一次，資料有變動才重新載入列表，其他人的新增 / 修改 / 刪除會自動出現。
+- **編輯中提示**：開啟同一筆時，列表與編輯視窗會顯示「某某 編輯中」。
+- 頁面閒置超過 `session_idle` 秒會暫停輪詢（右上角顯示 PAUSED），讓 session 照常逾時登出；移動滑鼠即恢復。
+- 不限制同時人數；5 人同時使用時每人每 10 秒一個輕量查詢，負載可忽略。
+
+### 圖片儲存
+
+圖片檔放在 `storage/uploads/pending_issue/<年月>/`（隨機檔名），DB 只存路徑；`storage/` 不在 DocumentRoot 內，圖片經 `index.php?m=pending_issue&a=image&id=N` 檢查登入與權限後輸出。貼上後未儲存的暫存圖會在一天後自動清除。
+
+部署時確認 `storage/uploads` 可被 Web Server 寫入，並確認 php.ini 的 `upload_max_filesize` ≥ 5M、`post_max_size` ≥ 6M、`file_uploads = On`。備份時除了 DB，也要備份 `storage/uploads/`。

@@ -88,8 +88,10 @@
         };
     }
 
-    function valueAxis(group) {
-        return {
+    /** Y 軸；config 有設上下限就固定，否則自動。kind = single / newest / tbt */
+    function valueAxis(group, kind) {
+        var lim = (group.limits && group.limits[kind]) || {};
+        var axis = {
             type: 'value',
             name: group.unit || 'Data',
             nameTextStyle: { color: INK_DIM },
@@ -97,8 +99,15 @@
             axisTick: { show: false },
             axisLabel: { color: INK_DIM },
             splitLine: { lineStyle: { color: GRID } },
-            scale: true
+            scale: kind !== 'newest'
         };
+        if (lim.min !== null && lim.min !== undefined) {
+            axis.min = lim.min;
+        }
+        if (lim.max !== null && lim.max !== undefined) {
+            axis.max = lim.max;
+        }
+        return axis;
     }
 
     function axisLine() {
@@ -235,7 +244,7 @@
             axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{MM}-{dd}' },
             splitLine: { show: false }
         };
-        opt.yAxis = valueAxis(group);
+        opt.yAxis = valueAxis(group, 'single');
         opt.dataZoom = [{ type: 'inside' }];
         opt.series = series;
         box.chart.clear();
@@ -297,8 +306,7 @@
             axisTick: { show: false },
             axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
         };
-        opt.yAxis = valueAxis(group);
-        opt.yAxis.scale = false;
+        opt.yAxis = valueAxis(group, 'newest');
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -399,7 +407,7 @@
             },
             splitLine: { show: false }
         };
-        opt.yAxis = valueAxis(group);
+        opt.yAxis = valueAxis(group, 'tbt');
         opt.dataZoom = [
             { type: 'inside' },
             {

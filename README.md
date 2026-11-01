@@ -386,16 +386,22 @@ params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
 single = On                        ; 是否畫單台機台趨勢
 newest = On                        ; 是否畫最新值排排站
 tbt    = On                        ; 是否畫歷史趨勢排排站
+ymin   = 0                         ; Y 軸下限（三張圖共用）
+ymax   = 6                         ; Y 軸上限（三張圖共用）
+newest_ymax = 5                    ; 只改最新值排排站的上限
 
 [chart.m1bf_ry]
 title  = "M1BF_Ry"
 params = "M1BF_Ry_C1, M1BF_Ry_C2"
 newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
 ```
 
 - 每個 `[chart.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
 - 某區塊沒有任何一組開啟時，整個區塊不顯示
 - 可選 `unit` 設定 Y 軸名稱（預設 `Data`）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
 - 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/chart_demo/ChartConfig.php` 檢查）
 
 ### 資料格式與載入

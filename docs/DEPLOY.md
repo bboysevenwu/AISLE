@@ -201,7 +201,7 @@ crontab -e
 
 圖表 Demo（`index.php?m=chart_demo`）預設使用範例資料，部署後即可看到畫面。接上實際資料：
 
-1. 編輯 `config/chart_demo.ini`：設定哪些參數畫在同一張圖（`params`）、各組是否顯示單台 / 最新值排排站 / 歷史趨勢排排站（`single` / `newest` / `tbt`）。參數名稱必須與資料中的名稱完全一致
+1. 編輯 `config/chart_demo.ini`：設定哪些參數畫在同一張圖（`params`）、各組是否顯示單台 / 最新值排排站 / 歷史趨勢排排站（`single` / `newest` / `tbt`），以及 Y 軸上下限（`ymin` / `ymax`，或 `tbt_ymin` 等只套用到單一區塊）。參數名稱必須與資料中的名稱完全一致
 2. 在 `config/app.ini` 加上（範本見 `app.ini.example` 的 `[chart_demo]`）：
    ```ini
    [chart_demo]

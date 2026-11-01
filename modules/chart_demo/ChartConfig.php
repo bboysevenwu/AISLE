@@ -5,7 +5,9 @@
  * ChartConfig::groups() 回傳（依檔案順序）：
  *   array(
  *     array('id' => 'm1bf_z', 'title' => 'M1BF_Z', 'params' => array('M1BF_Z_C1', 'M1BF_Z_C2'),
- *           'unit' => 'Data', 'single' => true, 'newest' => true, 'tbt' => true),
+ *           'unit' => 'Data', 'single' => true, 'newest' => true, 'tbt' => true,
+ *           'limits' => array('single' => array('min' => 0, 'max' => 5), 'newest' => array(...), 'tbt' => array(...))),
+ *   min / max 為 null 表示自動
  *     ...
  *   )
  */
@@ -55,6 +57,11 @@ class ChartConfig
                 'single' => self::flag($conf, 'single'),
                 'newest' => self::flag($conf, 'newest'),
                 'tbt'    => self::flag($conf, 'tbt'),
+                'limits' => array(
+                    'single' => self::limits($conf, 'single', $section),
+                    'newest' => self::limits($conf, 'newest', $section),
+                    'tbt'    => self::limits($conf, 'tbt', $section),
+                ),
             );
         }
         if (!$groups) {
@@ -74,6 +81,32 @@ class ChartConfig
                     $out[] = $p;
                 }
             }
+        }
+        return $out;
+    }
+
+    /**
+     * Y 軸上下限：<區塊>_ymin / <區塊>_ymax 優先，沒有時用整組的 ymin / ymax，都沒有（或空字串）為自動
+     */
+    private static function limits($conf, $kind, $section)
+    {
+        $out = array();
+        foreach (array('min', 'max') as $k) {
+            $v = null;
+            foreach (array($kind . '_y' . $k, 'y' . $k) as $key) {
+                if (array_key_exists($key, $conf) && trim((string) $conf[$key]) !== '') {
+                    $raw = trim((string) $conf[$key]);
+                    if (!is_numeric($raw)) {
+                        throw new RuntimeException('config/chart_demo.ini [' . $section . '] ' . $key . ' 必須是數字：' . $raw);
+                    }
+                    $v = (float) $raw;
+                    break;
+                }
+            }
+            $out[$k] = $v;
+        }
+        if ($out['min'] !== null && $out['max'] !== null && $out['min'] >= $out['max']) {
+            throw new RuntimeException('config/chart_demo.ini [' . $section . '] ' . $kind . ' 的 Y 軸下限必須小於上限');
         }
         return $out;
     }

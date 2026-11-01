@@ -5,3 +5,5 @@ storage/backups/*
 !storage/backups/.gitkeep
 .DS_Store
 public/assets/vendor/*.js
+__pycache__/
+*.pyc

@@ -2,6 +2,11 @@
  * chart_demo 頁面 (jQuery 1.12 + ECharts 5)
  * 三個區塊：single 單台趨勢 / newest 最新值排排站 / tbt 歷史趨勢排排站
  * 後端回傳格式：{ "APAN01": { "Date": [...], "Data": [...] }, ... }
+ *
+ * 資料載入方式：
+ *   進入頁面時一次取回「全部機台」的資料（tbt：日期區間內全部機台；newest：全部機台最新一筆），
+ *   存在 cache。之後切換機台、切換機型只用 cache 重畫，不再發 request；
+ *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt，重新整理頁面才會重新取 newest。
  * 只用 ES5 語法，避免舊瀏覽器出錯
  */
 (function ($, window) {
@@ -76,8 +81,9 @@
 
     // ---------- 共用 ----------
     var charts = {};
-    var lastData = { single: {}, newest: {}, tbt: {} };
-    var requests = {};
+    var cache = { tbt: null, newest: null };   // 後端回傳的全部機台資料
+    var shown = { single: {}, newest: {}, tbt: {} };  // 各圖目前顯示的資料（資料表用）
+    var request = null;
 
     function initChart(key, id) {
         charts[key] = window.echarts.init(document.getElementById(id));
@@ -100,39 +106,42 @@
         return { text: 'LOADING...', color: INK, textColor: INK, maskColor: 'rgba(0, 0, 0, 0.6)', fontFamily: FONT };
     }
 
-    /** 取資料：同一區塊重複查詢時取消前一次 */
-    function loadData(key, url, params, onData) {
-        var chart = charts[key];
-        if (requests[key]) {
-            requests[key].abort();
-        }
-        chart.showLoading('default', loadingOpts());
-        requests[key] = $.ajax({ url: url, data: params, dataType: 'json', cache: false })
+    /** 取資料，成功時呼叫 onData(res)；失敗時在 errorCharts 上顯示錯誤 */
+    function fetchJson(url, params, errorCharts, onData) {
+        $.each(errorCharts, function (i, c) { c.showLoading('default', loadingOpts()); });
+        return $.ajax({ url: url, data: params, dataType: 'json', cache: false })
             .done(function (res) {
-                lastData[key] = res || {};
-                chart.hideLoading();
-                if ($.isEmptyObject(lastData[key])) {
-                    showMessage(chart, '> 查無資料 // NO DATA');
-                } else {
-                    onData(lastData[key]);
-                }
-                renderTable(key);
+                $.each(errorCharts, function (i, c) { c.hideLoading(); });
+                onData(res || {});
             })
             .fail(function (xhr, status) {
                 if (status === 'abort') {
                     return;
                 }
-                chart.hideLoading();
                 var msg = (xhr.responseJSON && xhr.responseJSON.error) || ('HTTP ' + xhr.status);
-                showMessage(chart, '> ERROR: ' + msg);
+                $.each(errorCharts, function (i, c) {
+                    c.hideLoading();
+                    showMessage(c, '> ERROR: ' + msg);
+                });
             });
+    }
+
+    /** 把資料畫到某個圖；沒有資料時顯示 NO DATA，並更新資料表 */
+    function show(key, data, draw) {
+        shown[key] = data;
+        if ($.isEmptyObject(data)) {
+            showMessage(charts[key], '> 查無資料 // NO DATA');
+        } else {
+            draw(data);
+        }
+        renderTable(key);
     }
 
     /** 資料表檢視：機台 / 時間 / 數值 */
     function renderTable(key) {
         var $box = $('#cd-' + key + '-table');
         var rows = [];
-        $.each(lastData[key], function (tool, s) {
+        $.each(shown[key], function (tool, s) {
             for (var i = 0; i < s.Date.length; i++) {
                 rows.push('<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) +
                     '</td><td>' + AISLE.escape(s.Data[i]) + '</td></tr>');
@@ -146,7 +155,12 @@
 
     // ---------- 1. single ----------
     function drawSingle(data) {
-        var tool = CFG.tools.length ? $('#cd-tool').val() : '';
+        var tool;
+        for (tool in data) {
+            if (data.hasOwnProperty(tool)) {
+                break;
+            }
+        }
         var s = data[tool];
         var points = [];
         for (var i = 0; i < s.Date.length; i++) {
@@ -355,26 +369,57 @@
         return { start: start, end: end };
     }
 
-    function loadSingle() {
-        var r = range();
+    /** 單台機台：從 cache.tbt 取出，不發 request */
+    function showSingle() {
         var tool = $('#cd-tool').val();
-        if (!r || !tool) {
+        $('#cd-single-title').text(tool ? '· ' + tool : '');
+        if (!cache.tbt || !tool) {
             return;
         }
-        $('#cd-single-title').text('· ' + tool);
-        loadData('single', CFG.urls.single, { tool: tool, start: r.start, end: r.end }, drawSingle);
+        var data = {};
+        if (cache.tbt[tool]) {
+            data[tool] = cache.tbt[tool];
+        }
+        show('single', data, drawSingle);
     }
 
-    function loadNewest() {
-        loadData('newest', CFG.urls.newest, { model: $('#cd-model').val() }, drawNewest);
+    /** 最新值：依機型篩選 cache.newest，不發 request */
+    function showNewest() {
+        if (!cache.newest) {
+            return;
+        }
+        var model = $('#cd-model').val();
+        var data = {};
+        $.each(cache.newest, function (tool, s) {
+            if (model === 'All' || CFG.models[tool] === model) {
+                data[tool] = s;
+            }
+        });
+        show('newest', data, drawNewest);
     }
 
-    function loadTbt() {
+    /** 取日期區間內全部機台的資料（TBT 與 single 共用） */
+    function loadRange() {
         var r = range();
         if (!r) {
             return;
         }
-        loadData('tbt', CFG.urls.tbt, { start: r.start, end: r.end }, drawTbt);
+        if (request) {
+            request.abort();
+        }
+        request = fetchJson(CFG.urls.tbt, { start: r.start, end: r.end }, [charts.tbt, charts.single], function (res) {
+            cache.tbt = res;
+            show('tbt', res, drawTbt);
+            showSingle();
+        });
+    }
+
+    /** 全部機台最新一筆（進頁面時取一次） */
+    function loadNewest() {
+        fetchJson(CFG.urls.newest, { model: 'All' }, [charts.newest], function (res) {
+            cache.newest = res;
+            showNewest();
+        });
     }
 
     $(function () {
@@ -392,27 +437,25 @@
         }
 
         $('#cd-filters').on('submit', function () {
-            loadSingle();
-            loadTbt();
+            loadRange();
             return false;
         });
-        $('#cd-tool').on('change', loadSingle);
-        $('#cd-model').on('change', loadNewest);
+        $('#cd-tool').on('change', showSingle);
+        $('#cd-model').on('change', showNewest);
         $('.cd-quick').on('click', 'button', function () {
             var days = parseInt($(this).data('days'), 10);
             var end = new Date();
             var start = new Date(end.getTime() - (days - 1) * 86400000);
             $('#cd-start').val(ymd(start));
             $('#cd-end').val(ymd(end));
-            loadSingle();
-            loadTbt();
+            loadRange();
         });
 
         // 點最新值長條 → 切換單台機台
         charts.newest.on('click', function (p) {
             if (p.componentType === 'series' && p.name) {
                 $('#cd-tool').val(p.name);
-                loadSingle();
+                showSingle();
                 $('html, body').animate({ scrollTop: $('#cd-single').offset().top - 80 }, 200);
             }
         });
@@ -421,7 +464,7 @@
             charts.tbt.dispatchAction({ type: 'legendAllSelect' });
         });
         $('#cd-tbt-none').on('click', function () {
-            $.each(lastData.tbt, function (tool) {
+            $.each(shown.tbt, function (tool) {
                 charts.tbt.dispatchAction({ type: 'legendUnSelect', name: tool });
             });
         });
@@ -438,8 +481,7 @@
             }, 150);
         });
 
-        loadSingle();
+        loadRange();
         loadNewest();
-        loadTbt();
     });
 })(window.jQuery, window);

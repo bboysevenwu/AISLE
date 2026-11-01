@@ -3,11 +3,13 @@
  * chart_demo 模組：資料視覺化範本（config.ini：EE、PE 可用）
  *
  *   index.php?m=chart_demo                                      頁面
- *   index.php?m=chart_demo&a=single&tool=APAN01&start=&end=     單台機台趨勢 (single)
- *   index.php?m=chart_demo&a=newest&model=1980|2000|All         最新值排排站 (Newest_TBT)
- *   index.php?m=chart_demo&a=tbt&start=&end=                    歷史趨勢排排站 (TBT)
+ *   index.php?m=chart_demo&a=tbt&start=&end=                    區間內全部機台的資料（TBT 與 single 共用）
+ *   index.php?m=chart_demo&a=newest[&model=1980|2000|All]       全部機台最新一筆 (Newest_TBT)
  *
- * 三個 AJAX 動作的回傳格式相同：
+ * 前端進頁面時呼叫一次 tbt 與 newest（model=All）取回全部機台的資料，
+ * 切換機台 / 機型只在瀏覽器端篩選，不再發 request；改日期區間才重新呼叫 tbt
+ *
+ * AJAX 動作的回傳格式相同：
  *   { "APAN01": { "Date": ["2026-01-01", ...], "Data": [1.0, ...] }, ... }
  * 機台依名稱自然排序，每台內部依時間排序。錯誤時回 HTTP 400 + {"ok":false,"error":"..."}
  *
@@ -38,22 +40,7 @@ class ChartDemoController extends Controller
         ));
     }
 
-    /** 第一部分：單台機台 */
-    public function singleAction()
-    {
-        $range = $this->range();
-        if ($range === null) {
-            return;
-        }
-        $tool = $this->query('tool');
-        if (!in_array($tool, ChartDataSource::tools(), true)) {
-            return $this->fail('機台不存在：' . $tool);
-        }
-        $data = ChartDataSource::series(array($tool), $range[0], $range[1]);
-        $this->output($this->normalize($data, array($tool)));
-    }
-
-    /** 第二部分：所有機台最新一筆，可依機型篩選 */
+    /** 所有機台最新一筆，可依機型篩選（頁面固定用 All，篩選在前端做） */
     public function newestAction()
     {
         $model = $this->query('model', 'All');
@@ -71,7 +58,7 @@ class ChartDemoController extends Controller
         $this->output($this->normalize($data, $tools, true));
     }
 
-    /** 第三部分：所有機台在期間內的趨勢 */
+    /** 所有機台在期間內的資料：TBT 直接畫，single 從中取出單台 */
     public function tbtAction()
     {
         $range = $this->range();

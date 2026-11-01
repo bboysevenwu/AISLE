@@ -98,7 +98,6 @@ window.AISLE_CHART_DEMO = {
     tools:  <?php echo js($tools); ?>,
     models: <?php echo js((object) $models); ?>,
     urls: {
-        single: <?php echo js(url('chart_demo', 'single')); ?>,
         newest: <?php echo js(url('chart_demo', 'newest')); ?>,
         tbt:    <?php echo js(url('chart_demo', 'tbt')); ?>
     }

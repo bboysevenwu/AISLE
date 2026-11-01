@@ -3,13 +3,13 @@
  * chart_demo 模組：資料視覺化範本（config.ini：EE、PE 可用）
  *
  *   index.php?m=chart_demo                                      頁面
- *   index.php?m=chart_demo&a=tbt&start=&end=                    區間內全部機台的資料（TBT 與 single 共用）
- *   index.php?m=chart_demo&a=newest[&model=1980|2000|All]       全部機台最新一筆 (Newest_TBT)
+ *   index.php?m=chart_demo&a=tbt&start=&end=                    區間內全部機台的資料
  *
- * 前端進頁面時呼叫一次 tbt 與 newest（model=All）取回全部機台的資料，
+ * 頁面只呼叫 tbt 一次，三個區塊都從這份資料取得：
+ *   TBT 直接畫；single 取出單台；Newest_TBT 取每台在區間內的最後一筆
  * 切換機台 / 機型只在瀏覽器端篩選，不再發 request；改日期區間才重新呼叫 tbt
  *
- * AJAX 動作的回傳格式相同：
+ * 回傳格式：
  *   { "APAN01": { "Date": ["2026-01-01", ...], "Data": [1.0, ...] }, ... }
  * 機台依名稱自然排序，每台內部依時間排序。錯誤時回 HTTP 400 + {"ok":false,"error":"..."}
  *
@@ -40,25 +40,7 @@ class ChartDemoController extends Controller
         ));
     }
 
-    /** 所有機台最新一筆，可依機型篩選（頁面固定用 All，篩選在前端做） */
-    public function newestAction()
-    {
-        $model = $this->query('model', 'All');
-        if (!in_array($model, array('1980', '2000', 'All'), true)) {
-            return $this->fail('機型只能是 1980、2000 或 All');
-        }
-        $tools = array();
-        foreach (ChartDataSource::tools() as $t) {
-            if ($model === 'All' || self::modelOf($t) === $model) {
-                $tools[] = $t;
-            }
-        }
-        $tools = $this->sortTools($tools);
-        $data = $tools ? ChartDataSource::latest($tools) : array();
-        $this->output($this->normalize($data, $tools, true));
-    }
-
-    /** 所有機台在期間內的資料：TBT 直接畫，single 從中取出單台 */
+    /** 所有機台在期間內的資料（三個區塊共用） */
     public function tbtAction()
     {
         $range = $this->range();
@@ -128,9 +110,8 @@ class ChartDemoController extends Controller
      * 統一整理資料來源的結果：
      *   - 只保留 $tools 中的機台，並依 $tools 的順序輸出
      *   - 每台依 Date 排序，Data 轉成數字，Date / Data 長度不一致或數值不是數字的筆數丟掉
-     *   - $lastOnly = true 時每台只留最新一筆
      */
-    private function normalize($data, $tools, $lastOnly = false)
+    private function normalize($data, $tools)
     {
         $out = array();
         foreach ($tools as $tool) {
@@ -151,9 +132,6 @@ class ChartDemoController extends Controller
                 continue;
             }
             usort($pairs, array('ChartDemoController', 'cmpPair'));
-            if ($lastOnly) {
-                $pairs = array($pairs[count($pairs) - 1]);
-            }
             $series = array('Date' => array(), 'Data' => array());
             foreach ($pairs as $p) {
                 $series['Date'][] = $p[0];

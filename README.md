@@ -373,10 +373,10 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 |---|---|---|
 | 全域選擇器 | 起訖日期（含 7D / 30D / 90D 快捷）、單台機台 | |
 | single 單台機台趨勢 | X 軸時間、Y 軸數值 | 不另外呼叫，從 tbt 的資料取出 |
-| Newest_TBT 最新值排排站 | 每台最新一筆的長條圖，機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 | `&a=newest&model=All` |
+| Newest_TBT 最新值排排站 | 每台在區間內最新一筆的長條圖，機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 | 不另外呼叫，取 tbt 資料中每台的最後一筆 |
 | TBT 歷史趨勢排排站 | 每台一個區段（依機台名稱排序），區段內依時間排序，每台不同顏色，圖例可開關機台，下方可拖曳縮放 | `&a=tbt&start=&end=` |
 
-**資料載入**：進入頁面時一次取回全部機台的資料（`tbt` 區間內全部機台、`newest` 全部機台最新一筆）。之後切換機台、切換機型都只在瀏覽器端篩選重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取 `tbt`，`newest` 要重新整理頁面才會更新。
+**資料載入**：進入頁面時只呼叫一次 `tbt`，取回日期區間內全部機台的資料，三個區塊都從這份資料取得。之後切換機台、切換機型都只在瀏覽器端篩選重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取 `tbt`。
 
 - 回傳格式固定為 `{"APAN01": {"Date": [...], "Data": [...]}, ...}`；排序、型別整理在 controller 統一處理，資料來源不需要先排好
 - 機型判斷：名稱含 `PAN` → 1980、含 `PAP` → 2000（`ChartDemoController::modelOf()`）
@@ -389,7 +389,7 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 | source | 說明 | 部署者要做的事 |
 |---|---|---|
 | `sample`（預設） | 內建範例資料，不需資料庫 | 無 |
-| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」三個方法（已附範例 SQL） |
+| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」兩個方法（已附範例 SQL） |
 | `script` | 呼叫 `scripts/python/chart_data.py` 取得 JSON | 實作該腳本的「★ 部署者實作區」 |
 
 ![chart_demo](docs/screenshots/chart_demo.png)

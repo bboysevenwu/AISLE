@@ -206,13 +206,13 @@ crontab -e
    [chart_demo]
    source = "db"
    ```
-2. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`、`dbLatest()`，註解內附範例 SQL（假設資料表 `tool_data(tool_id, data_time, value)`，依實際表名、欄位修改）
+2. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`，註解內附範例 SQL（假設資料表 `tool_data(tool_id, data_time, value)`，依實際表名、欄位修改）
 3. 確認 `aisle_app` 對資料表有 `SELECT` 權限：
    ```sql
    GRANT SELECT ON `資料庫`.`資料表` TO 'aisle_app'@'localhost';
    ```
 4. 要改用 Python 取資料時設 `source = "script"`，實作 `scripts/python/chart_data.py` 的部署者實作區；`python` 指定 Python 2.7 的路徑，並先測試：
    ```bash
-   python scripts/python/chart_data.py latest --tools APAN01,APAP01
+   python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-07 --tools APAN01,APAP01
    ```
 5. 以 EE 或 PE 帳號登入開啟頁面，三個圖表都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中

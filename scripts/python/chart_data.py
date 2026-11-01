@@ -12,8 +12,6 @@ modules/chart_demo/ChartDataSource.php 會呼叫本腳本並讀取 stdout 的 JS
       → {"tools": ["APAN01", "APAP01", ...]}
   python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-31 --tools APAN01,APAP01
       → {"APAN01": {"Date": [...], "Data": [...]}, ...}
-  python scripts/python/chart_data.py latest --tools APAN01,APAP01
-      → 同上，每台一筆
 
 排序與格式整理由 PHP 端統一處理，這裡回傳順序不拘。
 錯誤時請寫到 stderr 並以非 0 結束，PHP 端會顯示錯誤。
@@ -33,7 +31,7 @@ SAMPLE_TOOLS = ['APAN%02d' % i for i in range(1, 7)] + ['APAP%02d' % i for i in 
 
 
 # =====================================================================
-# ★ 部署者實作區：把下面三個函式換成實際的資料來源
+# ★ 部署者實作區：把下面兩個函式換成實際的資料來源
 # ---------------------------------------------------------------------
 # 例：用 MySQLdb 查 MariaDB（帳密可用 ConfigParser 讀 config/app.ini 的 [database]）
 #
@@ -67,20 +65,6 @@ def fetch_series(tools, start, end):
                 out[tool]['Date'].append(day.strftime('%Y-%m-%d'))
                 out[tool]['Data'].append(v)
         day += datetime.timedelta(days=1)
-    return out
-
-
-def fetch_latest(tools):
-    # TODO(部署者)：回傳每台最新一筆，格式同 fetch_series
-    out = {}
-    today = datetime.date.today()
-    for tool in tools:
-        for i in range(10):
-            day = today - datetime.timedelta(days=i)
-            v = sample_value(tool, day)
-            if v is not None:
-                out[tool] = {'Date': [day.strftime('%Y-%m-%d')], 'Data': [v]}
-                break
     return out
 
 
@@ -135,16 +119,12 @@ def main():
     p.add_argument('--start', type=parse_date, required=True)
     p.add_argument('--end', type=parse_date, required=True)
     p.add_argument('--tools', type=parse_tools, required=True)
-    p = sub.add_parser('latest')
-    p.add_argument('--tools', type=parse_tools, required=True)
     args = parser.parse_args()
 
     if args.cmd == 'tools':
         result = {'tools': fetch_tools()}
     elif args.cmd == 'series':
         result = fetch_series(args.tools, args.start, args.end)
-    elif args.cmd == 'latest':
-        result = fetch_latest(args.tools)
     else:
         parser.print_help(sys.stderr)
         return 2

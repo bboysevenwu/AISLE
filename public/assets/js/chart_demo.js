@@ -4,9 +4,10 @@
  * 後端回傳格式：{ "APAN01": { "Date": [...], "Data": [...] }, ... }
  *
  * 資料載入方式：
- *   進入頁面時一次取回「全部機台」的資料（tbt：日期區間內全部機台；newest：全部機台最新一筆），
- *   存在 cache。之後切換機台、切換機型只用 cache 重畫，不再發 request；
- *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt，重新整理頁面才會重新取 newest。
+ *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台」的資料存在 cache，三個區塊都從這份資料取得：
+ *     TBT 直接畫；single 取出所選機台；Newest_TBT 取每台在區間內的最後一筆（再依機型篩選）
+ *   之後切換機台、切換機型只用 cache 重畫，不再發 request；
+ *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt。
  * 只用 ES5 語法，避免舊瀏覽器出錯
  */
 (function ($, window) {
@@ -81,7 +82,7 @@
 
     // ---------- 共用 ----------
     var charts = {};
-    var cache = { tbt: null, newest: null };   // 後端回傳的全部機台資料
+    var cache = { tbt: null };   // 後端回傳的區間內全部機台資料
     var shown = { single: {}, newest: {}, tbt: {} };  // 各圖目前顯示的資料（資料表用）
     var request = null;
 
@@ -383,16 +384,17 @@
         show('single', data, drawSingle);
     }
 
-    /** 最新值：依機型篩選 cache.newest，不發 request */
+    /** 最新值：取 cache.tbt 每台的最後一筆（後端已依時間排序），再依機型篩選，不發 request */
     function showNewest() {
-        if (!cache.newest) {
+        if (!cache.tbt) {
             return;
         }
         var model = $('#cd-model').val();
         var data = {};
-        $.each(cache.newest, function (tool, s) {
-            if (model === 'All' || CFG.models[tool] === model) {
-                data[tool] = s;
+        $.each(cache.tbt, function (tool, s) {
+            var n = s.Data.length - 1;
+            if (n >= 0 && (model === 'All' || CFG.models[tool] === model)) {
+                data[tool] = { Date: [s.Date[n]], Data: [s.Data[n]] };
             }
         });
         show('newest', data, drawNewest);
@@ -407,17 +409,10 @@
         if (request) {
             request.abort();
         }
-        request = fetchJson(CFG.urls.tbt, { start: r.start, end: r.end }, [charts.tbt, charts.single], function (res) {
+        request = fetchJson(CFG.urls.tbt, { start: r.start, end: r.end }, [charts.tbt, charts.single, charts.newest], function (res) {
             cache.tbt = res;
             show('tbt', res, drawTbt);
             showSingle();
-        });
-    }
-
-    /** 全部機台最新一筆（進頁面時取一次） */
-    function loadNewest() {
-        fetchJson(CFG.urls.newest, { model: 'All' }, [charts.newest], function (res) {
-            cache.newest = res;
             showNewest();
         });
     }
@@ -482,6 +477,5 @@
         });
 
         loadRange();
-        loadNewest();
     });
 })(window.jQuery, window);

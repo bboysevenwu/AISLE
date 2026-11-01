@@ -2,10 +2,9 @@
 /**
  * chart_demo 的資料來源
  *
- * Controller 只呼叫這裡的三個公開方法，回傳格式固定：
+ * Controller 只呼叫這裡的兩個公開方法，回傳格式固定：
  *   tools()                     array('APAN01', 'APAN02', ...)
  *   series($tools, $start, $end) array('APAN01' => array('Date' => array(...), 'Data' => array(...)), ...)
- *   latest($tools)              同上，每台只放最新一筆
  * 排序、型別轉換、空值處理都由 Controller 統一做，這裡回傳順序不拘。
  *
  * 資料來源由 config/app.ini 的 [chart_demo] source 決定（未設定時為 sample）：
@@ -48,21 +47,8 @@ class ChartDataSource
         }
     }
 
-    /** 指定機台各自的最新一筆 */
-    public static function latest($tools)
-    {
-        switch (self::mode()) {
-            case 'db':
-                return self::dbLatest($tools);
-            case 'script':
-                return self::runScript(array('latest', '--tools', implode(',', $tools)));
-            default:
-                return self::sampleLatest($tools);
-        }
-    }
-
     // =====================================================================
-    // ★ 部署者實作區 (db)：把下面三個方法換成實際的 SQL
+    // ★ 部署者實作區 (db)：把下面兩個方法換成實際的 SQL
     // ---------------------------------------------------------------------
     // 範例假設資料表（依實際名稱、欄位修改）：
     //   tool_data (tool_id VARCHAR(32), data_time DATETIME, value DOUBLE)
@@ -99,22 +85,6 @@ class ChartDataSource
         // );
         // return self::group($rows, 'tool_id', 'd', 'value');
         throw new RuntimeException('chart_demo：source = db 尚未實作 dbSeries()，見 modules/chart_demo/ChartDataSource.php');
-    }
-
-    private static function dbLatest($tools)
-    {
-        // TODO(部署者)：回傳 $tools 各自最新的一筆（MariaDB 10.2 以上也可改用 ROW_NUMBER()）
-        // $in = implode(',', array_fill(0, count($tools), '?'));
-        // $rows = Database::fetchAll(
-        //     'SELECT t.tool_id, DATE_FORMAT(t.data_time, \'%Y-%m-%d %H:%i:%s\') AS d, t.value
-        //        FROM tool_data t
-        //        JOIN (SELECT tool_id, MAX(data_time) AS mx FROM tool_data
-        //               WHERE tool_id IN (' . $in . ') GROUP BY tool_id) m
-        //          ON m.tool_id = t.tool_id AND m.mx = t.data_time',
-        //     $tools
-        // );
-        // return self::group($rows, 'tool_id', 'd', 'value');
-        throw new RuntimeException('chart_demo：source = db 尚未實作 dbLatest()，見 modules/chart_demo/ChartDataSource.php');
     }
 
     /** 把 SQL 結果列整理成 array('TOOL' => array('Date' => ..., 'Data' => ...)) */
@@ -187,23 +157,6 @@ class ChartDataSource
                 }
             }
             $out[$tool] = array('Date' => $dates, 'Data' => $data);
-        }
-        return $out;
-    }
-
-    private static function sampleLatest($tools)
-    {
-        $out = array();
-        foreach ($tools as $tool) {
-            // 從今天往回找第一個有資料的日子
-            for ($i = 0; $i < 10; $i++) {
-                $day = date('Y-m-d', strtotime('-' . $i . ' day'));
-                $v = self::sampleValue($tool, $day);
-                if ($v !== null) {
-                    $out[$tool] = array('Date' => array($day), 'Data' => array($v));
-                    break;
-                }
-            }
         }
         return $out;
     }

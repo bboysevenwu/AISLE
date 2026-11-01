@@ -43,6 +43,7 @@ AISLE/
 │   ├── profile/               # EE + PE（改密碼）
 │   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
 │   ├── pe_recipe/             # 只有 PE
+│   ├── chart_demo/            # EE + PE（圖表 Demo：ECharts + AJAX，資料來源見第 10 節）
 │   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
@@ -64,15 +65,17 @@ AISLE/
 │       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
 │       ├── js/app.js          # jQuery 共用：CSRF、打字機效果、時鐘
 │       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
-│       └── vendor/            # jquery-1.12.4.min.js（執行 fetch_vendor.sh 下載）
+│       ├── js/chart_demo.js   # 圖表 Demo 頁的 ECharts 繪圖
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
 ├── scripts/
 │   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/chart_data.py   # 圖表 Demo 的 Python 資料來源（source = script 時使用）
 │   └── shell/
 │       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
 │       ├── create_user.sh     # 建立使用者（互動輸入密碼）
 │       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
 │       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
-│       └── fetch_vendor.sh    # 下載 jQuery
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
 ├── sql/
 │   ├── schema.sql             # 建表
 │   └── seed.sql               # 初始管理員
@@ -184,6 +187,7 @@ auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出�
 | 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
 | 製程配方 pe_recipe | | ✓ | ✓ |
 | 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 Demo chart_demo | ✓ | ✓ | ✓ |
 | 使用者管理 admin_users | | | ✓ |
 
 修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
@@ -332,7 +336,7 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 6. `config/app.ini`（複製範本，填 DB 帳密、base_url）
 7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
 8. `python scripts/python/check_config.py`
-9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery）
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
 10. 目錄權限（storage 可寫）
 11. Apache DocumentRoot 指向 `public/`
 12. 確認設定檔無法從網址下載
@@ -358,3 +362,32 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
 
 截圖見 `docs/screenshots/`。
+
+---
+
+## 10. 圖表 Demo（chart_demo）
+
+資料視覺化頁面範本，網址 `index.php?m=chart_demo`，EE、PE 可用。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+| 區塊 | 內容 | AJAX 動作 |
+|---|---|---|
+| 全域選擇器 | 起訖日期（含 7D / 30D / 90D 快捷）、單台機台 | |
+| single 單台機台趨勢 | X 軸時間、Y 軸數值 | `&a=single&tool=&start=&end=` |
+| Newest_TBT 最新值排排站 | 每台最新一筆的長條圖，機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 | `&a=newest&model=` |
+| TBT 歷史趨勢排排站 | 每台一個區段（依機台名稱排序），區段內依時間排序，每台不同顏色，圖例可開關機台，下方可拖曳縮放 | `&a=tbt&start=&end=` |
+
+- 回傳格式固定為 `{"APAN01": {"Date": [...], "Data": [...]}, ...}`；排序、型別整理在 controller 統一處理，資料來源不需要先排好
+- 機型判斷：名稱含 `PAN` → 1980、含 `PAP` → 2000（`ChartDemoController::modelOf()`）
+- 顏色：同機型內依序取色，1980 實線、2000 虛線（長條加斜線紋理），APAN01 與 APAP01 同色不同線型；顏色跟著機台走，篩選後不變
+- 每個圖表都有「資料表」按鈕可切換成表格檢視
+- 查詢區間上限 366 天（`ChartDemoController::MAX_DAYS`）
+
+**資料來源**：`config/app.ini` 的 `[chart_demo] source`
+
+| source | 說明 | 部署者要做的事 |
+|---|---|---|
+| `sample`（預設） | 內建範例資料，不需資料庫 | 無 |
+| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」三個方法（已附範例 SQL） |
+| `script` | 呼叫 `scripts/python/chart_data.py` 取得 JSON | 實作該腳本的「★ 部署者實作區」 |
+
+![chart_demo](docs/screenshots/chart_demo.png)

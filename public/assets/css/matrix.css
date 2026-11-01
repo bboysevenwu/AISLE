@@ -299,6 +299,33 @@ input.is-valid { border-color: #00ff41; }
 .register-box { width: 440px; }
 
 /* ---------- 手機版 ---------- */
+/* ---------- chart_demo 圖表頁 ---------- */
+input[type=date] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.cd-filters { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.cd-field { padding: 0 8px; }
+.cd-field select { width: auto; min-width: 140px; }
+.cd-quick .btn { margin-right: 4px; }
+.cd-msg { min-height: 1em; margin: 8px 0 0; }
+.cd-note { margin: 4px 0 0; font-size: 13px; }
+.cd-sub { margin: 0 0 8px; font-size: 13px; }
+.cd-sub select { width: auto; margin: 0 10px 0 6px; padding: 4px 8px; }
+.cd-sub label.inline { margin: 0; }
+.cd-head-tools { float: right; }
+.cd-head-tools .btn { color: #000; border-color: #000; padding: 0 6px; margin-left: 4px; font-size: 12px; }
+.cd-head-tools .btn:hover { background: #000; color: #00ff41; box-shadow: none; }
+.cd-chart { height: 320px; }
+.cd-chart-tall { height: 440px; }
+.cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
+
 @media (max-width: 760px) {
     .shell { display: block; }
     .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }
@@ -311,4 +338,6 @@ input.is-valid { border-color: #00ff41; }
     .topbar { padding: 8px 16px; }
     .topbar-status > * { margin-left: 6px; }
     .table { font-size: 13px; }
+    .cd-head-tools { float: none; display: block; margin-top: 4px; }
+    .cd-chart-tall { height: 380px; }
 }

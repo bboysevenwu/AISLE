@@ -86,15 +86,20 @@ python scripts/python/check_config.py
 
 最後一行出現 `[OK] config.ini 檢查通過` 才往下做。`admin_users 只有 * 身份能使用` 這個警告是正常的。
 
-## 9. 下載 jQuery
+## 9. 下載 jQuery、ECharts
 
 ```bash
 bash scripts/shell/fetch_vendor.sh
 ```
 
-主機不能連外網時，在可連外網的電腦下載
-`https://code.jquery.com/jquery-1.12.4.min.js`，
-複製到 `public/assets/vendor/jquery-1.12.4.min.js`。
+主機不能連外網時，在可連外網的電腦下載以下檔案，複製到 `public/assets/vendor/`：
+
+| 下載網址 | 存成 |
+|---|---|
+| `https://code.jquery.com/jquery-1.12.4.min.js` | `jquery-1.12.4.min.js` |
+| `https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js` | `echarts-5.4.3.min.js` |
+
+ECharts 只有圖表 Demo 頁使用；沒放本機檔案時頁面會改從 CDN 載入，使用者的瀏覽器需要能連到 cdn.jsdelivr.net。
 
 ## 10. 設定目錄權限
 
@@ -191,3 +196,23 @@ crontab -e
 ```
 
 備份檔放在 `storage/backups/`，預設保留 14 天。先手動執行一次 `bash scripts/shell/backup_db.sh` 確認能成功。
+
+## 17.（選用）圖表 Demo 接上實際資料
+
+圖表 Demo（`index.php?m=chart_demo`）預設使用範例資料，部署後即可看到畫面。接上實際資料：
+
+1. 在 `config/app.ini` 加上（範本見 `app.ini.example` 的 `[chart_demo]`）：
+   ```ini
+   [chart_demo]
+   source = "db"
+   ```
+2. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`、`dbLatest()`，註解內附範例 SQL（假設資料表 `tool_data(tool_id, data_time, value)`，依實際表名、欄位修改）
+3. 確認 `aisle_app` 對資料表有 `SELECT` 權限：
+   ```sql
+   GRANT SELECT ON `資料庫`.`資料表` TO 'aisle_app'@'localhost';
+   ```
+4. 要改用 Python 取資料時設 `source = "script"`，實作 `scripts/python/chart_data.py` 的部署者實作區；`python` 指定 Python 2.7 的路徑，並先測試：
+   ```bash
+   python scripts/python/chart_data.py latest --tools APAN01,APAP01
+   ```
+5. 以 EE 或 PE 帳號登入開啟頁面，三個圖表都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中

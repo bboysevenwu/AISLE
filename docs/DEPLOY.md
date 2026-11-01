@@ -201,18 +201,22 @@ crontab -e
 
 圖表 Demo（`index.php?m=chart_demo`）預設使用範例資料，部署後即可看到畫面。接上實際資料：
 
-1. 在 `config/app.ini` 加上（範本見 `app.ini.example` 的 `[chart_demo]`）：
+1. 編輯 `config/chart_demo.ini`：設定哪些參數畫在同一張圖（`params`）、各組是否顯示單台 / 最新值排排站 / 歷史趨勢排排站（`single` / `newest` / `tbt`）。參數名稱必須與資料中的名稱完全一致
+2. 在 `config/app.ini` 加上（範本見 `app.ini.example` 的 `[chart_demo]`）：
    ```ini
    [chart_demo]
    source = "db"
    ```
-2. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`，註解內附範例 SQL（假設資料表 `tool_data(tool_id, data_time, value)`，依實際表名、欄位修改）
-3. 確認 `aisle_app` 對資料表有 `SELECT` 權限：
+3. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`，註解內附範例 SQL：
+   - 資料表是「一列一個參數值」（例 `tool_data(tool_id, data_time, param, value)`）→ 查出後用 `self::pivot()` 轉換
+   - 資料表是「一列一個時間點、每個參數一個欄位」→ 查出後用 `self::wide()` 轉換
+4. 確認 `aisle_app` 對資料表有 `SELECT` 權限：
    ```sql
    GRANT SELECT ON `資料庫`.`資料表` TO 'aisle_app'@'localhost';
    ```
-4. 要改用 Python 取資料時設 `source = "script"`，實作 `scripts/python/chart_data.py` 的部署者實作區；`python` 指定 Python 2.7 的路徑，並先測試：
+5. 要改用 Python 取資料時設 `source = "script"`，實作 `scripts/python/chart_data.py` 的部署者實作區；`python` 指定 Python 2.7 的路徑，並先測試：
    ```bash
-   python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-07 --tools APAN01,APAP01
+   python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-07 \
+       --tools APAN01,APAP01 --params M1BF_Z_C1,M1BF_Z_C2
    ```
-5. 以 EE 或 PE 帳號登入開啟頁面，三個圖表都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中
+6. 以 EE 或 PE 帳號登入開啟頁面，各圖都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中

@@ -319,9 +319,15 @@ input[type=date] {
 .cd-sub { margin: 0 0 8px; font-size: 13px; }
 .cd-sub select { width: auto; margin: 0 10px 0 6px; padding: 4px 8px; }
 .cd-sub label.inline { margin: 0; }
-.cd-head-tools { float: right; }
-.cd-head-tools .btn { color: #000; border-color: #000; padding: 0 6px; margin-left: 4px; font-size: 12px; }
-.cd-head-tools .btn:hover { background: #000; color: #00ff41; box-shadow: none; }
+.cd-boxes-grid { display: flex; flex-wrap: wrap; padding: 14px 4px; }
+.cd-boxes-grid > .cd-box { flex: 1 1 460px; min-width: 0; padding: 0 10px; }
+.cd-box { margin-bottom: 18px; }
+.cd-box:last-child { margin-bottom: 0; }
+.cd-box-head { border-bottom: 1px dashed #003b00; padding-bottom: 4px; margin-bottom: 6px; }
+.cd-box-head b { letter-spacing: 1px; }
+.cd-box-info { font-size: 13px; margin-left: 8px; }
+.cd-box-tools { float: right; }
+.cd-box-tools .btn { padding: 0 6px; margin-left: 4px; font-size: 12px; }
 .cd-chart { height: 320px; }
 .cd-chart-tall { height: 440px; }
 .cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
@@ -338,6 +344,6 @@ input[type=date] {
     .topbar { padding: 8px 16px; }
     .topbar-status > * { margin-left: 6px; }
     .table { font-size: 13px; }
-    .cd-head-tools { float: none; display: block; margin-top: 4px; }
+    .cd-box-tools { float: none; display: block; margin-top: 4px; }
     .cd-chart-tall { height: 380px; }
 }

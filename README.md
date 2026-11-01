@@ -20,7 +20,8 @@ AISLE/
 ├── README.md
 ├── config/
 │   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
-│   └── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   └── chart_demo.ini         # 圖表 Demo 的圖表分組、各區塊開關
 ├── core/                      # 框架核心（一般開發不需修改）
 │   ├── bootstrap.php          # 載入類別、設定、Session
 │   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
@@ -43,7 +44,7 @@ AISLE/
 │   ├── profile/               # EE + PE（改密碼）
 │   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
 │   ├── pe_recipe/             # 只有 PE
-│   ├── chart_demo/            # EE + PE（圖表 Demo：ECharts + AJAX，資料來源見第 10 節）
+│   ├── chart_demo/            # EE + PE（圖表 Demo：ECharts + AJAX，見第 10 節）
 │   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
@@ -369,27 +370,57 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 
 資料視覺化頁面範本，網址 `index.php?m=chart_demo`，EE、PE 可用。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
 
-| 區塊 | 內容 | AJAX 動作 |
-|---|---|---|
-| 全域選擇器 | 起訖日期（含 7D / 30D / 90D 快捷）、單台機台 | |
-| single 單台機台趨勢 | X 軸時間、Y 軸數值 | 不另外呼叫，從 tbt 的資料取出 |
-| Newest_TBT 最新值排排站 | 每台在區間內最新一筆的長條圖，機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 | 不另外呼叫，取 tbt 資料中每台的最後一筆 |
-| TBT 歷史趨勢排排站 | 每台一個區段（依機台名稱排序），區段內依時間排序，每台不同顏色，圖例可開關機台，下方可拖曳縮放 | `&a=tbt&start=&end=` |
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（含 7D / 30D / 90D 快捷）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
 
-**資料載入**：進入頁面時只呼叫一次 `tbt`，取回日期區間內全部機台的資料，三個區塊都從這份資料取得。之後切換機台、切換機型都只在瀏覽器端篩選重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取 `tbt`。
+### 圖表分組：`config/chart_demo.ini`
 
-- 回傳格式固定為 `{"APAN01": {"Date": [...], "Data": [...]}, ...}`；排序、型別整理在 controller 統一處理，資料來源不需要先排好
+```ini
+[chart.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+
+[chart.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+```
+
+- 每個 `[chart.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/chart_demo/ChartConfig.php` 檢查）
+
+### 資料格式與載入
+
+後端 `index.php?m=chart_demo&a=tbt&start=&end=` 回傳區間內全部機台、`chart_demo.ini` 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null 由 controller 統一處理，資料來源不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
 - 機型判斷：名稱含 `PAN` → 1980、含 `PAP` → 2000（`ChartDemoController::modelOf()`）
-- 顏色：同機型內依序取色，1980 實線、2000 虛線（長條加斜線紋理），APAN01 與 APAP01 同色不同線型；顏色跟著機台走，篩選後不變
-- 每個圖表都有「資料表」按鈕可切換成表格檢視
-- 查詢區間上限 366 天（`ChartDemoController::MAX_DAYS`）
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視；查詢區間上限 366 天（`ChartDemoController::MAX_DAYS`）
 
-**資料來源**：`config/app.ini` 的 `[chart_demo] source`
+### 資料來源：`config/app.ini` 的 `[chart_demo] source`
 
 | source | 說明 | 部署者要做的事 |
 |---|---|---|
 | `sample`（預設） | 內建範例資料，不需資料庫 | 無 |
-| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」兩個方法（已附範例 SQL） |
+| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」兩個方法（已附範例 SQL；長表用 `pivot()`、寬表用 `wide()` 轉換） |
 | `script` | 呼叫 `scripts/python/chart_data.py` 取得 JSON | 實作該腳本的「★ 部署者實作區」 |
 
 ![chart_demo](docs/screenshots/chart_demo.png)

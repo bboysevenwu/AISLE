@@ -10,11 +10,15 @@
  * 切換機台 / 機型只在瀏覽器端篩選，不再發 request；改日期區間才重新呼叫 tbt
  *
  * 回傳格式：
- *   { "APAN01": { "Date": ["2026-01-01", ...], "Data": [1.0, ...] }, ... }
- * 機台依名稱自然排序，每台內部依時間排序。錯誤時回 HTTP 400 + {"ok":false,"error":"..."}
+ *   { "APAN01": { "Date": ["2026-01-01", ...],
+ *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... } }, ... }
+ * 機台依名稱自然排序，每台內部依時間排序；Data 只含 config/chart_demo.ini 用到的參數，
+ * 每個參數陣列與 Date 一樣長，沒有值的位置是 null。錯誤時回 HTTP 400 + {"ok":false,"error":"..."}
  *
+ * 哪些參數畫在同一張圖、各區塊是否顯示：config/chart_demo.ini（ChartConfig.php 讀取）
  * 取資料的程式在 ChartDataSource.php，部署時只需要改那個檔案
  */
+require_once dirname(__FILE__) . '/ChartConfig.php';
 require_once dirname(__FILE__) . '/ChartDataSource.php';
 
 class ChartDemoController extends Controller
@@ -32,6 +36,7 @@ class ChartDemoController extends Controller
             $models[$t] = self::modelOf($t);
         }
         $this->render('index', array(
+            'groups' => ChartConfig::groups(),
             'tools'  => $tools,
             'models' => $models,
             'start'  => date('Y-m-d', strtotime('-' . (self::DEFAULT_DAYS - 1) . ' day')),
@@ -48,8 +53,9 @@ class ChartDemoController extends Controller
             return;
         }
         $tools = $this->sortTools(ChartDataSource::tools());
-        $data = $tools ? ChartDataSource::series($tools, $range[0], $range[1]) : array();
-        $this->output($this->normalize($data, $tools));
+        $params = ChartConfig::params();
+        $data = $tools ? ChartDataSource::series($tools, $params, $range[0], $range[1]) : array();
+        $this->output($this->normalize($data, $tools, $params));
     }
 
     /**
@@ -109,40 +115,59 @@ class ChartDemoController extends Controller
     /**
      * 統一整理資料來源的結果：
      *   - 只保留 $tools 中的機台，並依 $tools 的順序輸出
-     *   - 每台依 Date 排序，Data 轉成數字，Date / Data 長度不一致或數值不是數字的筆數丟掉
+     *   - 每台依 Date 排序；Data 只保留 $params，依 $params 的順序輸出，缺少的參數整列補 null
+     *   - 數值轉成數字，不是數字的轉成 null；所有參數都是 null 的時間點丟掉
      */
-    private function normalize($data, $tools)
+    private function normalize($data, $tools, $params)
     {
         $out = array();
         foreach ($tools as $tool) {
-            if (!isset($data[$tool]['Date'], $data[$tool]['Data']) || !is_array($data[$tool]['Date'])) {
+            if (!isset($data[$tool]['Date'], $data[$tool]['Data'])
+                || !is_array($data[$tool]['Date']) || !is_array($data[$tool]['Data'])) {
                 continue;
             }
-            $pairs = array();
             $dates = array_values($data[$tool]['Date']);
-            $values = array_values($data[$tool]['Data']);
-            $n = min(count($dates), count($values));
-            for ($i = 0; $i < $n; $i++) {
-                if ($values[$i] === null || !is_numeric($values[$i])) {
-                    continue;
-                }
-                $pairs[] = array((string) $dates[$i], (float) $values[$i]);
+            $cols = array();
+            foreach ($params as $p) {
+                $cols[$p] = isset($data[$tool]['Data'][$p]) && is_array($data[$tool]['Data'][$p])
+                    ? array_values($data[$tool]['Data'][$p]) : array();
             }
-            if (!$pairs) {
+            $rows = array();  // array(date, array(param => value))
+            foreach ($dates as $i => $date) {
+                $values = array();
+                $any = false;
+                foreach ($params as $p) {
+                    $v = null;
+                    if (isset($cols[$p][$i]) && is_numeric($cols[$p][$i])) {
+                        $v = (float) $cols[$p][$i];
+                        $any = true;
+                    }
+                    $values[$p] = $v;
+                }
+                if ($any) {
+                    $rows[] = array((string) $date, $values);
+                }
+            }
+            if (!$rows) {
                 continue;
             }
-            usort($pairs, array('ChartDemoController', 'cmpPair'));
+            usort($rows, array('ChartDemoController', 'cmpRow'));
             $series = array('Date' => array(), 'Data' => array());
-            foreach ($pairs as $p) {
-                $series['Date'][] = $p[0];
-                $series['Data'][] = $p[1];
+            foreach ($params as $p) {
+                $series['Data'][$p] = array();
+            }
+            foreach ($rows as $r) {
+                $series['Date'][] = $r[0];
+                foreach ($params as $p) {
+                    $series['Data'][$p][] = $r[1][$p];
+                }
             }
             $out[$tool] = $series;
         }
         return $out;
     }
 
-    public static function cmpPair($a, $b)
+    public static function cmpRow($a, $b)
     {
         return strcmp($a[0], $b[0]);
     }

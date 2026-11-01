@@ -45,23 +45,39 @@ $echartsSrc = is_file(AISLE_ROOT . '/public/assets/' . $echartsLocal)
     </div>
 </div>
 
+<?php
+// 依 config/chart_demo.ini 決定每個區塊要畫哪些圖
+$byKind = array('single' => array(), 'newest' => array(), 'tbt' => array());
+foreach ($groups as $g) {
+    foreach ($byKind as $kind => $list) {
+        if ($g[$kind]) {
+            $byKind[$kind][] = $g;
+        }
+    }
+}
+?>
+<?php if ($byKind['single']): ?>
 <div class="panel">
-    <div class="panel-head">
-        &gt; SINGLE // 單台機台趨勢 <span id="cd-single-title"></span>
-        <span class="cd-head-tools"><button type="button" class="btn btn-sm cd-table-btn" data-chart="single">[ 資料表 ]</button></span>
-    </div>
-    <div class="panel-body">
-        <div id="cd-single" class="cd-chart"></div>
-        <div class="cd-table" id="cd-single-table"></div>
+    <div class="panel-head">&gt; SINGLE // 單台機台趨勢 <span class="cd-single-title"></span></div>
+    <div class="panel-body cd-boxes cd-boxes-grid">
+        <?php foreach ($byKind['single'] as $g): ?>
+        <div class="cd-box" data-kind="single" data-group="<?php echo e($g['id']); ?>">
+            <div class="cd-box-head">
+                <b><?php echo e($g['title']); ?></b>
+                <span class="cd-box-tools"><button type="button" class="btn btn-sm cd-table-btn">[ 資料表 ]</button></span>
+            </div>
+            <div class="cd-chart"></div>
+            <div class="cd-table"></div>
+        </div>
+        <?php endforeach; ?>
     </div>
 </div>
+<?php endif; ?>
 
+<?php if ($byKind['newest']): ?>
 <div class="panel">
-    <div class="panel-head">
-        &gt; NEWEST_TBT // 最新值排排站
-        <span class="cd-head-tools"><button type="button" class="btn btn-sm cd-table-btn" data-chart="newest">[ 資料表 ]</button></span>
-    </div>
-    <div class="panel-body">
+    <div class="panel-head">&gt; NEWEST_TBT // 最新值排排站</div>
+    <div class="panel-body cd-boxes">
         <div class="cd-sub">
             <label for="cd-model" class="inline">機型 // MODEL</label>
             <select id="cd-model">
@@ -69,32 +85,49 @@ $echartsSrc = is_file(AISLE_ROOT . '/public/assets/' . $echartsLocal)
                 <option value="1980">1980（PAN）</option>
                 <option value="2000">2000（PAP）</option>
             </select>
-            <span class="dim">&gt; 點長條可切換上方的單台機台</span>
+            <span class="dim">&gt; 每台取區間內最後一筆 · 點長條可切換上方的單台機台</span>
         </div>
-        <div id="cd-newest" class="cd-chart"></div>
-        <div class="cd-table" id="cd-newest-table"></div>
+        <?php foreach ($byKind['newest'] as $g): ?>
+        <div class="cd-box" data-kind="newest" data-group="<?php echo e($g['id']); ?>">
+            <div class="cd-box-head">
+                <b><?php echo e($g['title']); ?></b>
+                <span class="cd-box-tools"><button type="button" class="btn btn-sm cd-table-btn">[ 資料表 ]</button></span>
+            </div>
+            <div class="cd-chart"></div>
+            <div class="cd-table"></div>
+        </div>
+        <?php endforeach; ?>
     </div>
 </div>
+<?php endif; ?>
 
+<?php if ($byKind['tbt']): ?>
 <div class="panel">
-    <div class="panel-head">
-        &gt; TBT // 歷史趨勢排排站
-        <span class="cd-head-tools">
-            <button type="button" class="btn btn-sm" id="cd-tbt-all">[ 全選 ]</button>
-            <button type="button" class="btn btn-sm" id="cd-tbt-none">[ 全不選 ]</button>
-            <button type="button" class="btn btn-sm cd-table-btn" data-chart="tbt">[ 資料表 ]</button>
-        </span>
-    </div>
-    <div class="panel-body">
-        <p class="dim cd-sub" id="cd-tbt-info">&gt; 依機台排序，區段內依時間排序 · 實線 1980 / 虛線 2000 · 點圖例可開關機台</p>
-        <div id="cd-tbt" class="cd-chart cd-chart-tall"></div>
-        <div class="cd-table" id="cd-tbt-table"></div>
+    <div class="panel-head">&gt; TBT // 歷史趨勢排排站</div>
+    <div class="panel-body cd-boxes">
+        <p class="dim cd-sub">&gt; 依機台排序，區段內依時間排序 · 顏色區分機台、線型區分參數 · 點圖例可開關機台</p>
+        <?php foreach ($byKind['tbt'] as $g): ?>
+        <div class="cd-box" data-kind="tbt" data-group="<?php echo e($g['id']); ?>">
+            <div class="cd-box-head">
+                <b><?php echo e($g['title']); ?></b> <span class="dim cd-box-info"></span>
+                <span class="cd-box-tools">
+                    <button type="button" class="btn btn-sm cd-legend-all">[ 全選 ]</button>
+                    <button type="button" class="btn btn-sm cd-legend-none">[ 全不選 ]</button>
+                    <button type="button" class="btn btn-sm cd-table-btn">[ 資料表 ]</button>
+                </span>
+            </div>
+            <div class="cd-chart cd-chart-tall"></div>
+            <div class="cd-table"></div>
+        </div>
+        <?php endforeach; ?>
     </div>
 </div>
+<?php endif; ?>
 
 <script src="<?php echo e($echartsSrc); ?>"></script>
 <script>
 window.AISLE_CHART_DEMO = {
+    groups: <?php echo js($groups); ?>,
     tools:  <?php echo js($tools); ?>,
     models: <?php echo js((object) $models); ?>,
     urls: {

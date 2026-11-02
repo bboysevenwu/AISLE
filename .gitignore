@@ -4,3 +4,7 @@ storage/backups/*
 !storage/logs/.gitkeep
 !storage/backups/.gitkeep
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc

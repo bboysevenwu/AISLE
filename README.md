@@ -15,7 +15,7 @@
 
 ```
 AISLE/
-├── .htaccess                  # 若 DocumentRoot 無法指向 public/，阻擋其他目錄
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
 ├── .gitignore
 ├── README.md
 ├── config/
@@ -52,7 +52,7 @@ AISLE/
 │   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
 │   ├── error.php
 │   └── auth/                  # 登入、註冊頁面樣板
-├── public/                    # ★ Web Server DocumentRoot 指向這裡
+├── public/                    # ★ 唯一對外的目錄
 │   ├── index.php              # 功能模組入口
 │   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
 │   ├── register.php           # 註冊（含帳號即時檢查）
@@ -82,7 +82,7 @@ AISLE/
 └── docs/screenshots/          # 介面截圖
 ```
 
-只有 `public/` 對外開放，`config/`、`core/`、`modules/`、`pages/` 都在網站根目錄之外，設定檔與原始碼不會被直接下載。
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
 
 ---
 
@@ -325,17 +325,17 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
 
 1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
-2. 放置程式
+2. `git clone -b main` 到 `/var/www/html/aisle/`
 3. `mysql -u root -p < sql/schema.sql`
 4. 建立 `aisle_app` 資料庫帳號
 5. `mysql -u root -p < sql/seed.sql`
-6. `config/app.ini`（複製範本，填 DB 帳密、base_url）
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
 7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
 8. `python scripts/python/check_config.py`
 9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery）
 10. 目錄權限（storage 可寫）
-11. Apache DocumentRoot 指向 `public/`
-12. 確認設定檔無法從網址下載
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
 13. `admin` / `Neo@Zion2026` 首次登入並改密碼
 14. 註冊測試帳號，驗證 EE / PE 權限
 15.（選用）接入既有舊頁面

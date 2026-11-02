@@ -9,8 +9,12 @@ name      = "AISLE"
 timezone  = "Asia/Taipei"
 ; production 時請設為 0
 debug     = 0
-; 網站根網址（public/ 對應的 URL），結尾不加斜線
-base_url  = ""
+; 瀏覽器看到的網址路徑（不含主機名稱），結尾不加斜線
+; 經過 proxy 時要包含 proxy 的前綴：
+;   http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/  →  "/D1C1/aisle"
+;   直接連主機 http://host/aisle/                              →  "/aisle"
+;   DocumentRoot 指向 public/、網站在網域根目錄                 →  ""
+base_url  = "/D1C1/aisle"
 
 [database]
 host     = "127.0.0.1"

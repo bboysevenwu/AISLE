@@ -1,6 +1,25 @@
 # AISLE 部署步驟
 
-以下指令以 Linux + Apache、程式放在 `/var/www/aisle`、Web Server 執行身份為 `apache`（Debian/Ubuntu 為 `www-data`）為例，請依實際環境替換。
+以下指令以實際環境為例：
+
+| 項目 | 值 |
+|---|---|
+| 程式來源 | GitHub `bboysevenwu/AISLE` 的 `main` branch |
+| 部署位置 | `/var/www/html/aisle/`（Apache DocumentRoot 為 `/var/www/html`） |
+| 對外網址 | `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`（proxy 前綴 `/D1C1/`） |
+| Web Server 執行身份 | `apache`（Debian/Ubuntu 為 `www-data`） |
+
+網址的對應關係：
+
+```
+瀏覽器  http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/login.php
+  │ proxy 去掉 /D1C1 前綴後轉給主機
+主機    http://<主機>/aisle/login.php
+  │ /var/www/html/aisle/.htaccess 在內部轉進 public/
+檔案    /var/www/html/aisle/public/login.php
+```
+
+網址不會出現 `public/`；`config/`、`core/` 等目錄經由網址存取一律 404。
 
 ---
 
@@ -12,7 +31,7 @@
 | PHP 擴充 | `pdo_mysql`、`openssl`、`json`、`session` | `php -m` |
 | MariaDB | 5.5 以上（utf8mb4 需 5.5.3+） | `mysql --version` |
 | MariaDB 用戶端 | `mysql`、`mysqldump`（建帳號、備份腳本用） | `which mysql mysqldump` |
-| Apache | 2.2 或 2.4，開啟 `mod_rewrite` 不需要；`mod_headers` 選用 | `httpd -v` |
+| Apache | 2.2 或 2.4，需要 `mod_rewrite`；`mod_headers` 選用 | `httpd -v`、`httpd -M` |
 | Python | 2.7（設定檢查腳本） | `python -V` |
 | 其他 | `bash`、`curl` 或可從外網複製檔案 | |
 
@@ -21,10 +40,20 @@
 ## 2. 放置程式
 
 ```bash
-cp -R AISLE /var/www/aisle
-cd /var/www/aisle
-chmod +x scripts/shell/*.sh scripts/python/*.py
+cd /var/www/html
+git clone -b main https://github.com/bboysevenwu/AISLE.git aisle
+cd /var/www/html/aisle
 ```
+
+主機不能連 GitHub 時，在其他電腦 clone 或下載 ZIP 後整包複製到 `/var/www/html/aisle/`。腳本在 git 裡已設為可執行，若是用 ZIP 複製則補一行 `chmod +x scripts/shell/*.sh scripts/python/*.py`。
+
+之後更新程式：
+
+```bash
+cd /var/www/html/aisle && git pull origin main
+```
+
+`config/app.ini` 不在版控內，`git pull` 不會覆蓋它。
 
 ## 3. 建立資料庫與資料表
 
@@ -62,7 +91,7 @@ vi config/app.ini
 | 區段 | 項目 | 填寫 |
 |---|---|---|
 | `[app]` | `debug` | 正式環境 `0` |
-| `[app]` | `base_url` | 網站在網域根目錄留空 `""`；放在子目錄（例 `http://host/aisle/`）填 `"/aisle"` |
+| `[app]` | `base_url` | **`"/D1C1/aisle"`**（瀏覽器看到的路徑，要包含 proxy 前綴 `/D1C1`，結尾不加 `/`） |
 | `[database]` | `user` / `password` | 第 4 步建立的 `aisle_app` 與密碼 |
 | `[security]` | `cookie_secure` | 使用 HTTPS 時設 `1` |
 
@@ -99,8 +128,8 @@ bash scripts/shell/fetch_vendor.sh
 ## 10. 設定目錄權限
 
 ```bash
-chown -R root:apache /var/www/aisle
-chown -R apache:apache storage
+chown -R root:apache /var/www/html/aisle
+chown -R apache:apache /var/www/html/aisle/storage
 chmod -R 775 storage
 ```
 
@@ -108,42 +137,54 @@ chmod -R 775 storage
 
 ## 11. 設定 Apache
 
-**建議：DocumentRoot 指向 `public/`**，其他目錄完全不對外。
+程式放在 `/var/www/html/aisle/`，靠專案根目錄的 `.htaccess` 把請求轉進 `public/`，所以需要：
 
-```apache
-<VirtualHost *:80>
-    ServerName aisle.example.local
-    DocumentRoot /var/www/aisle/public
+1. 開啟 `mod_rewrite`：
+   ```bash
+   httpd -M | grep rewrite        # Debian/Ubuntu：a2enmod rewrite
+   ```
+2. 允許 `/var/www/html/aisle` 使用 `.htaccess`（寫在 `httpd.conf` 或 `conf.d/aisle.conf`）：
+   ```apache
+   <Directory /var/www/html/aisle>
+       AllowOverride All
+   </Directory>
+   ```
+3. 套用設定：
+   ```bash
+   apachectl configtest && apachectl graceful
+   ```
 
-    <Directory /var/www/aisle/public>
-        AllowOverride All
-        # Apache 2.4
-        Require all granted
-        # Apache 2.2 改用：
-        # Order allow,deny
-        # Allow from all
-    </Directory>
-</VirtualHost>
-```
+沒有 `mod_rewrite` 時，根目錄 `.htaccess` 會拒絕整個 `/aisle/`（避免設定檔外洩），網站會是 403。
 
-無法修改 DocumentRoot 時（例如只能放在既有網站的子目錄）：保留專案根目錄的 `.htaccess`，它會擋掉 `config/`、`core/`、`modules/` 等目錄，只開放 `public/`；同時把第 6 步的 `base_url` 設為 `"/aisle/public"`。這種方式需要 `AllowOverride All`。
+> 另一種做法：若可以為 AISLE 開一個獨立的 VirtualHost，可把 `DocumentRoot` 直接指向 `/var/www/html/aisle/public`，此時根目錄 `.htaccess` 不會被讀到，`base_url` 依對外路徑調整。
+
+## 12. 確認網址與敏感檔案
+
+先在主機上直接測（不經 proxy，路徑沒有 `/D1C1`）：
 
 ```bash
-apachectl configtest && apachectl graceful
+curl -I http://localhost/aisle/login.php             # 200
+curl -I http://localhost/aisle/config/app.ini        # 404（不可是 200）
+curl -I http://localhost/aisle/core/bootstrap.php    # 404
 ```
 
-## 12. 確認敏感檔案無法下載
+再從自己的電腦經 proxy 測：
 
 ```bash
-curl -I http://aisle.example.local/config/app.ini        # 應回 404（config/ 不在網站目錄內）
-curl -I http://aisle.example.local/index.php             # 應回 302 → login.php
+P=http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle
+curl -I $P/                      # 302，Location 為 /D1C1/aisle/login.php
+curl -I $P/login.php             # 200，Set-Cookie 的 path=/D1C1/aisle/
+curl -I $P/assets/css/matrix.css # 200
+curl -I $P/config/app.ini        # 404
 ```
 
-（使用子目錄方式時改測 `http://host/aisle/config/app.ini`，應回 403。）
+（proxy 需要登入驗證時，用瀏覽器開啟 `$P/` 確認會跳到登入頁、畫面有綠色樣式即可。）
+
+注意：`base_url` 設成 `/D1C1/aisle` 後，網頁內的連結都帶 `/D1C1` 前綴，**直接連主機 `http://<主機>/aisle/` 時頁面能開但連結會失效**，這是正常的，請一律從 proxy 網址使用。若 proxy 轉址後出現 `/D1C1/D1C1/...` 或少了 `/D1C1`，代表 proxy 對 `Location` 標頭有另外改寫，請告知 proxy 管理者或改 `base_url`。
 
 ## 13. 首次登入
 
-1. 開啟網站，會自動導向 `login.php`
+1. 開啟 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`，會自動導向 `login.php`
 2. 以 `admin` / `Neo@Zion2026` 登入
 3. 系統強制進入「個人設定」修改密碼，改完才能使用其他功能
 
@@ -152,7 +193,7 @@ curl -I http://aisle.example.local/index.php             # 應回 302 → login.
 1. 登出後到 `register.php`，用一個 `[ee_accounts]` 名單內的帳號註冊 → 應顯示身份 EE
 2. 再用名單外的帳號註冊 → 應顯示 PE（或依第 7 步設定被拒絕）
 3. 分別登入，確認左側選單只出現 `[access]` 中該身份的頁面
-4. 以 EE 帳號直接輸入 PE 頁面網址（例 `index.php?m=pe_recipe`）→ 應顯示 403
+4. 以 EE 帳號直接輸入 PE 頁面網址（例 `/D1C1/aisle/index.php?m=pe_recipe`）→ 應顯示 403
 5. 以 admin 登入「使用者管理」，確認剛註冊的帳號與身份正確
 
 也可用指令直接建立帳號（建立後首次登入需改密碼）：
@@ -163,7 +204,7 @@ bash scripts/shell/create_user.sh ee_chen EE "陳工程師"
 
 ## 15.（選用）接入既有網站的舊頁面
 
-1. 把舊頁面放到 `public/` 底下，例如 `public/legacy/old_report.php`
+1. 把舊頁面放到 `public/` 底下，例如 `public/legacy/old_report.php`（網址為 `/D1C1/aisle/legacy/old_report.php`）
 2. 在檔案第一行加入（依層數調整 `../`）：
    ```php
    <?php require_once dirname(__FILE__) . '/../../core/auth_check.php'; ?>
@@ -187,7 +228,7 @@ crontab -e
 ```
 
 ```cron
-0 2 * * * /var/www/aisle/scripts/shell/backup_db.sh >> /var/www/aisle/storage/logs/backup.log 2>&1
+0 2 * * * /var/www/html/aisle/scripts/shell/backup_db.sh >> /var/www/html/aisle/storage/logs/backup.log 2>&1
 ```
 
 備份檔放在 `storage/backups/`，預設保留 14 天。先手動執行一次 `bash scripts/shell/backup_db.sh` 確認能成功。

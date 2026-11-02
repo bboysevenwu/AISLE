@@ -15,6 +15,15 @@ function js($value)
     return json_encode($value, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
 }
 
+/**
+ * 網站對外的路徑前綴（app.ini 的 base_url，去掉結尾的 /）
+ * 經過 proxy 時要包含 proxy 的前綴，例如 "/D1C1/aisle"
+ */
+function base_url()
+{
+    return rtrim((string) Config::get('app', 'base_url', ''), '/');
+}
+
 /** 產生站內網址：url('ee_equipment', 'status', array('id' => 3)) */
 function url($module, $action = 'index', $params = array())
 {
@@ -23,20 +32,20 @@ function url($module, $action = 'index', $params = array())
         $query['a'] = $action;
     }
     $query = array_merge($query, $params);
-    return Config::get('app', 'base_url', '') . '/index.php?' . http_build_query($query);
+    return base_url() . '/index.php?' . http_build_query($query);
 }
 
 /** public/ 底下獨立頁面的網址：page_url('login.php') */
 function page_url($file, $params = array())
 {
-    $url = Config::get('app', 'base_url', '') . '/' . ltrim($file, '/');
+    $url = base_url() . '/' . ltrim($file, '/');
     return $params ? $url . '?' . http_build_query($params) : $url;
 }
 
 /** 靜態資源網址 */
 function asset($path)
 {
-    return Config::get('app', 'base_url', '') . '/assets/' . ltrim($path, '/');
+    return base_url() . '/assets/' . ltrim($path, '/');
 }
 
 /** 取得陣列值，取代 PHP 7 的 ?? 運算子 */

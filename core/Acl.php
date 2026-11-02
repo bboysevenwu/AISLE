@@ -4,6 +4,7 @@
  *   [roles]        身份清單
  *   [access]       身份 → 可用頁面清單（"*" = 全部）
  *   [page.<代號>]  頁面標題、路由、選單設定、動作層級限制
+ *   [group.<代號>] 選單分類（標題、排序、圖示、預設展開），頁面以 group = "<代號>" 歸類
  * 這個類別只負責「讀設定、回答問題」，新增頁面不需要修改它。
  */
 class Acl
@@ -12,6 +13,7 @@ class Acl
     private static $roles = array();
     private static $access = array();
     private static $pages = array();
+    private static $groups = array();
 
     public static function init($ini)
     {
@@ -22,6 +24,21 @@ class Acl
         $access = array_get($ini, 'access', array());
         foreach (self::$roles as $role => $label) {
             self::$access[$role] = self::splitList(array_get($access, $role, ''));
+        }
+
+        self::$groups = array();
+        foreach ($ini as $section => $values) {
+            if (strpos($section, 'group.') !== 0) {
+                continue;
+            }
+            $key = substr($section, 6);
+            self::$groups[$key] = array(
+                'key'   => $key,
+                'title' => array_get($values, 'title', $key),
+                'order' => (int) array_get($values, 'order', 50),
+                'icon'  => array_get($values, 'icon', '+'),
+                'open'  => (bool) array_get($values, 'open', false),
+            );
         }
 
         self::$pages = array();
@@ -40,6 +57,7 @@ class Acl
                 'order'   => (int) array_get($values, 'order', 50),
                 'menu'    => (bool) array_get($values, 'menu', true),
                 'icon'    => array_get($values, 'icon', '>'),
+                'group'   => trim((string) array_get($values, 'group', '')),
                 'route'   => $route,
                 'actions' => array(),
             );
@@ -177,5 +195,44 @@ class Acl
             return $a['order'] - $b['order'];
         });
         return $menu;
+    }
+
+    /**
+     * 把 menuFor() 的平面清單整理成兩層選單（給 layout 用）
+     * 回傳的每一項是頁面，或是 is_group = true 的分類（children 為頁面清單）。
+     * 分類依 [group.xxx] 的 order 和其他頁面一起排序；該身份在分類裡沒有任何頁面時不會出現。
+     * 頁面寫了 group 但沒有對應的 [group.xxx] 時，以代號當標題、以第一個頁面的 order 排序。
+     */
+    public static function menuTree($menu, $current = '')
+    {
+        $tree = array();
+        $groups = array();
+        foreach ($menu as $p) {
+            $g = isset($p['group']) ? $p['group'] : '';
+            if ($g === '') {
+                $p['is_group'] = false;
+                $tree[] = $p;
+                continue;
+            }
+            if (!isset($groups[$g])) {
+                $groups[$g] = isset(self::$groups[$g]) ? self::$groups[$g] : array(
+                    'key' => $g, 'title' => $g, 'order' => $p['order'], 'icon' => '+', 'open' => false,
+                );
+                $groups[$g]['is_group'] = true;
+                $groups[$g]['active'] = false;
+                $groups[$g]['children'] = array();
+            }
+            $groups[$g]['children'][] = $p;
+            if ($p['key'] === $current) {
+                $groups[$g]['active'] = true;
+            }
+        }
+        foreach ($groups as $g) {
+            $tree[] = $g;
+        }
+        usort($tree, function ($a, $b) {
+            return $a['order'] - $b['order'];
+        });
+        return $tree;
     }
 }

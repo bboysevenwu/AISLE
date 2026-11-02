@@ -47,7 +47,9 @@ AISLE/
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
 ├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
-│   └── ee_daily_check.php     #   範例：只有 EE
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
 ├── templates/
 │   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
 │   ├── error.php
@@ -62,7 +64,7 @@ AISLE/
 │   └── assets/
 │       ├── css/matrix.css     # 駭客任務主題
 │       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
-│       ├── js/app.js          # jQuery 共用：CSRF、打字機效果、時鐘
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
 │       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
 │       └── vendor/            # jquery-1.12.4.min.js（執行 fetch_vendor.sh 下載）
 ├── scripts/
@@ -121,15 +123,29 @@ ADMIN = "系統管理員"
 
 ; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
 [access]
-EE    = "dashboard, shared_report, ee_equipment, ee_daily_check, profile"
-PE    = "dashboard, shared_report, pe_recipe, pe_notice, profile"
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
 ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
 
 ; ★ 頁面與路由
 [page.shared_report]
-title = "共用報表 // REPORTS"
+title = "Report1 // 綜合報表"
 route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
 action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
 
 [page.ee_daily_check]
 title = "每日點檢 // DAILY CHECK"
@@ -139,6 +155,8 @@ route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
 title = "製程公告 // NOTICE"
 route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
 ```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
 
 `route` 有三種寫法：
 
@@ -178,7 +196,8 @@ auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出�
 | 頁面 | EE | PE | ADMIN |
 |---|:-:|:-:|:-:|
 | 主控台 dashboard | ✓ | ✓ | ✓ |
-| 共用報表 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
 | 個人設定 profile | ✓ | ✓ | ✓ |
 | 設備狀態 ee_equipment | ✓ | | ✓ |
 | 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
@@ -248,6 +267,7 @@ current_user();  current_role();  is_logged_in();
 1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
 2. 在 `[access]` 把頁面代號加進能使用它的身份
 3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
 
 例：新增一個 EE、PE 都能看的聯絡人頁面
 

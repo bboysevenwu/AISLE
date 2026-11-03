@@ -4,6 +4,7 @@ storage/backups/*
 !storage/logs/.gitkeep
 !storage/backups/.gitkeep
 .DS_Store
+public/assets/vendor/*.js
 
 # Python
 __pycache__/

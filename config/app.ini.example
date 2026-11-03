@@ -35,3 +35,12 @@ lock_minutes     = 15
 session_idle     = 1800
 ; HTTPS 環境請設為 1
 cookie_secure    = 0
+
+[chart_demo]
+; 圖表 Demo 頁的資料來源（見 modules/chart_demo/ChartDataSource.php）
+;   sample  內建範例資料（預設）
+;   db      PHP 直接查 MariaDB，需先實作 ChartDataSource.php 的「部署者實作區」
+;   script  呼叫 scripts/python/chart_data.py 取得 JSON
+source = "sample"
+; source = script 時使用的 Python 2.7 直譯器
+python = "python"

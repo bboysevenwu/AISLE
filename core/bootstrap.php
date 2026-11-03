@@ -51,6 +51,8 @@ if (PHP_SAPI !== 'cli') {
     if (Config::get('security', 'cookie_secure', 0)) {
         ini_set('session.cookie_secure', '1');
     }
+    // Cookie 只送給本系統的路徑（經 proxy 時為 /D1C1/aisle/），不和同主機的其他網站混用
+    ini_set('session.cookie_path', base_url() . '/');
     session_name('AISLESESSID');
     session_start();
 }

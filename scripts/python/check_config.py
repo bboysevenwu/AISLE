@@ -10,6 +10,7 @@
       pages/xxx.php    → 檔案存在
       public/xxx.php   → 檔案存在，且第一段程式有 require auth_check.php
   - action.<動作> 的身份都有效
+  - 頁面的 group 有對應的 [group.xxx]，[group.xxx] 有被頁面使用（警告）
   - [register] 的 listed_role / unlisted_role 有效且不是超級身份 ("*")
   - [ee_accounts] 名單帳號格式正確、沒有重複
   - 沒有任何身份能使用的頁面、modules/ 下沒登記的資料夾（警告）
@@ -79,6 +80,16 @@ def main():
 
     roles = parser.options('roles') if parser.has_section('roles') else []
 
+    # 選單分類
+    groups = set()
+    for section in parser.sections():
+        if section.startswith('group.'):
+            key = section[len('group.'):]
+            if not RE_KEY.match(key):
+                errors.append('[%s] 分類代號格式錯誤' % section)
+            groups.add(key)
+    used_groups = set()
+
     # 頁面
     pages = {}
     for section in parser.sections():
@@ -103,11 +114,19 @@ def main():
                     head = fp.read(4000)
                 if 'auth_check.php' not in head:
                     errors.append('[%s] 獨立頁面 %s 沒有 require core/auth_check.php，任何人都能直接開啟' % (section, route))
+        group = get(section, 'group')
+        if group:
+            used_groups.add(group)
+            if group not in groups:
+                warnings.append('[%s] group "%s" 沒有對應的 [group.%s]，將以代號當分類標題' % (section, group, group))
         for opt in parser.options(section):
             if opt.startswith('action.'):
                 for r in split_list(parser.get(section, opt)):
                     if r not in roles:
                         errors.append('[%s] %s 的身份 %s 未定義' % (section, opt, r))
+
+    for g in sorted(groups - used_groups):
+        warnings.append('[group.%s] 沒有任何頁面使用' % g)
 
     # 身份 → 頁面
     access = {}

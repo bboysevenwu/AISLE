@@ -15,7 +15,7 @@
 
 ```
 AISLE/
-├── .htaccess                  # 若 DocumentRoot 無法指向 public/，阻擋其他目錄
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
 ├── .gitignore
 ├── README.md
 ├── config/
@@ -49,12 +49,14 @@ AISLE/
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
 ├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
-│   └── ee_daily_check.php     #   範例：只有 EE
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
 ├── templates/
 │   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
 │   ├── error.php
 │   └── auth/                  # 登入、註冊頁面樣板
-├── public/                    # ★ Web Server DocumentRoot 指向這裡
+├── public/                    # ★ 唯一對外的目錄
 │   ├── index.php              # 功能模組入口
 │   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
 │   ├── register.php           # 註冊（含帳號即時檢查）
@@ -64,7 +66,7 @@ AISLE/
 │   └── assets/
 │       ├── css/matrix.css     # 駭客任務主題
 │       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
-│       ├── js/app.js          # jQuery 共用：CSRF、打字機效果、時鐘
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
 │       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
 │       ├── js/chart_demo.js   # 圖表 Demo 頁的 ECharts 繪圖
 │       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
@@ -86,7 +88,7 @@ AISLE/
 └── docs/screenshots/          # 介面截圖
 ```
 
-只有 `public/` 對外開放，`config/`、`core/`、`modules/`、`pages/` 都在網站根目錄之外，設定檔與原始碼不會被直接下載。
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
 
 ---
 
@@ -125,15 +127,29 @@ ADMIN = "系統管理員"
 
 ; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
 [access]
-EE    = "dashboard, shared_report, ee_equipment, ee_daily_check, profile"
-PE    = "dashboard, shared_report, pe_recipe, pe_notice, profile"
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
 ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
 
 ; ★ 頁面與路由
 [page.shared_report]
-title = "共用報表 // REPORTS"
+title = "Report1 // 綜合報表"
 route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
 action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
 
 [page.ee_daily_check]
 title = "每日點檢 // DAILY CHECK"
@@ -143,6 +159,8 @@ route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
 title = "製程公告 // NOTICE"
 route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
 ```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
 
 `route` 有三種寫法：
 
@@ -182,7 +200,8 @@ auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出�
 | 頁面 | EE | PE | ADMIN |
 |---|:-:|:-:|:-:|
 | 主控台 dashboard | ✓ | ✓ | ✓ |
-| 共用報表 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
 | 個人設定 profile | ✓ | ✓ | ✓ |
 | 設備狀態 ee_equipment | ✓ | | ✓ |
 | 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
@@ -253,6 +272,7 @@ current_user();  current_role();  is_logged_in();
 1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
 2. 在 `[access]` 把頁面代號加進能使用它的身份
 3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
 
 例：新增一個 EE、PE 都能看的聯絡人頁面
 
@@ -330,17 +350,17 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
 
 1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
-2. 放置程式
+2. `git clone -b main` 到 `/var/www/html/aisle/`
 3. `mysql -u root -p < sql/schema.sql`
 4. 建立 `aisle_app` 資料庫帳號
 5. `mysql -u root -p < sql/seed.sql`
-6. `config/app.ini`（複製範本，填 DB 帳密、base_url）
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
 7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
 8. `python scripts/python/check_config.py`
 9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
 10. 目錄權限（storage 可寫）
-11. Apache DocumentRoot 指向 `public/`
-12. 確認設定檔無法從網址下載
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
 13. `admin` / `Neo@Zion2026` 首次登入並改密碼
 14. 註冊測試帳號，驗證 EE / PE 權限
 15.（選用）接入既有舊頁面

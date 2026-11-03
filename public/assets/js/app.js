@@ -21,6 +21,35 @@
         }
     });
 
+    // 側邊選單分類收折：狀態記在瀏覽器（localStorage），目前頁面所在的分類一律展開
+    var NAV_KEY = 'aisle.nav.';
+    function navStore(key, value) {
+        try {
+            if (value === undefined) {
+                return window.localStorage.getItem(NAV_KEY + key);
+            }
+            window.localStorage.setItem(NAV_KEY + key, value);
+        } catch (e) {
+            // 瀏覽器停用 localStorage 時只是不記憶狀態
+        }
+        return null;
+    }
+    $(function () {
+        $('.nav-group').each(function () {
+            var $g = $(this), saved = navStore($g.data('group'));
+            if (!$g.hasClass('has-active') && saved !== null) {
+                $g.toggleClass('open', saved === '1');
+            }
+            $g.children('.nav-group-toggle').attr('aria-expanded', $g.hasClass('open') ? 'true' : 'false');
+        });
+        $(document).on('click', '.nav-group-toggle', function (e) {
+            e.preventDefault();
+            var $g = $(this).closest('.nav-group').toggleClass('open'), open = $g.hasClass('open');
+            $(this).attr('aria-expanded', open ? 'true' : 'false');
+            navStore($g.data('group'), open ? '1' : '0');
+        });
+    });
+
     // 共用工具，模組 view 中可使用 AISLE.typewriter(...)
     // 用 extend 合併，保留頁面先載入的擴充（例如 auth.js 的 AISLE.auth）
     window.AISLE = $.extend(window.AISLE || {}, {

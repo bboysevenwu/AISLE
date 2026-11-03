@@ -13,6 +13,7 @@
 <meta name="login-url" content="<?php echo e(page_url('login.php')); ?>">
 <title><?php echo e($title); ?> :: <?php echo e(Config::get('app', 'name', 'AISLE')); ?></title>
 <link rel="stylesheet" href="<?php echo e(asset('css/matrix.css')); ?>">
+<script>document.documentElement.className += ' js';</script>
 <script src="<?php echo e(asset('vendor/jquery-1.12.4.min.js')); ?>"></script>
 </head>
 <body class="<?php echo $user ? 'has-user' : 'is-guest'; ?>">
@@ -40,12 +41,29 @@
     <nav class="sidebar">
         <div class="nav-title">// MODULES</div>
         <ul>
-        <?php foreach ($menu as $item): ?>
+        <?php foreach (Acl::menuTree($menu, $current) as $item): ?>
+            <?php if ($item['is_group']): ?>
+            <li class="nav-group<?php echo ($item['open'] || $item['active']) ? ' open' : ''; ?><?php echo $item['active'] ? ' has-active' : ''; ?>" data-group="<?php echo e($item['key']); ?>">
+                <a href="#" class="nav-group-toggle" role="button" aria-expanded="<?php echo ($item['open'] || $item['active']) ? 'true' : 'false'; ?>">
+                    <span class="nav-icon"><?php echo e($item['icon']); ?></span><?php echo e($item['title']); ?><span class="nav-caret"></span>
+                </a>
+                <ul class="nav-children">
+                <?php foreach ($item['children'] as $child): ?>
+                    <li class="<?php echo $child['key'] === $current ? 'active' : ''; ?>">
+                        <a href="<?php echo e($child['url']); ?>">
+                            <span class="nav-icon"><?php echo e($child['icon']); ?></span><?php echo e($child['title']); ?>
+                        </a>
+                    </li>
+                <?php endforeach; ?>
+                </ul>
+            </li>
+            <?php else: ?>
             <li class="<?php echo $item['key'] === $current ? 'active' : ''; ?>">
                 <a href="<?php echo e($item['url']); ?>">
                     <span class="nav-icon"><?php echo e($item['icon']); ?></span><?php echo e($item['title']); ?>
                 </a>
             </li>
+            <?php endif; ?>
         <?php endforeach; ?>
         </ul>
     </nav>

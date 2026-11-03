@@ -111,6 +111,15 @@ body.is-guest #matrix-rain { opacity: 0.55; }
 }
 .nav-icon { display: inline-block; width: 18px; color: #008f11; }
 
+/* 選單分類（config.ini 的 [group.xxx]），可收折；沒有 JS 時一律展開 */
+.sidebar .nav-group-toggle { position: relative; padding-right: 34px; color: #00ff41; }
+.nav-group.has-active > .nav-group-toggle { color: #00ff41; text-shadow: 0 0 6px #00ff41; }
+.nav-caret { position: absolute; right: 6px; top: 9px; color: #008f11; }
+.nav-caret:before { content: "[-]"; }
+.js .nav-group:not(.open) .nav-caret:before { content: "[+]"; }
+.js .nav-group:not(.open) > .nav-children { display: none; }
+.sidebar .nav-children li a { padding-left: 38px; font-size: 0.95em; }
+
 .main {
     flex: 1;
     min-width: 0;
@@ -339,6 +348,11 @@ input[type=date] {
     .sidebar li a { border-left: 0; border-bottom: 2px solid transparent; padding: 6px 12px; }
     .sidebar li.active a { border-bottom-color: #00ff41; }
     .nav-title { display: none; }
+    .sidebar .nav-group { display: flex; }
+    .sidebar .nav-children { display: flex; }
+    .sidebar .nav-children li a { padding-left: 12px; }
+    .sidebar .nav-group-toggle { padding-right: 12px; }
+    .nav-caret { position: static; margin-left: 4px; }
     .main { padding: 16px; }
     .hide-sm { display: none; }
     .topbar { padding: 8px 16px; }

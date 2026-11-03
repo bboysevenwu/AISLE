@@ -1,10 +1,25 @@
-# 若無法把 DocumentRoot 指向 public/，此檔阻擋直接存取 config/ core/ modules/ 等目錄
-# Apache 2.4
-<IfModule mod_authz_core.c>
-    Require all denied
+# 程式整包放在網站目錄底下（例 /var/www/html/aisle/）時使用：
+#   - 所有請求在內部轉進 public/，網址不需要出現 public/（/aisle/login.php → public/login.php）
+#   - config/ core/ modules/ 等目錄因此無法從網址存取（會被轉成 public/config/... → 404）
+# 需要 Apache 的 AllowOverride All 與 mod_rewrite。
+# DocumentRoot 直接指向 public/ 時，這個檔案不會被讀到。
+Options -Indexes
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # 已經在 public/ 底下的請求不再轉換（避免重複轉進 public/public/）
+    RewriteRule ^public/ - [L]
+    RewriteRule ^(.*)$ public/$1 [L]
 </IfModule>
-# Apache 2.2
-<IfModule !mod_authz_core.c>
-    Order deny,allow
-    Deny from all
+
+# 沒有 mod_rewrite 時整個目錄拒絕存取，避免設定檔外洩（public/.htaccess 會再開放 public/）
+<IfModule !mod_rewrite.c>
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
 </IfModule>

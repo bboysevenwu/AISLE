@@ -14,3 +14,15 @@ DirectoryIndex index.php
     Header set X-Frame-Options "SAMEORIGIN"
     Header set X-Content-Type-Options "nosniff"
 </IfModule>
+
+# apply_update.py 留下的備份檔（例 login.php_20261104_204500）與暫存檔不可從網址讀取，
+# 否則 Apache 會把舊版程式碼當純文字送出
+<FilesMatch "(_[0-9]{8}_[0-9]{6}|\.aisle-tmp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

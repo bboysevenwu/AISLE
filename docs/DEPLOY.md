@@ -55,6 +55,8 @@ cd /var/www/html/aisle && git pull origin main
 
 `config/app.ini` 不在版控內，`git pull` 不會覆蓋它。
 
+主機不能 `git pull`、也不能下載壓縮檔時，改用單檔更新，見第 18 步。
+
 ## 3. 建立資料庫與資料表
 
 ```bash
@@ -261,3 +263,77 @@ crontab -e
        --tools APAN01,APAP01 --params M1BF_Z_C1,M1BF_Z_C2
    ```
 6. 以 EE 或 PE 帳號登入開啟頁面，各圖都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中
+
+## 18. 不能 git pull 時的更新方式（單檔更新）
+
+公司內只能開 GitHub 網頁複製文字時使用。每次更新會在 repo 的 `updates/` 放一個純文字更新檔，裡面包含這次新增、修改、刪除的所有檔案；在主機上貼成一個檔案，執行一次 `apply_update.py` 就全部更新完。
+
+### 18-1. 第一次：把 apply_update.py 放到主機上
+
+在 GitHub 打開 `scripts/python/apply_update.py`，按 **Raw**，全選複製，然後在主機上：
+
+```bash
+cd /var/www/html/aisle
+cat > scripts/python/apply_update.py     # 貼上內容，最後按 Enter 再按 Ctrl-D
+chmod +x scripts/python/apply_update.py
+python scripts/python/apply_update.py -h # 出現用法說明即可
+```
+
+之後的更新檔若包含新版的 `apply_update.py`，會自動一起更新，不需要再手動複製。
+
+### 18-2. 每次更新
+
+1. 在 GitHub 打開 `updates/` 底下這次的更新檔（例 `update_20261104_7d8729a_xxxxxxx.txt`），按 **Raw**，`Ctrl-A` 全選、`Ctrl-C` 複製
+2. 貼到主機上，放在網站目錄以外（例 `~/`）：
+   ```bash
+   cat > ~/update.txt     # 貼上，最後按 Enter 再按 Ctrl-D
+   ```
+   用 `vi` 貼上時，先輸入 `:set paste` 再進入插入模式，否則 vi 會自動加縮排，內容會對不上
+3. 先預覽（不會改任何檔案）：
+   ```bash
+   cd /var/www/html/aisle
+   python scripts/python/apply_update.py ~/update.txt
+   ```
+   會列出每個檔案是 `[新增]`、`[覆蓋]`、`[刪除]` 還是 `[相同]`，以及備份檔名
+4. 確認後實際套用：
+   ```bash
+   python scripts/python/apply_update.py ~/update.txt --apply
+   ```
+5. 新增了 config.ini 的頁面時，照第 8 步執行 `check_config.py`
+
+### 腳本會做的檢查
+
+| 狀況 | 結果 |
+|---|---|
+| 複製時漏了一段、貼了兩次、更新檔被截斷 | 每個檔案都有 sha1，結尾有項目數；任何一個對不上就整批不寫入 |
+| vi 自動縮排、Windows 換行（CRLF）、UTF-8 BOM | 換行與 BOM 會自動處理；縮排被改會被 sha1 擋下 |
+| 主機上的檔案被直接改過（和更新前的版本不同） | 列為「衝突」並停止。確認可以覆蓋後加 `--force`（仍會先備份） |
+| 寫入到一半失敗（權限不足等） | 自動把已經改過的檔案還原 |
+| 同一個更新檔執行兩次 | 第二次全部顯示 `[相同]`，不會再改 |
+
+### 備份與還原
+
+- 被覆蓋的檔案先複製一份在原位置，檔名後面加上 `_<日期>_<時間>`，例 `core/Auth.php_20261104_204500`；被刪除的檔案改名成同樣格式，不會真的刪掉
+- 同一次執行共用同一個時間，紀錄寫在 `storage/logs/update_<時間>.json`
+- 根目錄與 `public/` 的 `.htaccess` 會擋掉這種備份檔名（403），避免舊版程式碼被當純文字下載
+- 查看紀錄與主機目前的版本：
+  ```bash
+  python scripts/python/apply_update.py --list
+  ```
+- 還原某次更新（先預覽，再加 `--apply`；`last` 代表最近一次）：
+  ```bash
+  python scripts/python/apply_update.py --rollback 20261104_204500
+  python scripts/python/apply_update.py --rollback 20261104_204500 --apply
+  ```
+  還原會把備份檔改回原檔名，並移除那次新增的檔案
+- 備份檔確認不需要後可以手動刪除，例 `find . -name '*_20261104_204500' -delete`
+
+### 產生更新檔（開發端）
+
+在有 git 的電腦上，指定主機目前的版本（`--list` 最後一筆的「版本 → 」右邊，或部署時的 commit）：
+
+```bash
+python scripts/python/make_update.py 7d8729a HEAD --note "這次更新的說明"
+```
+
+輸出到 `updates/update_<日期>_<舊>_<新>.txt`，commit 後即可在 GitHub 打開。預設不打包 `updates/` 與 `docs/screenshots/`；圖片等非文字檔會用 base64 存放。主機版本不明時可用 `--all` 打包全部檔案（不檢查衝突）。`config/app.ini` 不在 git 裡，不會被更新檔覆蓋。

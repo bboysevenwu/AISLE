@@ -1,0 +1,3937 @@
+#AISLE-UPDATE v1
+# AISLE single-file update. Apply on the server:
+#   python scripts/python/apply_update.py <this file>          (preview)
+#   python scripts/python/apply_update.py <this file> --apply  (apply)
+#@ from=5913b06a7b4eedee9ff229274bdf65501558a046
+#@ to=f0381c96bbc1543f72114c80f9b112a08218b055
+#@ created=2026-11-04 13:38:18
+#@ note=5913b06 → main：圖表 Demo、單檔更新工具
+#@@@ FILE .gitignore sha1=b34d5f05e02280abc1be65105daaea12a32106fd base=47fee0eaf1f90dd29302c24aac0d7020f92cb9d0 mode=644 enc=text nl=1
+config/app.ini
+storage/logs/*
+storage/backups/*
+!storage/logs/.gitkeep
+!storage/backups/.gitkeep
+.DS_Store
+public/assets/vendor/*.js
+
+# Python
+__pycache__/
+*.pyc
+#@@@ FILE .htaccess sha1=d7d5cfa76be3f3cd7fe17a59d8cb32da7f9f9221 base=1e385fe0ffff5e893175cfa36cf86551f51f1f05 mode=644 enc=text nl=1
+# 程式整包放在網站目錄底下（例 /var/www/html/aisle/）時使用：
+#   - 所有請求在內部轉進 public/，網址不需要出現 public/（/aisle/login.php → public/login.php）
+#   - config/ core/ modules/ 等目錄因此無法從網址存取（會被轉成 public/config/... → 404）
+# 需要 Apache 的 AllowOverride All 與 mod_rewrite。
+# DocumentRoot 直接指向 public/ 時，這個檔案不會被讀到。
+Options -Indexes
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # 已經在 public/ 底下的請求不再轉換（避免重複轉進 public/public/）
+    RewriteRule ^public/ - [L]
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+# apply_update.py 留下的備份檔（例 Auth.php_20261104_204500）與暫存檔一律拒絕存取
+<FilesMatch "(_[0-9]{8}_[0-9]{6}|\.aisle-tmp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# 沒有 mod_rewrite 時整個目錄拒絕存取，避免設定檔外洩（public/.htaccess 會再開放 public/）
+<IfModule !mod_rewrite.c>
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</IfModule>
+#@@@ FILE README.md sha1=776152d63707166ddc29efb86eaa9d3f5ccfa662 base=40c33a606bf5219aa241bc1754426944bca9cc87 mode=644 enc=text nl=1
+# AISLE 系統架構
+
+多功能、模組化的內部網頁系統。依「身份」(EE / PE) 決定每位使用者能看到哪些功能頁面，介面採用駭客任務 (The Matrix) 綠色終端機風格。
+
+| 層級 | 技術 | 備註 |
+|---|---|---|
+| 後端 | PHP 5.4 | 不使用 5.5+ 語法；資料庫一律 PDO prepared statement |
+| 資料庫 | MariaDB 5.5 / 10.x | InnoDB、utf8mb4 |
+| 輔助腳本 | Python 2.7、Bash | 權限檢查、建帳號、備份、產生模組 |
+| 前端 | HTML5、jQuery 1.12.4、原生 Canvas | 不需要 Node / 建置工具 |
+
+---
+
+## 1. 資料夾結構
+
+```
+AISLE/
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
+├── .gitignore
+├── README.md
+├── config/
+│   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
+│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   └── chart_demo.ini         # 圖表 Demo 的圖表分組、各區塊開關
+├── core/                      # 框架核心（一般開發不需修改）
+│   ├── bootstrap.php          # 載入類別、設定、Session
+│   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
+│   ├── App.php                # 路由：index.php?m=<頁面>&a=<動作>，依 config.ini 的 route 載入
+│   ├── Acl.php                # 讀 config.ini，判斷權限、產生選單
+│   ├── Auth.php               # 登入 / 登出 / 失敗鎖定 / 閒置登出
+│   ├── Registration.php       # 註冊驗證、依 EE 名單判定身份
+│   ├── guard.php              # 頁面內細部判斷 require_role() / has_role() / csrf_field() …
+│   ├── password_compat.php    # PHP 5.4 補上 password_hash() / password_verify()
+│   ├── Password.php           # 包裝 password_hash()，成本讀 app.ini
+│   ├── Security.php           # 安全亂數、常數時間比較、CSRF
+│   ├── Database.php           # PDO 單例 + 查詢捷徑
+│   ├── Controller.php         # 模組 Controller 基底類別
+│   ├── View.php               # 純 PHP 樣板
+│   └── helpers.php            # e() js() url() asset() audit() 等
+├── modules/                   # 功能模組（route = "module:<資料夾>"）
+│   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
+│   ├── dashboard/             # EE + PE
+│   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── profile/               # EE + PE（改密碼）
+│   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
+│   ├── pe_recipe/             # 只有 PE
+│   ├── chart_demo/            # EE + PE（圖表 Demo：ECharts + AJAX，見第 10 節）
+│   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
+│       ├── controller.php     #   class AdminUsersController extends Controller
+│       └── views/index.php    #   該模組的畫面
+├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
+├── templates/
+│   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
+│   ├── error.php
+│   └── auth/                  # 登入、註冊頁面樣板
+├── public/                    # ★ 唯一對外的目錄
+│   ├── index.php              # 功能模組入口
+│   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
+│   ├── register.php           # 註冊（含帳號即時檢查）
+│   ├── logout.php             # 登出（需 CSRF token）
+│   ├── legacy/pe_notice.php   # 獨立頁面範例（route = "public/..."），第一行 require auth_check.php
+│   ├── .htaccess
+│   └── assets/
+│       ├── css/matrix.css     # 駭客任務主題
+│       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
+│       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
+│       ├── js/chart_demo.js   # 圖表 Demo 頁的 ECharts 繪圖
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
+├── scripts/
+│   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/chart_data.py   # 圖表 Demo 的 Python 資料來源（source = script 時使用）
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
+│   └── shell/
+│       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
+│       ├── create_user.sh     # 建立使用者（互動輸入密碼）
+│       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
+├── sql/
+│   ├── schema.sql             # 建表
+│   └── seed.sql               # 初始管理員
+├── storage/
+│   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
+│   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
+└── docs/screenshots/          # 介面截圖
+```
+
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
+
+---
+
+## 2. 資料庫
+
+`sql/schema.sql` 建立三張表：
+
+| 資料表 | 用途 |
+|---|---|
+| `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
+| `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
+| `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+
+設計重點：
+
+- **`role` 用 VARCHAR 而非 ENUM**：新增身份只要改 `config.ini`，不必 `ALTER TABLE`。
+- **`password_hash` 留 255 長度**：目前 bcrypt 固定 60 字元，保留未來更換演算法的空間。
+- **`created_at` 用 DATETIME 由程式寫入**：MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 `CURRENT_TIMESTAMP`，這個位置留給 `updated_at`。
+- 有索引的 VARCHAR 欄位長度 ≤ 191，避免舊版 InnoDB 在 utf8mb4 下超過 767 bytes 索引上限。
+
+### 密碼雜湊（PHP 5.4 的做法）
+
+`password_hash()` / `password_verify()` 是 PHP 5.5 才有的函式。`core/password_compat.php` 在函式不存在時補上同名函式：以 `crypt()` 搭配 `$2y$` bcrypt（PHP ≥ 5.3.7 支援），鹽來自 `openssl_random_pseudo_bytes`，驗證時使用常數時間比較。因此程式碼照標準 API 寫 `password_hash($pw, PASSWORD_BCRYPT)`，在 PHP 5.4 與 5.5+ 都能執行，雜湊格式也完全相同；日後升級 PHP 只要刪掉這個檔案，舊密碼不需重設。
+
+---
+
+## 3. 身份 → 頁面權限與路由（`config/config.ini` + `core/auth_check.php`）
+
+### config.ini
+
+```ini
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
+ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
+
+; ★ 頁面與路由
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
+action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
+```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
+
+`route` 有三種寫法：
+
+| route | 程式位置 | 網址 | 適合 |
+|---|---|---|---|
+| `module:<資料夾>` | `modules/<資料夾>/controller.php` | `index.php?m=<代號>&a=<動作>` | 有多個動作、AJAX 的功能 |
+| `pages/xxx.php` | `pages/xxx.php` | `index.php?m=<代號>` | 單純頁面，不用寫 Controller，自動套用版面 |
+| `public/xxx.php` | `public/xxx.php` | 直接開啟該檔案 | 既有網站的舊頁面，只需在第一行加一行 require |
+
+### auth_check.php：所有頁面共用同一套檢查
+
+```
+使用者開啟頁面
+  ├─ index.php?m=xxx  →  App 路由 ──────────┐
+  └─ public/legacy/xxx.php（第一行 require）─┤
+                                             ▼
+                              core/auth_check.php
+                    1. 未登入           → 導向 login.php（AJAX 回 401）
+                    2. 頁面未登記在 config.ini → 403
+                    3. 首次登入未改密碼 → 導向個人設定
+                    4. 身份不在 [access] 清單、或不符 action.* → 403
+                                             ▼
+                          通過 → 依 route 載入頁面程式
+```
+
+既有頁面接上權限只要在第一行加入（依檔案位置調整 `../`）：
+
+```php
+<?php require_once dirname(__FILE__) . '/../../core/auth_check.php';
+// 通過檢查後才會執行到這裡；可用 $AUTH_USER、$AUTH_PAGE
+```
+
+auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出頁面代號，所以頁面本身不用寫自己的代號或身份。檔案若沒登記在 config.ini，即使加了 require 也一律拒絕，避免漏設權限的頁面被看到。獨立頁面送出 POST 時會檢查 CSRF，舊表單請加上 `<?php echo csrf_field(); ?>`；若一時無法修改，可把 `[settings] direct_page_csrf` 設為 `Off`。
+
+權限一律在伺服器端檢查，隱藏選單只是介面效果；直接輸入網址也會得到 403。目前範例的結果：
+
+| 頁面 | EE | PE | ADMIN |
+|---|:-:|:-:|:-:|
+| 主控台 dashboard | ✓ | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
+| 個人設定 profile | ✓ | ✓ | ✓ |
+| 設備狀態 ee_equipment | ✓ | | ✓ |
+| 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
+| 製程配方 pe_recipe | | ✓ | ✓ |
+| 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 Demo chart_demo | ✓ | ✓ | ✓ |
+| 使用者管理 admin_users | | | ✓ |
+
+修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
+
+---
+
+## 4. 註冊、登入、登出與權限檢查
+
+### 流程
+
+| 檔案 | 方法 | 行為 |
+|---|---|---|
+| `public/register.php` | GET | 註冊頁 |
+| | GET `?check_account=xxx`（AJAX） | 回傳帳號是否可用 |
+| | POST | 驗證 → 依 EE 名單判定身份 → 寫入 `users`，並在 `audit_logs` 記錄身份來源 |
+| `public/login.php` | GET / POST | 驗證帳密，成功後 `session_regenerate_id()` 並把使用者與身份寫入 `$_SESSION['user']` |
+| `public/logout.php` | POST（或 `?_csrf=`） | 清除 Session 與 Cookie，導回 `login.php?bye=1` |
+
+登入與註冊表單由 `js/auth.js` 以 jQuery 做即時驗證，並用 `$.ajax` 非同步送出，伺服器回 JSON。瀏覽器關閉 JavaScript 時表單照常以一般 POST 送出，伺服器端也會做完整驗證。
+
+### 註冊時的身份判定（`config.ini` 的 `[register]` 與 `[ee_accounts]`）
+
+註冊表單只填帳號、顯示名稱與密碼。身份在註冊當下依 INI 名單判定，直接寫入 `users.role`：
+
+```ini
+[register]
+enabled          = On
+require_approval = Off     ; On = 註冊後需管理員啟用
+listed_role      = "EE"    ; 名單上的帳號
+unlisted_role    = "PE"    ; 名單外的帳號；設為 "" 則名單外不能註冊
+
+[ee_accounts]              ; EE 正面表列，一行一個帳號，不分大小寫
+account[] = "neo"
+account[] = "trinity"
+```
+
+- 名單只在註冊時讀取。之後增減名單，不會改變已經註冊的人的身份，要調整請直接改資料庫的 `users.role`。
+- ADMIN 永遠無法經由註冊取得；`listed_role`、`unlisted_role` 若設成 superuser 角色會被忽略。
+- `audit_logs` 會記錄每個帳號的身份來源（`ee_accounts` 或 `unlisted_role`）。
+- 改完名單可以執行 `python scripts/python/check_config.py`，它會列出名單內容，並檢查帳號格式與重複。
+
+### 共用權限檢查函式（`core/guard.php`）
+
+```php
+require_login();                    // 未登入 → 導向 login.php；AJAX 回 401
+require_role('PE');                 // 身份不符 → 403（ADMIN 一律通過）
+require_role('EE,PE');              // 多個身份用逗號
+if (has_role('EE,PE')) { ... }      // 只判斷、不中止
+if (can_access('shared_report', 'export')) { ... }   // 依 [access] 與 [page.xxx] 判斷
+echo csrf_field();                  // 表單的 CSRF 隱藏欄位
+current_user();  current_role();  is_logged_in();
+```
+
+頁面層級的權限由 `auth_check.php` 處理；這些函式用在頁面內更細的判斷，例如只對某身份顯示某個按鈕。
+
+---
+
+## 5. 新增功能頁面
+
+只需要改 config.ini，核心程式（`core/`）不用動：
+
+1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
+2. 在 `[access]` 把頁面代號加進能使用它的身份
+3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
+
+例：新增一個 EE、PE 都能看的聯絡人頁面
+
+```ini
+[access]
+EE = "dashboard, ..., team_contacts"
+PE = "dashboard, ..., team_contacts"
+
+[page.team_contacts]
+title = "聯絡人 // CONTACTS"
+route = "pages/team_contacts.php"
+order = 60
+```
+
+需要多個動作或 AJAX 時用模組，腳本會產生程式骨架並自動完成上面第 2、3 步：
+
+```bash
+# 產生 modules/ee_alarm/，加入 EE、PE 的 [access] 清單並新增 [page.ee_alarm]
+bash scripts/shell/new_module.sh ee_alarm "EE,PE" "警報中心 // ALARMS" 35
+```
+
+產生的骨架：
+
+```php
+<?php
+class EeAlarmController extends Controller
+{
+    public function indexAction()          // index.php?m=ee_alarm
+    {
+        $this->render('index', array('message' => '...'));
+    }
+
+    public function listAction()           // index.php?m=ee_alarm&a=list
+    {
+        $rows = Database::fetchAll('SELECT ... WHERE x = ?', array($x));
+        $this->json(array('ok' => true, 'rows' => $rows));
+    }
+}
+```
+
+Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作')`、`isPost()`、`input()`、`query()`、`flash()`。View 中輸出變數一律用 `e($var)`；要放進 `<script>` 用 `js($var)`。
+
+---
+
+## 6. 安全機制
+
+- bcrypt 密碼雜湊，提高 `bcrypt_cost` 後使用者下次登入自動升級雜湊
+- 連續失敗 5 次鎖定 15 分鐘（`app.ini` 可調），帳號不存在時也執行一次 bcrypt，避免從回應時間猜出帳號
+- 登入成功 `session_regenerate_id()`，閒置 30 分鐘自動登出，Cookie 設 HttpOnly
+- 所有 POST（含 jQuery AJAX，透過 `X-CSRF-Token` 標頭）都檢查 CSRF token；登出也需要 token，避免被外部連結強制登出
+- 註冊無法取得 ADMIN 身份；可開啟 `require_approval` 讓新帳號需管理員啟用，或把 `unlisted_role` 設為空字串只開放名單內帳號註冊
+- 首次登入或被管理員重設密碼後強制改密碼
+- 所有 SQL 使用 PDO prepared statement，`ATTR_EMULATE_PREPARES = false`
+
+---
+
+## 7. PHP 5.4 相容規範
+
+可以用：`array()` 與 `[]` 短陣列、closure、`http_response_code()`、`JSON_UNESCAPED_UNICODE`、`session_status()`。
+
+不能用：
+
+| 不能用 | 版本 | 替代寫法 |
+|---|---|---|
+| `password_hash()` / `password_verify()` | 5.5 | 已由 `core/password_compat.php` 補上，可直接使用 |
+| `finally`、`yield`、`::class`、`array_column()`、`empty(函式())` | 5.5 | try/catch、迴圈、字串類別名稱、先存變數 |
+| `hash_equals()`、`...$args`、`const` 運算式 | 5.6 | `Security::equals()` |
+| `??`、`<=>`、純量 type hint、回傳型別、`random_bytes()` | 7.0 | `array_get()`、`Security::randomBytes()` |
+| `?->`、`match`、`fn() =>` | 8.0 | 一般寫法 |
+
+---
+
+## 8. 部署步驟
+
+完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
+
+1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
+2. `git clone -b main` 到 `/var/www/html/aisle/`
+3. `mysql -u root -p < sql/schema.sql`
+4. 建立 `aisle_app` 資料庫帳號
+5. `mysql -u root -p < sql/seed.sql`
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
+7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
+8. `python scripts/python/check_config.py`
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
+10. 目錄權限（storage 可寫）
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
+13. `admin` / `Neo@Zion2026` 首次登入並改密碼
+14. 註冊測試帳號，驗證 EE / PE 權限
+15.（選用）接入既有舊頁面
+16. 設定每日備份 crontab
+
+---
+
+## 9. 駭客任務主題
+
+| 元素 | 檔案 | 說明 |
+|---|---|---|
+| 數位雨背景 | `js/matrix-rain.js` | Canvas 半形片假名雨，約 20fps；系統設定「減少動態」時改為靜態畫面 |
+| CRT 掃描線 | `css/matrix.css` `.crt-overlay` | 全畫面細橫線疊層 |
+| 終端機面板 | `.panel` `.terminal` | 綠框黑底、亮綠標題列 |
+| 打字機效果 | `AISLE.typewriter()` | 登入頁標語、主控台訊息 |
+| 標題故障效果 | `.glitch` | 滑鼠移上時文字抖動 |
+| 狀態燈 | `.led-run/idle/down` | 綠、暗綠、閃爍紅 |
+| 身份徽章 | `.role-EE/PE/ADMIN` | EE 亮綠、PE 薄荷綠、ADMIN 紅藥丸 |
+
+色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
+
+截圖見 `docs/screenshots/`。
+
+---
+
+## 10. 圖表 Demo（chart_demo）
+
+資料視覺化頁面範本，網址 `index.php?m=chart_demo`，EE、PE 可用。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（含 7D / 30D / 90D 快捷）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
+
+### 圖表分組：`config/chart_demo.ini`
+
+```ini
+[chart.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+ymin   = 0                         ; Y 軸下限（三張圖共用）
+ymax   = 6                         ; Y 軸上限（三張圖共用）
+newest_ymax = 5                    ; 只改最新值排排站的上限
+
+[chart.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
+```
+
+- 每個 `[chart.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/chart_demo/ChartConfig.php` 檢查）
+
+### 資料格式與載入
+
+後端 `index.php?m=chart_demo&a=tbt&start=&end=` 回傳區間內全部機台、`chart_demo.ini` 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null 由 controller 統一處理，資料來源不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
+- 機型判斷：名稱含 `PAN` → 1980、含 `PAP` → 2000（`ChartDemoController::modelOf()`）
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視；查詢區間上限 366 天（`ChartDemoController::MAX_DAYS`）
+
+### 資料來源：`config/app.ini` 的 `[chart_demo] source`
+
+| source | 說明 | 部署者要做的事 |
+|---|---|---|
+| `sample`（預設） | 內建範例資料，不需資料庫 | 無 |
+| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」兩個方法（已附範例 SQL；長表用 `pivot()`、寬表用 `wide()` 轉換） |
+| `script` | 呼叫 `scripts/python/chart_data.py` 取得 JSON | 實作該腳本的「★ 部署者實作區」 |
+
+![chart_demo](docs/screenshots/chart_demo.png)
+#@@@ FILE config/app.ini.example sha1=c1bf4941f5b159296e4291a0bf893f1b78e1b506 base=e763d1f3cbca12d3fc05b04e61c517f49e2958ce mode=644 enc=text nl=1
+; =====================================================================
+; AISLE 主設定檔範本
+; 部署時複製為 config/app.ini 並填入實際值（app.ini 不要進版控）
+;   cp config/app.ini.example config/app.ini && chmod 640 config/app.ini
+; =====================================================================
+
+[app]
+name      = "AISLE"
+timezone  = "Asia/Taipei"
+; production 時請設為 0
+debug     = 0
+; 瀏覽器看到的網址路徑（不含主機名稱），結尾不加斜線
+; 經過 proxy 時要包含 proxy 的前綴：
+;   http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/  →  "/D1C1/aisle"
+;   直接連主機 http://host/aisle/                              →  "/aisle"
+;   DocumentRoot 指向 public/、網站在網域根目錄                 →  ""
+base_url  = "/D1C1/aisle"
+
+[database]
+host     = "127.0.0.1"
+port     = 3306
+name     = "aisle"
+user     = "aisle_app"
+password = "請改成強密碼"
+charset  = "utf8mb4"
+
+[security]
+; bcrypt 成本，10~12 之間；越高越安全但登入越慢
+bcrypt_cost      = 10
+; 連續失敗幾次後鎖定
+max_failed_login = 5
+; 鎖定分鐘數
+lock_minutes     = 15
+; 閒置幾秒自動登出
+session_idle     = 1800
+; HTTPS 環境請設為 1
+cookie_secure    = 0
+
+[chart_demo]
+; 圖表 Demo 頁的資料來源（見 modules/chart_demo/ChartDataSource.php）
+;   sample  內建範例資料（預設）
+;   db      PHP 直接查 MariaDB，需先實作 ChartDataSource.php 的「部署者實作區」
+;   script  呼叫 scripts/python/chart_data.py 取得 JSON
+source = "sample"
+; source = script 時使用的 Python 2.7 直譯器
+python = "python"
+#@@@ FILE config/chart_demo.ini sha1=ad45034f29bc96b917a52512b93cf53e7ee082ca base=- mode=644 enc=text nl=1
+; =====================================================================
+; 圖表 Demo（chart_demo）的圖表設定
+; ---------------------------------------------------------------------
+; 由 modules/chart_demo/ChartConfig.php 讀取，存檔後重新整理頁面即生效。
+;
+; 每個 [chart.<代號>] 是一組圖表：params 列出的參數畫在同一張圖上。
+; 頁面三個區塊會依本檔的順序，各自為每一組畫一張圖：
+;   single  單台機台趨勢          （上方選擇的那一台，每個參數一條線）
+;   newest  最新值排排站          （每台在區間內的最後一筆，每個參數一根長條）
+;   tbt     歷史趨勢排排站        （每台一個區段，每個參數一條線）
+; single / newest / tbt 設 Off 就不畫該組的那張圖，省略時為 On。
+;
+; 欄位：
+;   title   圖表標題
+;   params  參數名稱，逗號分隔，必須與後端資料 Data 裡的 key 一致（區分大小寫）
+;   unit    Y 軸名稱（選用，預設 "Data"）
+;   single / newest / tbt   On / Off
+;   ymin / ymax         Y 軸下限 / 上限（選用，套用到該組三張圖；不設或留空 = 自動）
+;   single_ymin / single_ymax、newest_ymin / newest_ymax、tbt_ymin / tbt_ymax
+;                       只設定某一區塊的上下限，優先於 ymin / ymax
+;   超出上下限的資料會被裁切，不會畫出圖外
+;
+; 寫法注意：字串一律加雙引號；<代號> 只能用小寫英文、數字、底線
+; =====================================================================
+
+[chart.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"
+single = On
+newest = On
+tbt    = On
+; 三張圖 Y 軸都是 0 ~ 6，最新值排排站另外設 0 ~ 5
+ymin   = 0
+ymax   = 6
+newest_ymax = 5
+
+[chart.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+single = On
+newest = Off
+tbt    = On
+; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymin = 0
+tbt_ymax = 6
+#@@@ FILE config/config.ini sha1=930ee7287594d391aaec8a37cb1a7a7db065a154 base=912d7460d849624c197720b843e9d3ecb5905516 mode=644 enc=text nl=1
+; =====================================================================
+; AISLE 功能頁面設定：身份 → 可用頁面清單、頁面路由、註冊名單
+; ---------------------------------------------------------------------
+; 由 core/Acl.php 以 parse_ini_file($file, true) 讀取，每次請求重新讀取，
+; 存檔後立即生效，不需重啟。
+;
+; 新增一個功能頁面只需要兩步，不必改任何核心程式：
+;   1. 在 [access] 把頁面代號加進可以使用它的身份
+;   2. 新增 [page.<頁面代號>] 區段，寫上 title 與 route
+;
+; 寫法注意：
+;   1. 字串一律加雙引號（含中文、空白、斜線、括號時不加引號會解析失敗）
+;   2. 不可使用 yes / no / true / false / null / none 當作 key
+;   3. 修改後可執行 python scripts/python/check_config.py 檢查
+; =====================================================================
+
+[settings]
+; 登入後預設進入的頁面
+default_page     = "dashboard"
+; 獨立頁面（route 位於 public/ 底下）送出 POST 時是否檢查 CSRF token
+; 既有頁面的表單若尚未加上 <?php echo csrf_field(); ?>，可先設為 Off
+direct_page_csrf = On
+
+; ---------------------------------------------------------------------
+; 身份定義：key 必須與 users.role 欄位值一致
+; ---------------------------------------------------------------------
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ---------------------------------------------------------------------
+; ★ 身份 → 可用頁面清單（逗號分隔的頁面代號）
+;   同一個頁面同時列在 EE 與 PE，就是兩種身份都能看
+;   "*" 代表全部頁面與全部動作（超級身份），註冊永遠無法取得
+;   沒列出的頁面一律拒絕
+; ---------------------------------------------------------------------
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile, chart_demo"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile, chart_demo"
+ADMIN = "*"
+
+; ---------------------------------------------------------------------
+; ★ 頁面與路由：[page.<頁面代號>]
+;   title   選單顯示名稱
+;   route   頁面程式位置，三種寫法：
+;             "module:<資料夾>"      modules/<資料夾>/controller.php（Controller 類別，可有多個動作）
+;             "pages/xxx.php"        一般 PHP 頁面，由 index.php 檢查權限後載入並套用版面
+;             "public/xxx.php"       獨立頁面（例如既有網站的舊頁面），使用者直接開啟，
+;                                    檔案第一行需 require core/auth_check.php
+;           省略 route 時等同 "module:<頁面代號>"
+;   order   選單排序，數字小的在前
+;   menu    是否出現在選單（Off = 隱藏頁，仍受權限控管）
+;   icon    選單前綴字元
+;   group   （選用）歸到哪個選單分類，填 [group.<分類代號>] 的代號
+;   action.<動作> = "EE,PE"   （選用）單一動作再限制身份，必須同時能使用此頁面
+; ---------------------------------------------------------------------
+
+; ---------------------------------------------------------------------
+; ★ 選單分類：[group.<分類代號>]（選用）
+;   多個頁面寫上相同的 group，就會收在同一個可收折的分類底下
+;   title   分類標題
+;   order   分類在選單中的位置（和沒有分類的頁面一起排序）；分類內的頁面依各自的 order 排序
+;   icon    分類前綴字元
+;   open    預設是否展開（On / Off）。使用者點開或收起後，瀏覽器會記住；
+;           目前所在頁面的分類一律展開
+;   權限仍由 [access] 決定：某身份在分類裡看不到任何頁面時，整個分類不會出現
+; ---------------------------------------------------------------------
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+icon  = "#"
+open  = Off
+
+
+[page.dashboard]
+title = "主控台 // DASHBOARD"
+route = "module:dashboard"
+order = 10
+menu  = On
+icon  = ">"
+
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"
+group = "report"
+order = 1
+menu  = On
+icon  = "#"
+; 兩種身份都能看報表，但只有 PE 可以匯出 CSV
+action.export = "PE"
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+menu  = On
+icon  = "#"
+
+[page.report_weekly]
+title = "Report3 // 週報"
+route = "pages/report_weekly.php"
+group = "report"
+order = 3
+menu  = On
+icon  = "#"
+
+[page.ee_equipment]
+title = "設備狀態 // EQUIPMENT"
+route = "module:ee_equipment"
+order = 30
+menu  = On
+icon  = "~"
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"
+order = 35
+menu  = On
+icon  = "+"
+
+[page.pe_recipe]
+title = "製程配方 // RECIPES"
+route = "module:pe_recipe"
+order = 40
+menu  = On
+icon  = "%"
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php"
+order = 45
+menu  = On
+icon  = "*"
+
+[page.profile]
+title = "個人設定 // PROFILE"
+route = "module:profile"
+order = 90
+menu  = On
+icon  = "@"
+
+[page.admin_users]
+title = "使用者管理 // OPERATORS"
+route = "module:admin_users"
+order = 99
+menu  = On
+icon  = "!"
+
+; ---------------------------------------------------------------------
+; 註冊與身份判定（由 core/Registration.php 讀取）
+;   註冊表單只填帳號、顯示名稱、密碼。身份在註冊當下依下方名單判定並寫入資料庫：
+;     帳號列在 [ee_accounts] → listed_role（EE）
+;     其他帳號               → unlisted_role（PE）；設為 "" 則名單外的人不能註冊
+;   之後修改名單不會改變已註冊者的身份，需要時請由管理員調整資料庫
+;   enabled          是否開放自行註冊
+;   require_approval On = 註冊後帳號停用，需管理員在「使用者管理」啟用
+; ---------------------------------------------------------------------
+[register]
+enabled          = On
+require_approval = Off
+listed_role      = "EE"
+unlisted_role    = "PE"
+
+; ---------------------------------------------------------------------
+; EE 正面表列：一行一個帳號，不分大小寫
+; ---------------------------------------------------------------------
+[ee_accounts]
+account[] = "neo"
+account[] = "trinity"
+account[] = "morpheus"
+
+[page.chart_demo]
+title = "圖表 Demo // CHARTS"
+route = "module:chart_demo"
+order = 50
+menu  = On
+icon  = "^"
+#@@@ FILE docs/DEPLOY.md sha1=1138baaa51f379b848cf25aec28814bf953155e3 base=5ecf95beb7aed5492850588412312bcda7a72afc mode=644 enc=text nl=1
+# AISLE 部署步驟
+
+以下指令以實際環境為例：
+
+| 項目 | 值 |
+|---|---|
+| 程式來源 | GitHub `bboysevenwu/AISLE` 的 `main` branch |
+| 部署位置 | `/var/www/html/aisle/`（Apache DocumentRoot 為 `/var/www/html`） |
+| 對外網址 | `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`（proxy 前綴 `/D1C1/`） |
+| Web Server 執行身份 | `apache`（Debian/Ubuntu 為 `www-data`） |
+
+網址的對應關係：
+
+```
+瀏覽器  http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/login.php
+  │ proxy 去掉 /D1C1 前綴後轉給主機
+主機    http://<主機>/aisle/login.php
+  │ /var/www/html/aisle/.htaccess 在內部轉進 public/
+檔案    /var/www/html/aisle/public/login.php
+```
+
+網址不會出現 `public/`；`config/`、`core/` 等目錄經由網址存取一律 404。
+
+---
+
+## 1. 確認主機環境
+
+| 項目 | 需求 | 確認指令 |
+|---|---|---|
+| PHP | 5.4（至少 5.3.7，bcrypt 需要） | `php -v` |
+| PHP 擴充 | `pdo_mysql`、`openssl`、`json`、`session` | `php -m` |
+| MariaDB | 5.5 以上（utf8mb4 需 5.5.3+） | `mysql --version` |
+| MariaDB 用戶端 | `mysql`、`mysqldump`（建帳號、備份腳本用） | `which mysql mysqldump` |
+| Apache | 2.2 或 2.4，需要 `mod_rewrite`；`mod_headers` 選用 | `httpd -v`、`httpd -M` |
+| Python | 2.7（設定檢查腳本） | `python -V` |
+| 其他 | `bash`、`curl` 或可從外網複製檔案 | |
+
+`php.ini` 確認：`date.timezone` 有設定、`session.save_path` 目錄可寫入、正式環境 `display_errors = Off`。
+
+## 2. 放置程式
+
+```bash
+cd /var/www/html
+git clone -b main https://github.com/bboysevenwu/AISLE.git aisle
+cd /var/www/html/aisle
+```
+
+主機不能連 GitHub 時，在其他電腦 clone 或下載 ZIP 後整包複製到 `/var/www/html/aisle/`。腳本在 git 裡已設為可執行，若是用 ZIP 複製則補一行 `chmod +x scripts/shell/*.sh scripts/python/*.py`。
+
+之後更新程式：
+
+```bash
+cd /var/www/html/aisle && git pull origin main
+```
+
+`config/app.ini` 不在版控內，`git pull` 不會覆蓋它。
+
+主機不能 `git pull`、也不能下載壓縮檔時，改用單檔更新，見第 18 步。
+
+## 3. 建立資料庫與資料表
+
+```bash
+mysql -u root -p < sql/schema.sql
+```
+
+建立 `aisle` 資料庫與 `users`、`login_logs`、`audit_logs` 三張表。MariaDB 低於 5.5.3 時，先把 schema.sql 裡的 `utf8mb4` 全部改成 `utf8`。
+
+## 4. 建立應用程式專用的資料庫帳號
+
+不要讓網站使用 root。以 root 登入 MariaDB 後執行（密碼自訂）：
+
+```sql
+CREATE USER 'aisle_app'@'localhost' IDENTIFIED BY '強密碼';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `aisle`.* TO 'aisle_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+## 5. 匯入初始管理員
+
+```bash
+mysql -u root -p < sql/seed.sql
+```
+
+建立帳號 `admin`，密碼 `Neo@Zion2026`（第 13 步首次登入時會被要求修改）。
+
+## 6. 設定 config/app.ini（主機與資料庫）
+
+```bash
+cp config/app.ini.example config/app.ini
+vi config/app.ini
+```
+
+| 區段 | 項目 | 填寫 |
+|---|---|---|
+| `[app]` | `debug` | 正式環境 `0` |
+| `[app]` | `base_url` | **`"/D1C1/aisle"`**（瀏覽器看到的路徑，要包含 proxy 前綴 `/D1C1`，結尾不加 `/`） |
+| `[database]` | `user` / `password` | 第 4 步建立的 `aisle_app` 與密碼 |
+| `[security]` | `cookie_secure` | 使用 HTTPS 時設 `1` |
+
+```bash
+chown root:apache config/app.ini
+chmod 640 config/app.ini
+```
+
+## 7. 設定 config/config.ini（身份、頁面、註冊名單）
+
+1. `[ee_accounts]`：把範例 `neo / trinity / morpheus` 換成實際的 EE 帳號，一行一個
+2. `[register]`：`unlisted_role` 決定名單外帳號的身份（`"PE"`，或 `""` 表示不開放註冊）；需要管理員審核時把 `require_approval` 設為 `On`
+3. `[access]` / `[page.*]`：確認每個身份可用的頁面。範例頁面 `ee_daily_check`、`pe_notice` 若不需要，從 `[access]` 移除即可
+4. 既有網站的舊頁面若要接入，見第 15 步
+
+## 8. 檢查設定
+
+```bash
+python scripts/python/check_config.py
+```
+
+最後一行出現 `[OK] config.ini 檢查通過` 才往下做。`admin_users 只有 * 身份能使用` 這個警告是正常的。
+
+## 9. 下載 jQuery、ECharts
+
+```bash
+bash scripts/shell/fetch_vendor.sh
+```
+
+主機不能連外網時，在可連外網的電腦下載以下檔案，複製到 `public/assets/vendor/`：
+
+| 下載網址 | 存成 |
+|---|---|
+| `https://code.jquery.com/jquery-1.12.4.min.js` | `jquery-1.12.4.min.js` |
+| `https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js` | `echarts-5.4.3.min.js` |
+
+ECharts 只有圖表 Demo 頁使用；沒放本機檔案時頁面會改從 CDN 載入，使用者的瀏覽器需要能連到 cdn.jsdelivr.net。
+
+## 10. 設定目錄權限
+
+```bash
+chown -R root:apache /var/www/html/aisle
+chown -R apache:apache /var/www/html/aisle/storage
+chmod -R 775 storage
+```
+
+`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用。
+
+## 11. 設定 Apache
+
+程式放在 `/var/www/html/aisle/`，靠專案根目錄的 `.htaccess` 把請求轉進 `public/`，所以需要：
+
+1. 開啟 `mod_rewrite`：
+   ```bash
+   httpd -M | grep rewrite        # Debian/Ubuntu：a2enmod rewrite
+   ```
+2. 允許 `/var/www/html/aisle` 使用 `.htaccess`（寫在 `httpd.conf` 或 `conf.d/aisle.conf`）：
+   ```apache
+   <Directory /var/www/html/aisle>
+       AllowOverride All
+   </Directory>
+   ```
+3. 套用設定：
+   ```bash
+   apachectl configtest && apachectl graceful
+   ```
+
+沒有 `mod_rewrite` 時，根目錄 `.htaccess` 會拒絕整個 `/aisle/`（避免設定檔外洩），網站會是 403。
+
+> 另一種做法：若可以為 AISLE 開一個獨立的 VirtualHost，可把 `DocumentRoot` 直接指向 `/var/www/html/aisle/public`，此時根目錄 `.htaccess` 不會被讀到，`base_url` 依對外路徑調整。
+
+## 12. 確認網址與敏感檔案
+
+先在主機上直接測（不經 proxy，路徑沒有 `/D1C1`）：
+
+```bash
+curl -I http://localhost/aisle/login.php             # 200
+curl -I http://localhost/aisle/config/app.ini        # 404（不可是 200）
+curl -I http://localhost/aisle/core/bootstrap.php    # 404
+```
+
+再從自己的電腦經 proxy 測：
+
+```bash
+P=http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle
+curl -I $P/                      # 302，Location 為 /D1C1/aisle/login.php
+curl -I $P/login.php             # 200，Set-Cookie 的 path=/D1C1/aisle/
+curl -I $P/assets/css/matrix.css # 200
+curl -I $P/config/app.ini        # 404
+```
+
+（proxy 需要登入驗證時，用瀏覽器開啟 `$P/` 確認會跳到登入頁、畫面有綠色樣式即可。）
+
+注意：`base_url` 設成 `/D1C1/aisle` 後，網頁內的連結都帶 `/D1C1` 前綴，**直接連主機 `http://<主機>/aisle/` 時頁面能開但連結會失效**，這是正常的，請一律從 proxy 網址使用。若 proxy 轉址後出現 `/D1C1/D1C1/...` 或少了 `/D1C1`，代表 proxy 對 `Location` 標頭有另外改寫，請告知 proxy 管理者或改 `base_url`。
+
+## 13. 首次登入
+
+1. 開啟 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`，會自動導向 `login.php`
+2. 以 `admin` / `Neo@Zion2026` 登入
+3. 系統強制進入「個人設定」修改密碼，改完才能使用其他功能
+
+## 14. 驗證身份與權限
+
+1. 登出後到 `register.php`，用一個 `[ee_accounts]` 名單內的帳號註冊 → 應顯示身份 EE
+2. 再用名單外的帳號註冊 → 應顯示 PE（或依第 7 步設定被拒絕）
+3. 分別登入，確認左側選單只出現 `[access]` 中該身份的頁面
+4. 以 EE 帳號直接輸入 PE 頁面網址（例 `/D1C1/aisle/index.php?m=pe_recipe`）→ 應顯示 403
+5. 以 admin 登入「使用者管理」，確認剛註冊的帳號與身份正確
+
+也可用指令直接建立帳號（建立後首次登入需改密碼）：
+
+```bash
+bash scripts/shell/create_user.sh ee_chen EE "陳工程師"
+```
+
+## 15.（選用）接入既有網站的舊頁面
+
+1. 把舊頁面放到 `public/` 底下，例如 `public/legacy/old_report.php`（網址為 `/D1C1/aisle/legacy/old_report.php`）
+2. 在檔案第一行加入（依層數調整 `../`）：
+   ```php
+   <?php require_once dirname(__FILE__) . '/../../core/auth_check.php'; ?>
+   ```
+3. 在 config.ini 登記：
+   ```ini
+   [access]
+   PE = "..., old_report"
+
+   [page.old_report]
+   title = "舊報表"
+   route = "public/legacy/old_report.php"
+   ```
+4. 舊頁面有 POST 表單時，在 `<form>` 內加上 `<?php echo csrf_field(); ?>`；暫時無法修改的話，把 `[settings] direct_page_csrf` 設為 `Off`
+5. 重新執行第 8 步的檢查
+
+## 16. 設定每日備份
+
+```bash
+crontab -e
+```
+
+```cron
+0 2 * * * /var/www/html/aisle/scripts/shell/backup_db.sh >> /var/www/html/aisle/storage/logs/backup.log 2>&1
+```
+
+備份檔放在 `storage/backups/`，預設保留 14 天。先手動執行一次 `bash scripts/shell/backup_db.sh` 確認能成功。
+
+## 17.（選用）圖表 Demo 接上實際資料
+
+圖表 Demo（`index.php?m=chart_demo`）預設使用範例資料，部署後即可看到畫面。接上實際資料：
+
+1. 編輯 `config/chart_demo.ini`：設定哪些參數畫在同一張圖（`params`）、各組是否顯示單台 / 最新值排排站 / 歷史趨勢排排站（`single` / `newest` / `tbt`），以及 Y 軸上下限（`ymin` / `ymax`，或 `tbt_ymin` 等只套用到單一區塊）。參數名稱必須與資料中的名稱完全一致
+2. 在 `config/app.ini` 加上（範本見 `app.ini.example` 的 `[chart_demo]`）：
+   ```ini
+   [chart_demo]
+   source = "db"
+   ```
+3. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`，註解內附範例 SQL：
+   - 資料表是「一列一個參數值」（例 `tool_data(tool_id, data_time, param, value)`）→ 查出後用 `self::pivot()` 轉換
+   - 資料表是「一列一個時間點、每個參數一個欄位」→ 查出後用 `self::wide()` 轉換
+4. 確認 `aisle_app` 對資料表有 `SELECT` 權限：
+   ```sql
+   GRANT SELECT ON `資料庫`.`資料表` TO 'aisle_app'@'localhost';
+   ```
+5. 要改用 Python 取資料時設 `source = "script"`，實作 `scripts/python/chart_data.py` 的部署者實作區；`python` 指定 Python 2.7 的路徑，並先測試：
+   ```bash
+   python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-07 \
+       --tools APAN01,APAP01 --params M1BF_Z_C1,M1BF_Z_C2
+   ```
+6. 以 EE 或 PE 帳號登入開啟頁面，各圖都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中
+
+## 18. 不能 git pull 時的更新方式（單檔更新）
+
+公司內只能開 GitHub 網頁複製文字時使用。每次更新會在 repo 的 `updates/` 放一個純文字更新檔，裡面包含這次新增、修改、刪除的所有檔案；在主機上貼成一個檔案，執行一次 `apply_update.py` 就全部更新完。
+
+### 18-1. 第一次：把 apply_update.py 放到主機上
+
+在 GitHub 打開 `scripts/python/apply_update.py`，按 **Raw**，全選複製，然後在主機上：
+
+```bash
+cd /var/www/html/aisle
+cat > scripts/python/apply_update.py     # 貼上內容，最後按 Enter 再按 Ctrl-D
+chmod +x scripts/python/apply_update.py
+python scripts/python/apply_update.py -h # 出現用法說明即可
+```
+
+之後的更新檔若包含新版的 `apply_update.py`，會自動一起更新，不需要再手動複製。
+
+### 18-2. 每次更新
+
+1. 在 GitHub 打開 `updates/` 底下這次的更新檔（例 `update_20261104_7d8729a_xxxxxxx.txt`），按 **Raw**，`Ctrl-A` 全選、`Ctrl-C` 複製
+2. 貼到主機上，放在網站目錄以外（例 `~/`）：
+   ```bash
+   cat > ~/update.txt     # 貼上，最後按 Enter 再按 Ctrl-D
+   ```
+   用 `vi` 貼上時，先輸入 `:set paste` 再進入插入模式，否則 vi 會自動加縮排，內容會對不上
+3. 先預覽（不會改任何檔案）：
+   ```bash
+   cd /var/www/html/aisle
+   python scripts/python/apply_update.py ~/update.txt
+   ```
+   會列出每個檔案是 `[新增]`、`[覆蓋]`、`[刪除]` 還是 `[相同]`，以及備份檔名
+4. 確認後實際套用：
+   ```bash
+   python scripts/python/apply_update.py ~/update.txt --apply
+   ```
+5. 新增了 config.ini 的頁面時，照第 8 步執行 `check_config.py`
+
+### 腳本會做的檢查
+
+| 狀況 | 結果 |
+|---|---|
+| 複製時漏了一段、貼了兩次、更新檔被截斷 | 每個檔案都有 sha1，結尾有項目數；任何一個對不上就整批不寫入 |
+| vi 自動縮排、Windows 換行（CRLF）、UTF-8 BOM | 換行與 BOM 會自動處理；縮排被改會被 sha1 擋下 |
+| 主機上的檔案被直接改過（和更新前的版本不同） | 列為「衝突」並停止。確認可以覆蓋後加 `--force`（仍會先備份） |
+| 寫入到一半失敗（權限不足等） | 自動把已經改過的檔案還原 |
+| 同一個更新檔執行兩次 | 第二次全部顯示 `[相同]`，不會再改 |
+
+### 備份與還原
+
+- 被覆蓋的檔案先複製一份在原位置，檔名後面加上 `_<日期>_<時間>`，例 `core/Auth.php_20261104_204500`；被刪除的檔案改名成同樣格式，不會真的刪掉
+- 同一次執行共用同一個時間，紀錄寫在 `storage/logs/update_<時間>.json`
+- 根目錄與 `public/` 的 `.htaccess` 會擋掉這種備份檔名（403），避免舊版程式碼被當純文字下載
+- 查看紀錄與主機目前的版本：
+  ```bash
+  python scripts/python/apply_update.py --list
+  ```
+- 還原某次更新（先預覽，再加 `--apply`；`last` 代表最近一次）：
+  ```bash
+  python scripts/python/apply_update.py --rollback 20261104_204500
+  python scripts/python/apply_update.py --rollback 20261104_204500 --apply
+  ```
+  還原會把備份檔改回原檔名，並移除那次新增的檔案
+- 備份檔確認不需要後可以手動刪除，例 `find . -name '*_20261104_204500' -delete`
+
+### 產生更新檔（開發端）
+
+在有 git 的電腦上，指定主機目前的版本（`--list` 最後一筆的「版本 → 」右邊，或部署時的 commit）：
+
+```bash
+python scripts/python/make_update.py 7d8729a HEAD --note "這次更新的說明"
+```
+
+輸出到 `updates/update_<日期>_<舊>_<新>.txt`，commit 後即可在 GitHub 打開。預設不打包 `updates/` 與 `docs/screenshots/`；圖片等非文字檔會用 base64 存放。主機版本不明時可用 `--all` 打包全部檔案（不檢查衝突）。`config/app.ini` 不在 git 裡，不會被更新檔覆蓋。
+#@@@ FILE modules/chart_demo/ChartConfig.php sha1=068fa3ad8342e17594dc287a33a1d0c2afa1d944 base=- mode=644 enc=text nl=1
+<?php
+/**
+ * 讀取 config/chart_demo.ini：哪些參數畫在同一張圖、各區塊是否顯示
+ *
+ * ChartConfig::groups() 回傳（依檔案順序）：
+ *   array(
+ *     array('id' => 'm1bf_z', 'title' => 'M1BF_Z', 'params' => array('M1BF_Z_C1', 'M1BF_Z_C2'),
+ *           'unit' => 'Data', 'single' => true, 'newest' => true, 'tbt' => true,
+ *           'limits' => array('single' => array('min' => 0, 'max' => 5), 'newest' => array(...), 'tbt' => array(...))),
+ *   min / max 為 null 表示自動
+ *     ...
+ *   )
+ */
+class ChartConfig
+{
+    private static $groups = null;
+
+    public static function file()
+    {
+        return AISLE_ROOT . '/config/chart_demo.ini';
+    }
+
+    public static function groups()
+    {
+        if (self::$groups !== null) {
+            return self::$groups;
+        }
+        $file = self::file();
+        if (!is_file($file)) {
+            throw new RuntimeException('找不到 config/chart_demo.ini');
+        }
+        $ini = parse_ini_file($file, true);
+        if ($ini === false) {
+            throw new RuntimeException('config/chart_demo.ini 解析失敗，請檢查引號與語法');
+        }
+
+        $groups = array();
+        foreach ($ini as $section => $conf) {
+            if (!preg_match('/^chart\.([a-z][a-z0-9_]{0,63})$/', $section, $m)) {
+                throw new RuntimeException('config/chart_demo.ini 區段名稱錯誤：[' . $section . ']，應為 [chart.<小寫代號>]');
+            }
+            $params = array();
+            foreach (explode(',', (string) array_get($conf, 'params', '')) as $p) {
+                $p = trim($p);
+                if ($p !== '' && !in_array($p, $params, true)) {
+                    $params[] = $p;
+                }
+            }
+            if (!$params) {
+                throw new RuntimeException('config/chart_demo.ini [' . $section . '] 沒有設定 params');
+            }
+            $groups[] = array(
+                'id'     => $m[1],
+                'title'  => (string) array_get($conf, 'title', $m[1]),
+                'params' => $params,
+                'unit'   => (string) array_get($conf, 'unit', 'Data'),
+                'single' => self::flag($conf, 'single'),
+                'newest' => self::flag($conf, 'newest'),
+                'tbt'    => self::flag($conf, 'tbt'),
+                'limits' => array(
+                    'single' => self::limits($conf, 'single', $section),
+                    'newest' => self::limits($conf, 'newest', $section),
+                    'tbt'    => self::limits($conf, 'tbt', $section),
+                ),
+            );
+        }
+        if (!$groups) {
+            throw new RuntimeException('config/chart_demo.ini 沒有任何 [chart.xxx] 圖表');
+        }
+        self::$groups = $groups;
+        return $groups;
+    }
+
+    /** 所有圖表用到的參數（不重複，依出現順序） */
+    public static function params()
+    {
+        $out = array();
+        foreach (self::groups() as $g) {
+            foreach ($g['params'] as $p) {
+                if (!in_array($p, $out, true)) {
+                    $out[] = $p;
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Y 軸上下限：<區塊>_ymin / <區塊>_ymax 優先，沒有時用整組的 ymin / ymax，都沒有（或空字串）為自動
+     */
+    private static function limits($conf, $kind, $section)
+    {
+        $out = array();
+        foreach (array('min', 'max') as $k) {
+            $v = null;
+            foreach (array($kind . '_y' . $k, 'y' . $k) as $key) {
+                if (array_key_exists($key, $conf) && trim((string) $conf[$key]) !== '') {
+                    $raw = trim((string) $conf[$key]);
+                    if (!is_numeric($raw)) {
+                        throw new RuntimeException('config/chart_demo.ini [' . $section . '] ' . $key . ' 必須是數字：' . $raw);
+                    }
+                    $v = (float) $raw;
+                    break;
+                }
+            }
+            $out[$k] = $v;
+        }
+        if ($out['min'] !== null && $out['max'] !== null && $out['min'] >= $out['max']) {
+            throw new RuntimeException('config/chart_demo.ini [' . $section . '] ' . $kind . ' 的 Y 軸下限必須小於上限');
+        }
+        return $out;
+    }
+
+    /** On / Off；未設定時為 On。parse_ini_file 會把 On 轉成 "1"、Off 轉成 "" */
+    private static function flag($conf, $key)
+    {
+        if (!array_key_exists($key, $conf)) {
+            return true;
+        }
+        $v = strtolower(trim((string) $conf[$key]));
+        return !($v === '' || $v === '0' || $v === 'off' || $v === 'false' || $v === 'no');
+    }
+}
+#@@@ FILE modules/chart_demo/ChartDataSource.php sha1=5e39507df2476becbd0f8ab2195f4ea7ab522c3a base=- mode=644 enc=text nl=1
+<?php
+/**
+ * chart_demo 的資料來源
+ *
+ * Controller 只呼叫這裡的兩個公開方法，回傳格式固定：
+ *   tools()                     array('APAN01', 'APAN02', ...)
+ *   series($tools, $params, $start, $end)
+ *       array(
+ *         'APAN01' => array(
+ *           'Date' => array('2026-01-01', '2026-01-02', ...),
+ *           'Data' => array('M1BF_Z_C1' => array(1.0, 2.0, ...), 'M1BF_Z_C2' => array(1.1, 2.1, ...), ...)
+ *         ),
+ *         ...
+ *       )
+ *   Data 裡每個參數的陣列與 Date 一一對應（同樣長度），該時間沒有值的放 null。
+ *   $params 是 config/chart_demo.ini 用到的全部參數，沒有的參數可以不回傳。
+ * 排序、型別轉換、空值處理都由 Controller 統一做，這裡回傳順序不拘。
+ *
+ * 資料來源由 config/app.ini 的 [chart_demo] source 決定（未設定時為 sample）：
+ *   sample  內建範例資料，不需資料庫，部署後即可看到畫面
+ *   db      PHP 直接查 MariaDB      → 實作下方「★ 部署者實作區 (db)」
+ *   script  呼叫 Python 2.7 腳本取得 JSON → 實作 scripts/python/chart_data.py 的 SQL 區塊
+ */
+class ChartDataSource
+{
+    public static function mode()
+    {
+        $mode = (string) Config::get('chart_demo', 'source', 'sample');
+        return in_array($mode, array('sample', 'db', 'script'), true) ? $mode : 'sample';
+    }
+
+    /** 全部機台代號 */
+    public static function tools()
+    {
+        switch (self::mode()) {
+            case 'db':
+                return self::dbTools();
+            case 'script':
+                $res = self::runScript(array('tools'));
+                return isset($res['tools']) && is_array($res['tools']) ? $res['tools'] : array();
+            default:
+                return self::sampleTools();
+        }
+    }
+
+    /** 指定機台、參數在 [$start, $end]（含兩端，Y-m-d）內的資料 */
+    public static function series($tools, $params, $start, $end)
+    {
+        switch (self::mode()) {
+            case 'db':
+                return self::dbSeries($tools, $params, $start, $end);
+            case 'script':
+                return self::runScript(array(
+                    'series', '--start', $start, '--end', $end,
+                    '--tools', implode(',', $tools), '--params', implode(',', $params),
+                ));
+            default:
+                return self::sampleSeries($tools, $params, $start, $end);
+        }
+    }
+
+    // =====================================================================
+    // ★ 部署者實作區 (db)：把下面兩個方法換成實際的 SQL
+    // ---------------------------------------------------------------------
+    // 範例假設資料表為「一列一個參數值」（依實際名稱、欄位修改）：
+    //   tool_data (tool_id VARCHAR(32), data_time DATETIME, param VARCHAR(64), value DOUBLE)
+    // 用 self::pivot() 轉成輸出格式。
+    // 若資料表是「一列一個時間點、每個參數一個欄位」（寬表），SELECT 那些欄位後用 self::wide() 轉換。
+    // 注意：
+    //   1. 一律用 Database::fetchAll($sql, $params) 的 prepared statement，
+    //      不要把參數串進 SQL 字串
+    //   2. 若資料不在 aisle 資料庫，可在 app.ini 加一個 [database] 以外的區段，
+    //      自行 new PDO(...) 連線，寫法參考 core/Database.php
+    //   3. aisle_app 帳號需要對該資料表有 SELECT 權限
+    // =====================================================================
+
+    private static function dbTools()
+    {
+        // TODO(部署者)：回傳全部機台代號
+        // $rows = Database::fetchAll('SELECT DISTINCT tool_id FROM tool_data');
+        // $tools = array();
+        // foreach ($rows as $r) {
+        //     $tools[] = $r['tool_id'];
+        // }
+        // return $tools;
+        throw new RuntimeException('chart_demo：source = db 尚未實作 dbTools()，見 modules/chart_demo/ChartDataSource.php');
+    }
+
+    private static function dbSeries($tools, $params, $start, $end)
+    {
+        // TODO(部署者)：回傳 $tools、$params 在期間內的資料
+        // $inT = implode(',', array_fill(0, count($tools), '?'));
+        // $inP = implode(',', array_fill(0, count($params), '?'));
+        // $rows = Database::fetchAll(
+        //     'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+        //        FROM tool_data
+        //       WHERE tool_id IN (' . $inT . ') AND param IN (' . $inP . ')
+        //         AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)',
+        //     array_merge($tools, $params, array($start, $end))
+        // );
+        // return self::pivot($rows, 'tool_id', 'd', 'param', 'value');
+        //
+        // 寬表寫法（參數名稱就是欄位名稱；欄位名稱不能用 ? 綁定，只能用 config 裡的參數並加反引號）：
+        // $cols = '`' . implode('`, `', $params) . '`';
+        // $rows = Database::fetchAll('SELECT tool_id, DATE_FORMAT(data_time, ...) AS d, ' . $cols . ' FROM ... WHERE ...', ...);
+        // return self::wide($rows, 'tool_id', 'd', $params);
+        throw new RuntimeException('chart_demo：source = db 尚未實作 dbSeries()，見 modules/chart_demo/ChartDataSource.php');
+    }
+
+    /**
+     * 「一列一個參數值」的資料列 → 輸出格式
+     * 同一台同一時間的不同參數合併成同一個 Date，缺少的參數補 null
+     */
+    public static function pivot($rows, $toolCol, $dateCol, $paramCol, $valueCol)
+    {
+        $tmp = array();     // tool => date => param => value
+        $params = array();  // tool => param => true
+        foreach ($rows as $r) {
+            $tool = (string) $r[$toolCol];
+            $tmp[$tool][(string) $r[$dateCol]][(string) $r[$paramCol]] = $r[$valueCol];
+            $params[$tool][(string) $r[$paramCol]] = true;
+        }
+        $out = array();
+        foreach ($tmp as $tool => $byDate) {
+            ksort($byDate);
+            $series = array('Date' => array_keys($byDate), 'Data' => array());
+            foreach (array_keys($params[$tool]) as $p) {
+                $series['Data'][$p] = array();
+                foreach ($byDate as $values) {
+                    $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+
+    /** 「一列一個時間點、每個參數一個欄位」的資料列 → 輸出格式 */
+    public static function wide($rows, $toolCol, $dateCol, $params)
+    {
+        $out = array();
+        foreach ($rows as $r) {
+            $tool = (string) $r[$toolCol];
+            if (!isset($out[$tool])) {
+                $out[$tool] = array('Date' => array(), 'Data' => array());
+                foreach ($params as $p) {
+                    $out[$tool]['Data'][$p] = array();
+                }
+            }
+            $out[$tool]['Date'][] = (string) $r[$dateCol];
+            foreach ($params as $p) {
+                $out[$tool]['Data'][$p][] = array_key_exists($p, $r) ? $r[$p] : null;
+            }
+        }
+        return $out;
+    }
+
+    // =====================================================================
+    // script：呼叫 scripts/python/chart_data.py，stdout 必須是 JSON
+    // app.ini [chart_demo] python 可指定直譯器路徑（預設 python）
+    // =====================================================================
+
+    private static function runScript($args)
+    {
+        $python = (string) Config::get('chart_demo', 'python', 'python');
+        $cmd = escapeshellcmd($python) . ' ' . escapeshellarg(AISLE_ROOT . '/scripts/python/chart_data.py');
+        foreach ($args as $a) {
+            $cmd .= ' ' . escapeshellarg($a);
+        }
+        $output = array();
+        $code = 0;
+        exec($cmd . ' 2>&1', $output, $code);
+        $text = implode("\n", $output);
+        if ($code !== 0) {
+            throw new RuntimeException('chart_data.py 執行失敗 (exit ' . $code . ')：' . substr($text, 0, 500));
+        }
+        $data = json_decode($text, true);
+        if (!is_array($data)) {
+            throw new RuntimeException('chart_data.py 輸出不是 JSON：' . substr($text, 0, 200));
+        }
+        return $data;
+    }
+
+    // =====================================================================
+    // sample：範例資料（固定演算法，同一天同一台每次都得到相同數值）
+    // =====================================================================
+
+    private static function sampleTools()
+    {
+        return array(
+            'APAN01', 'APAN02', 'APAN03', 'APAN04', 'APAN05', 'APAN06',
+            'APAP01', 'APAP02', 'APAP03', 'APAP04', 'APAP05', 'APAP06',
+        );
+    }
+
+    private static function sampleSeries($tools, $params, $start, $end)
+    {
+        $out = array();
+        $from = strtotime($start);
+        $to = strtotime($end);
+        foreach ($tools as $tool) {
+            $series = array('Date' => array(), 'Data' => array());
+            foreach ($params as $p) {
+                $series['Data'][$p] = array();
+            }
+            for ($t = $from; $t <= $to; $t += 86400) {
+                $day = date('Y-m-d', $t);
+                if (self::sampleValue($tool, '', $day) === null) {
+                    continue; // 這天停機
+                }
+                $series['Date'][] = $day;
+                foreach ($params as $p) {
+                    $series['Data'][$p][] = self::sampleValue($tool, $p, $day);
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+
+    /**
+     * 每台、每個參數有自己的基準值與週期；約 1/9 的日子整台沒有資料（模擬停機）
+     * $param = '' 時只用來判斷這天是否停機
+     */
+    private static function sampleValue($tool, $param, $day)
+    {
+        if ($param === '') {
+            return abs(crc32($tool . '|' . $day)) % 9 === 0 ? null : 0;
+        }
+        $h = abs(crc32($tool . '|' . $param . '|' . $day));
+        $seed = abs(crc32($tool));
+        // 同一台的參數走勢相近，各參數再加一點固定偏移
+        $base = 1.2 + ($seed % 300) / 100 + (abs(crc32($param)) % 60) / 100 - 0.3;
+        $n = floor(strtotime($day) / 86400);               // 絕對天數
+        $wave = 0.6 * sin($n / (5 + $seed % 7) + $seed % 10);
+        $noise = (($h % 1000) / 1000 - 0.5) * 0.5;
+        return round(max(0, $base + $wave + $noise), 3);
+    }
+}
+#@@@ FILE modules/chart_demo/controller.php sha1=10b686b1a1fda31e6b39632f0727db074c19429f base=- mode=644 enc=text nl=1
+<?php
+/**
+ * chart_demo 模組：資料視覺化範本（config.ini：EE、PE 可用）
+ *
+ *   index.php?m=chart_demo                                      頁面
+ *   index.php?m=chart_demo&a=tbt&start=&end=                    區間內全部機台的資料
+ *
+ * 頁面只呼叫 tbt 一次，三個區塊都從這份資料取得：
+ *   TBT 直接畫；single 取出單台；Newest_TBT 取每台在區間內的最後一筆
+ * 切換機台 / 機型只在瀏覽器端篩選，不再發 request；改日期區間才重新呼叫 tbt
+ *
+ * 回傳格式：
+ *   { "APAN01": { "Date": ["2026-01-01", ...],
+ *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... } }, ... }
+ * 機台依名稱自然排序，每台內部依時間排序；Data 只含 config/chart_demo.ini 用到的參數，
+ * 每個參數陣列與 Date 一樣長，沒有值的位置是 null。錯誤時回 HTTP 400 + {"ok":false,"error":"..."}
+ *
+ * 哪些參數畫在同一張圖、各區塊是否顯示：config/chart_demo.ini（ChartConfig.php 讀取）
+ * 取資料的程式在 ChartDataSource.php，部署時只需要改那個檔案
+ */
+require_once dirname(__FILE__) . '/ChartConfig.php';
+require_once dirname(__FILE__) . '/ChartDataSource.php';
+
+class ChartDemoController extends Controller
+{
+    /** 一次最多查詢的天數，避免一次撈太多資料 */
+    const MAX_DAYS = 366;
+    /** 預設顯示最近幾天 */
+    const DEFAULT_DAYS = 60;
+
+    public function indexAction()
+    {
+        $tools = $this->sortTools(ChartDataSource::tools());
+        $models = array();
+        foreach ($tools as $t) {
+            $models[$t] = self::modelOf($t);
+        }
+        $this->render('index', array(
+            'groups' => ChartConfig::groups(),
+            'tools'  => $tools,
+            'models' => $models,
+            'start'  => date('Y-m-d', strtotime('-' . (self::DEFAULT_DAYS - 1) . ' day')),
+            'end'    => date('Y-m-d'),
+            'source' => ChartDataSource::mode(),
+        ));
+    }
+
+    /** 所有機台在期間內的資料（三個區塊共用） */
+    public function tbtAction()
+    {
+        $range = $this->range();
+        if ($range === null) {
+            return;
+        }
+        $tools = $this->sortTools(ChartDataSource::tools());
+        $params = ChartConfig::params();
+        $data = $tools ? ChartDataSource::series($tools, $params, $range[0], $range[1]) : array();
+        $this->output($this->normalize($data, $tools, $params));
+    }
+
+    /**
+     * 機型判斷：名稱含 PAN → 1980，含 PAP → 2000，其他回傳 ''（只出現在 All）
+     * 規則改變時只要改這裡
+     */
+    public static function modelOf($tool)
+    {
+        $tool = strtoupper($tool);
+        if (strpos($tool, 'PAN') !== false) {
+            return '1980';
+        }
+        if (strpos($tool, 'PAP') !== false) {
+            return '2000';
+        }
+        return '';
+    }
+
+    // ------------------------------------------------------------------
+
+    /** 讀取並檢查 start / end，失敗時已輸出錯誤並回傳 null */
+    private function range()
+    {
+        $start = $this->query('start');
+        $end = $this->query('end');
+        if (!self::isDate($start) || !self::isDate($end)) {
+            $this->fail('日期格式需為 YYYY-MM-DD');
+            return null;
+        }
+        if ($start > $end) {
+            $this->fail('起始日期不可晚於結束日期');
+            return null;
+        }
+        $days = (strtotime($end) - strtotime($start)) / 86400 + 1;
+        if ($days > self::MAX_DAYS) {
+            $this->fail('查詢區間最多 ' . self::MAX_DAYS . ' 天');
+            return null;
+        }
+        return array($start, $end);
+    }
+
+    private static function isDate($s)
+    {
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m)) {
+            return false;
+        }
+        return checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+    }
+
+    private function sortTools($tools)
+    {
+        $tools = array_values(array_unique(array_map('strval', $tools)));
+        sort($tools, SORT_NATURAL | SORT_FLAG_CASE);
+        return $tools;
+    }
+
+    /**
+     * 統一整理資料來源的結果：
+     *   - 只保留 $tools 中的機台，並依 $tools 的順序輸出
+     *   - 每台依 Date 排序；Data 只保留 $params，依 $params 的順序輸出，缺少的參數整列補 null
+     *   - 數值轉成數字，不是數字的轉成 null；所有參數都是 null 的時間點丟掉
+     */
+    private function normalize($data, $tools, $params)
+    {
+        $out = array();
+        foreach ($tools as $tool) {
+            if (!isset($data[$tool]['Date'], $data[$tool]['Data'])
+                || !is_array($data[$tool]['Date']) || !is_array($data[$tool]['Data'])) {
+                continue;
+            }
+            $dates = array_values($data[$tool]['Date']);
+            $cols = array();
+            foreach ($params as $p) {
+                $cols[$p] = isset($data[$tool]['Data'][$p]) && is_array($data[$tool]['Data'][$p])
+                    ? array_values($data[$tool]['Data'][$p]) : array();
+            }
+            $rows = array();  // array(date, array(param => value))
+            foreach ($dates as $i => $date) {
+                $values = array();
+                $any = false;
+                foreach ($params as $p) {
+                    $v = null;
+                    if (isset($cols[$p][$i]) && is_numeric($cols[$p][$i])) {
+                        $v = (float) $cols[$p][$i];
+                        $any = true;
+                    }
+                    $values[$p] = $v;
+                }
+                if ($any) {
+                    $rows[] = array((string) $date, $values);
+                }
+            }
+            if (!$rows) {
+                continue;
+            }
+            usort($rows, array('ChartDemoController', 'cmpRow'));
+            $series = array('Date' => array(), 'Data' => array());
+            foreach ($params as $p) {
+                $series['Data'][$p] = array();
+            }
+            foreach ($rows as $r) {
+                $series['Date'][] = $r[0];
+                foreach ($params as $p) {
+                    $series['Data'][$p][] = $r[1][$p];
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+
+    public static function cmpRow($a, $b)
+    {
+        return strcmp($a[0], $b[0]);
+    }
+
+    /** 輸出 JSON；沒有資料時輸出 {} 而不是 [] */
+    private function output($data)
+    {
+        $this->json($data ? $data : new stdClass());
+    }
+
+    private function fail($message)
+    {
+        $this->json(array('ok' => false, 'error' => $message), 400);
+    }
+}
+#@@@ FILE modules/chart_demo/views/index.php sha1=159e69ed7f95f2d5cef3db05f462e63c8740558a base=- mode=644 enc=text nl=1
+<?php
+// ECharts：public/assets/vendor/ 有檔案就用本機的（內網主機），否則走 CDN
+$echartsLocal = 'vendor/echarts-5.4.3.min.js';
+$echartsSrc = is_file(AISLE_ROOT . '/public/assets/' . $echartsLocal)
+    ? asset($echartsLocal)
+    : 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js';
+?>
+<div class="panel">
+    <div class="panel-head">&gt; SELECTORS</div>
+    <div class="panel-body">
+        <form id="cd-filters" class="cd-filters" onsubmit="return false;">
+            <div class="cd-field">
+                <label for="cd-start">起始日期 // FROM</label>
+                <input type="date" id="cd-start" value="<?php echo e($start); ?>" max="<?php echo e($end); ?>" placeholder="YYYY-MM-DD">
+            </div>
+            <div class="cd-field">
+                <label for="cd-end">結束日期 // TO</label>
+                <input type="date" id="cd-end" value="<?php echo e($end); ?>" max="<?php echo e($end); ?>" placeholder="YYYY-MM-DD">
+            </div>
+            <div class="cd-field">
+                <label>快速區間</label>
+                <span class="cd-quick">
+                    <button type="button" class="btn btn-sm" data-days="7">7D</button>
+                    <button type="button" class="btn btn-sm" data-days="30">30D</button>
+                    <button type="button" class="btn btn-sm" data-days="90">90D</button>
+                </span>
+            </div>
+            <div class="cd-field">
+                <label for="cd-tool">機台 // TOOL</label>
+                <select id="cd-tool">
+                    <?php foreach ($tools as $t): ?>
+                        <option value="<?php echo e($t); ?>"><?php echo e($t); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="cd-field">
+                <label>&nbsp;</label>
+                <button type="submit" id="cd-apply" class="btn">[ 查詢 ]</button>
+            </div>
+        </form>
+        <p class="cd-msg text-red" id="cd-msg"></p>
+        <?php if ($source === 'sample'): ?>
+            <p class="dim cd-note">&gt; 目前使用範例資料（app.ini [chart_demo] source = sample）。接資料庫請實作 modules/chart_demo/ChartDataSource.php 的部署者實作區。</p>
+        <?php endif; ?>
+    </div>
+</div>
+
+<?php
+// 依 config/chart_demo.ini 決定每個區塊要畫哪些圖
+$byKind = array('single' => array(), 'newest' => array(), 'tbt' => array());
+foreach ($groups as $g) {
+    foreach ($byKind as $kind => $list) {
+        if ($g[$kind]) {
+            $byKind[$kind][] = $g;
+        }
+    }
+}
+?>
+<?php if ($byKind['single']): ?>
+<div class="panel">
+    <div class="panel-head">&gt; SINGLE // 單台機台趨勢 <span class="cd-single-title"></span></div>
+    <div class="panel-body cd-boxes cd-boxes-grid">
+        <?php foreach ($byKind['single'] as $g): ?>
+        <div class="cd-box" data-kind="single" data-group="<?php echo e($g['id']); ?>">
+            <div class="cd-box-head">
+                <b><?php echo e($g['title']); ?></b>
+                <span class="cd-box-tools"><button type="button" class="btn btn-sm cd-table-btn">[ 資料表 ]</button></span>
+            </div>
+            <div class="cd-chart"></div>
+            <div class="cd-table"></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php if ($byKind['newest']): ?>
+<div class="panel">
+    <div class="panel-head">&gt; NEWEST_TBT // 最新值排排站</div>
+    <div class="panel-body cd-boxes">
+        <div class="cd-sub">
+            <label for="cd-model" class="inline">機型 // MODEL</label>
+            <select id="cd-model">
+                <option value="All">All</option>
+                <option value="1980">1980（PAN）</option>
+                <option value="2000">2000（PAP）</option>
+            </select>
+            <span class="dim">&gt; 每台取區間內最後一筆 · 點長條可切換上方的單台機台</span>
+        </div>
+        <?php foreach ($byKind['newest'] as $g): ?>
+        <div class="cd-box" data-kind="newest" data-group="<?php echo e($g['id']); ?>">
+            <div class="cd-box-head">
+                <b><?php echo e($g['title']); ?></b>
+                <span class="cd-box-tools"><button type="button" class="btn btn-sm cd-table-btn">[ 資料表 ]</button></span>
+            </div>
+            <div class="cd-chart"></div>
+            <div class="cd-table"></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php if ($byKind['tbt']): ?>
+<div class="panel">
+    <div class="panel-head">&gt; TBT // 歷史趨勢排排站</div>
+    <div class="panel-body cd-boxes">
+        <p class="dim cd-sub">&gt; 依機台排序，區段內依時間排序 · 顏色區分機台、線型區分參數 · 點圖例可開關機台</p>
+        <?php foreach ($byKind['tbt'] as $g): ?>
+        <div class="cd-box" data-kind="tbt" data-group="<?php echo e($g['id']); ?>">
+            <div class="cd-box-head">
+                <b><?php echo e($g['title']); ?></b> <span class="dim cd-box-info"></span>
+                <span class="cd-box-tools">
+                    <button type="button" class="btn btn-sm cd-legend-all">[ 全選 ]</button>
+                    <button type="button" class="btn btn-sm cd-legend-none">[ 全不選 ]</button>
+                    <button type="button" class="btn btn-sm cd-table-btn">[ 資料表 ]</button>
+                </span>
+            </div>
+            <div class="cd-chart cd-chart-tall"></div>
+            <div class="cd-table"></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+<script src="<?php echo e($echartsSrc); ?>"></script>
+<script>
+window.AISLE_CHART_DEMO = {
+    groups: <?php echo js($groups); ?>,
+    tools:  <?php echo js($tools); ?>,
+    models: <?php echo js((object) $models); ?>,
+    urls: {
+        tbt:    <?php echo js(url('chart_demo', 'tbt')); ?>
+    }
+};
+</script>
+<script src="<?php echo e(asset('js/chart_demo.js')); ?>"></script>
+#@@@ FILE public/.htaccess sha1=a5b73a68317fc3c7e072c126449205d1d21a576f base=19ec348560e85533d581c7c9a7e2581aba102a1f mode=644 enc=text nl=1
+Options -Indexes
+DirectoryIndex index.php
+
+# 覆蓋上層 .htaccess 的拒絕規則，只開放 public/
+<IfModule mod_authz_core.c>
+    Require all granted
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Allow from all
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-Content-Type-Options "nosniff"
+</IfModule>
+
+# apply_update.py 留下的備份檔（例 login.php_20261104_204500）與暫存檔不可從網址讀取，
+# 否則 Apache 會把舊版程式碼當純文字送出
+<FilesMatch "(_[0-9]{8}_[0-9]{6}|\.aisle-tmp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+#@@@ FILE public/assets/css/matrix.css sha1=44c6cd086f8e4d52a3342ee4acce1b1d93e932d8 base=c280d6608b1bd71864496b261d27150ea29501ac mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme
+   綠色磷光終端機風格。刻意不用 CSS 變數，以相容較舊的瀏覽器。
+   主色   #00ff41   亮綠（文字、邊框）
+   次色   #00b82e   中綠
+   暗色   #008f11   暗綠（輔助文字）
+   深底   #001a07   面板底色
+   警示   #ff3b3b   紅藥丸
+   ===================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #000;
+    color: #00ff41;
+    font-family: "Share Tech Mono", "Consolas", "Courier New", "Microsoft JhengHei", monospace;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+a { color: #00ff41; text-decoration: none; }
+a:hover { color: #b6ffc8; text-shadow: 0 0 8px #00ff41; }
+
+::selection { background: #00ff41; color: #000; }
+
+/* ---------- 背景：數位雨與 CRT 掃描線 ---------- */
+#matrix-rain {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+    opacity: 0.18;
+    pointer-events: none;
+}
+body.is-guest #matrix-rain { opacity: 0.55; }
+
+.crt-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.25) 3px
+    );
+}
+
+/* ---------- 頂部列 ---------- */
+.topbar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid #00b82e;
+    background: rgba(0, 10, 3, 0.92);
+    box-shadow: 0 0 18px rgba(0, 255, 65, 0.25);
+}
+.brand {
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    text-shadow: 0 0 10px #00ff41;
+}
+.topbar-status > * { margin-left: 12px; vertical-align: middle; }
+#clock { color: #008f11; }
+
+.cursor { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 主框架 ---------- */
+.shell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    min-height: calc(100vh - 52px);
+}
+.sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid #003b00;
+    background: rgba(0, 10, 3, 0.85);
+    padding: 16px 0;
+}
+.nav-title {
+    padding: 0 20px 10px;
+    color: #008f11;
+    font-size: 12px;
+    letter-spacing: 2px;
+}
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li a {
+    display: block;
+    padding: 9px 20px;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sidebar li a:hover { background: #001a07; border-left-color: #008f11; }
+.sidebar li.active a {
+    background: #002a0b;
+    border-left-color: #00ff41;
+    text-shadow: 0 0 8px #00ff41;
+}
+.nav-icon { display: inline-block; width: 18px; color: #008f11; }
+
+/* 選單分類（config.ini 的 [group.xxx]），可收折；沒有 JS 時一律展開 */
+.sidebar .nav-group-toggle { position: relative; padding-right: 34px; color: #00ff41; }
+.nav-group.has-active > .nav-group-toggle { color: #00ff41; text-shadow: 0 0 6px #00ff41; }
+.nav-caret { position: absolute; right: 6px; top: 9px; color: #008f11; }
+.nav-caret:before { content: "[-]"; }
+.js .nav-group:not(.open) .nav-caret:before { content: "[+]"; }
+.js .nav-group:not(.open) > .nav-children { display: none; }
+.sidebar .nav-children li a { padding-left: 38px; font-size: 0.95em; }
+
+.main {
+    flex: 1;
+    min-width: 0;
+    padding: 24px 32px;
+}
+.guest {
+    position: relative;
+    z-index: 2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+/* ---------- 標題 glitch ---------- */
+.page-title {
+    position: relative;
+    margin: 0 0 20px;
+    font-size: 24px;
+    letter-spacing: 3px;
+    text-shadow: 0 0 12px #00ff41;
+}
+.glitch::before,
+.glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    overflow: hidden;
+    opacity: 0;
+}
+.glitch:hover::before { opacity: 0.8; color: #b6ffc8; animation: glitch 0.3s infinite; }
+.glitch:hover::after  { opacity: 0.6; color: #008f11; animation: glitch 0.3s infinite reverse; }
+@keyframes glitch {
+    0%   { clip: rect(0, 9999px, 6px, 0);   transform: translate(-2px, 0); }
+    50%  { clip: rect(12px, 9999px, 20px, 0); transform: translate(2px, 0); }
+    100% { clip: rect(4px, 9999px, 14px, 0);  transform: translate(-1px, 0); }
+}
+
+/* ---------- 面板 / 終端機 ---------- */
+.panel {
+    border: 1px solid #00b82e;
+    background: rgba(0, 20, 6, 0.88);
+    box-shadow: 0 0 12px rgba(0, 255, 65, 0.15), inset 0 0 20px rgba(0, 255, 65, 0.05);
+    margin-bottom: 20px;
+}
+.panel-head {
+    padding: 8px 14px;
+    border-bottom: 1px solid #003b00;
+    color: #000;
+    background: #00b82e;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+.panel-body { padding: 14px; }
+.terminal .panel-body { font-size: 14px; }
+.terminal .line { white-space: pre-wrap; margin: 0; }
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0 -10px;
+}
+.grid > .col {
+    flex: 1 1 260px;
+    padding: 0 10px;
+}
+
+.card-link {
+    display: block;
+    padding: 18px;
+    border: 1px dashed #008f11;
+    margin-bottom: 20px;
+    background: rgba(0, 20, 6, 0.7);
+    transition: all 0.15s;
+}
+.card-link:hover {
+    border-style: solid;
+    border-color: #00ff41;
+    box-shadow: 0 0 16px rgba(0, 255, 65, 0.4);
+}
+.card-link .big { font-size: 28px; display: block; }
+
+/* ---------- 表格 ---------- */
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #003b00;
+    text-align: left;
+}
+.table th { color: #008f11; font-weight: normal; letter-spacing: 1px; }
+.table tbody tr:hover { background: #002a0b; }
+
+/* ---------- 表單 ---------- */
+label { display: block; margin: 12px 0 4px; color: #008f11; font-size: 13px; letter-spacing: 1px; }
+input[type=text], input[type=password], input[type=email], select, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: #00ff41;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+.inline { display: inline; }
+
+.btn {
+    display: inline-block;
+    padding: 7px 16px;
+    border: 1px solid #00ff41;
+    background: transparent;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 14px;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+.btn:hover { background: #00ff41; color: #000; text-shadow: none; box-shadow: 0 0 14px #00ff41; }
+.btn-ghost { border-color: transparent; }
+.btn-ghost:hover { border-color: #00ff41; }
+.btn-sm { padding: 3px 8px; font-size: 13px; }
+.btn-red { border-color: #ff3b3b; color: #ff3b3b; }
+.btn-red:hover { background: #ff3b3b; color: #000; box-shadow: 0 0 14px #ff3b3b; }
+
+/* ---------- 訊息 ---------- */
+.alert {
+    padding: 10px 14px;
+    margin-bottom: 18px;
+    border: 1px solid #00ff41;
+    background: rgba(0, 40, 10, 0.9);
+}
+.alert-error { border-color: #ff3b3b; color: #ff3b3b; background: rgba(40, 0, 0, 0.85); }
+.text-red { color: #ff3b3b; }
+.dim { color: #008f11; }
+
+/* ---------- 角色徽章 ---------- */
+.role-badge {
+    display: inline-block;
+    padding: 0 8px;
+    border: 1px solid #00ff41;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.role-EE    { color: #00ff41; border-color: #00ff41; }
+.role-PE    { color: #7dffb0; border-color: #7dffb0; }
+.role-ADMIN { color: #ff3b3b; border-color: #ff3b3b; }
+
+/* 狀態燈 */
+.led { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.led-run   { background: #00ff41; box-shadow: 0 0 8px #00ff41; }
+.led-idle  { background: #008f11; }
+.led-down  { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: blink 0.8s steps(1) infinite; }
+
+/* ---------- 登入頁 ---------- */
+.login-box {
+    width: 380px;
+    max-width: 100%;
+}
+.login-box .logo {
+    text-align: center;
+    font-size: 40px;
+    letter-spacing: 14px;
+    margin-bottom: 4px;
+    text-shadow: 0 0 18px #00ff41, 0 0 4px #00ff41;
+}
+.login-box .tagline { text-align: center; color: #008f11; margin-bottom: 20px; min-height: 1.6em; }
+.login-box .btn { width: 100%; margin-top: 18px; padding: 10px; }
+
+/* ---------- 表單驗證 ---------- */
+.field-error { min-height: 1.2em; color: #ff3b3b; font-size: 13px; margin-top: 2px; }
+input.is-invalid, select.is-invalid { border-color: #ff3b3b; box-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+input.is-valid { border-color: #00ff41; }
+.hint { float: right; color: #00ff41; letter-spacing: 1px; }
+.hint.text-red { color: #ff3b3b; }
+.meter { height: 3px; background: #001a07; margin-top: 4px; }
+.meter span { display: block; height: 100%; width: 0; background: #00ff41; box-shadow: 0 0 6px #00ff41; transition: width 0.2s; }
+.meter span.weak { background: #ff3b3b; box-shadow: 0 0 6px #ff3b3b; }
+.btn:disabled { opacity: 0.6; cursor: wait; }
+.form-foot { margin: 14px 0 0; text-align: center; }
+.register-box { width: 440px; }
+
+/* ---------- 手機版 ---------- */
+/* ---------- chart_demo 圖表頁 ---------- */
+input[type=date] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.cd-filters { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.cd-field { padding: 0 8px; }
+.cd-field select { width: auto; min-width: 140px; }
+.cd-quick .btn { margin-right: 4px; }
+.cd-msg { min-height: 1em; margin: 8px 0 0; }
+.cd-note { margin: 4px 0 0; font-size: 13px; }
+.cd-sub { margin: 0 0 8px; font-size: 13px; }
+.cd-sub select { width: auto; margin: 0 10px 0 6px; padding: 4px 8px; }
+.cd-sub label.inline { margin: 0; }
+.cd-boxes-grid { display: flex; flex-wrap: wrap; padding: 14px 4px; }
+.cd-boxes-grid > .cd-box { flex: 1 1 460px; min-width: 0; padding: 0 10px; }
+.cd-box { margin-bottom: 18px; }
+.cd-box:last-child { margin-bottom: 0; }
+.cd-box-head { border-bottom: 1px dashed #003b00; padding-bottom: 4px; margin-bottom: 6px; }
+.cd-box-head b { letter-spacing: 1px; }
+.cd-box-info { font-size: 13px; margin-left: 8px; }
+.cd-box-tools { float: right; }
+.cd-box-tools .btn { padding: 0 6px; margin-left: 4px; font-size: 12px; }
+.cd-chart { height: 320px; }
+.cd-chart-tall { height: 440px; }
+.cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
+
+@media (max-width: 760px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }
+    .sidebar ul { display: flex; overflow-x: auto; }
+    .sidebar li a { border-left: 0; border-bottom: 2px solid transparent; padding: 6px 12px; }
+    .sidebar li.active a { border-bottom-color: #00ff41; }
+    .nav-title { display: none; }
+    .sidebar .nav-group { display: flex; }
+    .sidebar .nav-children { display: flex; }
+    .sidebar .nav-children li a { padding-left: 12px; }
+    .sidebar .nav-group-toggle { padding-right: 12px; }
+    .nav-caret { position: static; margin-left: 4px; }
+    .main { padding: 16px; }
+    .hide-sm { display: none; }
+    .topbar { padding: 8px 16px; }
+    .topbar-status > * { margin-left: 6px; }
+    .table { font-size: 13px; }
+    .cd-box-tools { float: none; display: block; margin-top: 4px; }
+    .cd-chart-tall { height: 380px; }
+}
+#@@@ FILE public/assets/js/chart_demo.js sha1=e56e676bd6f1eb7c72c4fdb77da9669d0fa56841 base=- mode=644 enc=text nl=1
+/*
+ * chart_demo 頁面 (jQuery 1.12 + ECharts 5)
+ *
+ * 三個區塊：single 單台趨勢 / newest 最新值排排站 / tbt 歷史趨勢排排站
+ * 每個區塊依 config/chart_demo.ini 的圖表分組各畫一張圖（CFG.groups），
+ * 同一組的參數（例 M1BF_Z_C1、M1BF_Z_C2）畫在同一張圖上。
+ *
+ * 後端回傳格式：
+ *   { "APAN01": { "Date": [...], "Data": { "M1BF_Z_C1": [...], "M1BF_Z_C2": [...] } }, ... }
+ *   每個參數陣列與 Date 等長，沒有值的位置是 null
+ *
+ * 資料載入方式：
+ *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台、全部參數」的資料存在 cache，所有圖都從這份資料取得：
+ *     TBT 直接畫；single 取出所選機台；Newest_TBT 取每台每個參數在區間內的最後一個值（再依機型篩選）
+ *   之後切換機台、切換機型只用 cache 重畫，不再發 request；
+ *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt。
+ *
+ * 編碼方式：顏色 = 機台，線型 / 長條紋理 = 參數（同組第 1 個參數實線無紋理，第 2 個虛線斜紋…）
+ * 只用 ES5 語法，避免舊瀏覽器出錯
+ */
+(function ($, window) {
+    'use strict';
+
+    var CFG = window.AISLE_CHART_DEMO;
+    if (!$ || !CFG) {
+        return;
+    }
+
+    // ---------- 主題 ----------
+    // 機台顏色：8 色類別色盤（已用 dataviz validate_palette.js 檢查深色底 #001406：
+    // 亮度、彩度、色盲區分、對比全部通過）。同機型內依序取色，APAN01 與 APAP01 同色，
+    // 以 X 軸機台名稱區分。顏色跟著機台走，篩選後不會變色。
+    var PALETTE = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+    // 參數：線型與長條紋理，依參數在組內的順序取用
+    var LINE_TYPES = ['solid', 'dashed', 'dotted', [10, 4, 2, 4], [2, 6]];
+    var LINE_NAMES = ['實線', '虛線', '點線', '點劃線', '稀點線'];
+    var DECALS = [
+        null,
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'circle', symbolSize: 0.6, dashArrayX: [[4, 4]], dashArrayY: [4, 0], color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [1, 3], rotation: 0, color: 'rgba(0,0,0,0.5)' }
+    ];
+    var INK = '#00ff41';       // 主要文字
+    var INK_DIM = '#00b82e';   // 次要文字
+    var GRID = '#0a2a12';      // 格線
+    var AXIS = '#00661a';      // 軸線
+    var NEUTRAL = '#7dffb0';   // 圖例中代表「參數」的中性色
+    var BAND = 'rgba(0, 255, 65, 0.05)';  // TBT 交錯底色
+    var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
+
+    var COLOR = {};
+    (function assignColors() {
+        var counter = {};
+        $.each(CFG.tools, function (i, tool) {
+            var model = CFG.models[tool] || '';
+            counter[model] = counter[model] || 0;
+            COLOR[tool] = PALETTE[counter[model] % PALETTE.length];
+            counter[model]++;
+        });
+    })();
+
+    var GROUPS = {};
+    $.each(CFG.groups, function (i, g) { GROUPS[g.id] = g; });
+
+    function colorOf(tool) { return COLOR[tool] || NEUTRAL; }
+    function lineTypeOf(i) { return LINE_TYPES[i % LINE_TYPES.length]; }
+    function decalOf(i) { return DECALS[i % DECALS.length]; }
+    function shortName(param, group) {
+        // 圖例只顯示參數名稱與組標題不同的部分，例 M1BF_Z 組內的 M1BF_Z_C1 → C1
+        var prefix = group.title + '_';
+        return param.indexOf(prefix) === 0 && param.length > prefix.length ? param.substring(prefix.length) : param;
+    }
+
+    function baseOption() {
+        return {
+            backgroundColor: 'transparent',
+            textStyle: { color: INK, fontFamily: FONT },
+            animationDuration: 400,
+            tooltip: {
+                backgroundColor: 'rgba(0, 10, 3, 0.95)',
+                borderColor: INK_DIM,
+                borderWidth: 1,
+                textStyle: { color: INK, fontFamily: FONT, fontSize: 13 },
+                extraCssText: 'box-shadow: 0 0 12px rgba(0,255,65,0.3);'
+            },
+            grid: { left: 50, right: 24, top: 40, bottom: 40, containLabel: false }
+        };
+    }
+
+    /** Y 軸；config 有設上下限就固定，否則自動。kind = single / newest / tbt */
+    function valueAxis(group, kind) {
+        var lim = (group.limits && group.limits[kind]) || {};
+        var axis = {
+            type: 'value',
+            name: group.unit || 'Data',
+            nameTextStyle: { color: INK_DIM },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            axisLabel: { color: INK_DIM },
+            splitLine: { lineStyle: { color: GRID } },
+            scale: kind !== 'newest'
+        };
+        if (lim.min !== null && lim.min !== undefined) {
+            axis.min = lim.min;
+        }
+        if (lim.max !== null && lim.max !== undefined) {
+            axis.max = lim.max;
+        }
+        return axis;
+    }
+
+    function axisLine() {
+        return { lineStyle: { color: AXIS } };
+    }
+
+    function legendBase(data) {
+        return {
+            type: 'scroll',
+            top: 0,
+            data: data,
+            textStyle: { color: INK, fontFamily: FONT },
+            pageTextStyle: { color: INK },
+            pageIconColor: INK,
+            pageIconInactiveColor: AXIS,
+            inactiveColor: '#1f4a2a',
+            itemWidth: 26,
+            itemHeight: 10
+        };
+    }
+
+    function fmt(v) {
+        return v === null || v === undefined ? '-' : AISLE.escape(v);
+    }
+
+    // ---------- 圖表盒 ----------
+    // boxes['tbt:m1bf_z'] = { kind, group, $el, chart, shown }
+    var boxes = {};
+    var cache = { tbt: null };
+    var request = null;
+
+    function eachBox(kind, fn) {
+        $.each(boxes, function (key, box) {
+            if (!kind || box.kind === kind) {
+                fn(box);
+            }
+        });
+    }
+
+    function showMessage(chart, text) {
+        chart.clear();
+        chart.setOption({
+            title: {
+                text: text,
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: INK_DIM, fontSize: 14, fontWeight: 'normal', fontFamily: FONT }
+            }
+        });
+    }
+
+    function loadingOpts() {
+        return { text: 'LOADING...', color: INK, textColor: INK, maskColor: 'rgba(0, 0, 0, 0.6)', fontFamily: FONT };
+    }
+
+    /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
+    function show(box, data, draw) {
+        box.shown = data;
+        if ($.isEmptyObject(data)) {
+            showMessage(box.chart, '> 查無資料 // NO DATA');
+        } else {
+            draw(box, data);
+        }
+        renderTable(box);
+    }
+
+    /** 資料表檢視：機台 / 時間 / 該組每個參數一欄 */
+    function renderTable(box) {
+        var params = box.group.params;
+        var head = '<tr><th>TOOL</th><th>DATE</th>';
+        $.each(params, function (i, p) { head += '<th>' + AISLE.escape(p) + '</th>'; });
+        head += '</tr>';
+        var rows = [];
+        $.each(box.shown, function (tool, s) {
+            if (!$.isArray(s.Date)) {
+                // newest：各參數的日期分開存，值後面附上日期
+                var tr0 = '<tr><td>' + AISLE.escape(tool) + '</td><td>LATEST</td>';
+                $.each(params, function (j, p) {
+                    tr0 += '<td>' + fmt(s.Data[p][0]) + (s.Date[p][0] ? ' <span class="dim">(' + AISLE.escape(s.Date[p][0]) + ')</span>' : '') + '</td>';
+                });
+                rows.push(tr0 + '</tr>');
+                return;
+            }
+            for (var i = 0; i < s.Date.length; i++) {
+                var tr = '<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) + '</td>';
+                for (var j = 0; j < params.length; j++) {
+                    tr += '<td>' + fmt(s.Data[params[j]] ? s.Data[params[j]][i] : null) + '</td>';
+                }
+                rows.push(tr + '</tr>');
+            }
+        });
+        box.$el.find('.cd-table').html(rows.length
+            ? '<table class="table"><thead>' + head + '</thead><tbody>' + rows.join('') + '</tbody></table>'
+            : '<p class="dim">&gt; 查無資料</p>');
+    }
+
+    // ---------- 1. single：所選機台，組內每個參數一條線 ----------
+    function drawSingle(box, data) {
+        var group = box.group;
+        var tool;
+        for (tool in data) {
+            if (data.hasOwnProperty(tool)) {
+                break;
+            }
+        }
+        var s = data[tool];
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var points = [];
+            var col = s.Data[param] || [];
+            for (var i = 0; i < s.Date.length; i++) {
+                points.push([s.Date[i], col[i] === undefined ? null : col[i]]);
+            }
+            series.push({
+                name: param,
+                type: 'line',
+                data: points,
+                connectNulls: false,
+                showSymbol: points.length <= 45,
+                symbolSize: 8,
+                color: colorOf(tool),
+                lineStyle: { width: 2, type: lineTypeOf(pi) },
+                emphasis: { focus: 'series' }
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        opt.xAxis = {
+            type: 'time',
+            axisLine: axisLine(),
+            axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{MM}-{dd}' },
+            splitLine: { show: false }
+        };
+        opt.yAxis = valueAxis(group, 'single');
+        opt.dataZoom = [{ type: 'inside' }];
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 2. newest：X 軸機台，組內每個參數一根長條 ----------
+    function drawNewest(box, data) {
+        var group = box.group;
+        var tools = [];
+        $.each(data, function (tool) { tools.push(tool); });
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var bars = [];
+            $.each(tools, function (ti, tool) {
+                var s = data[tool];
+                var style = { color: colorOf(tool), borderRadius: [4, 4, 0, 0] };
+                if (decalOf(pi)) {
+                    style.decal = decalOf(pi);
+                }
+                bars.push({ value: s.Data[param][0], date: s.Date[param][0], itemStyle: style });
+            });
+            // series 的 itemStyle 只決定圖例的樣子（中性色 + 該參數的紋理），每根長條另用機台色
+            var legendStyle = { color: NEUTRAL };
+            if (decalOf(pi)) {
+                legendStyle.decal = decalOf(pi);
+            }
+            series.push({
+                name: param,
+                type: 'bar',
+                data: bars,
+                barMaxWidth: 28,
+                barGap: '15%',
+                itemStyle: legendStyle,
+                emphasis: { focus: 'series', itemStyle: { shadowBlur: 12, shadowColor: INK } },
+                cursor: 'pointer'
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'shadow', shadowStyle: { color: 'rgba(0,255,65,0.06)' } };
+        opt.tooltip.formatter = function (params) {
+            if (!params.length) {
+                return '';
+            }
+            var html = '<b>' + AISLE.escape(params[0].name) + '</b>';
+            $.each(params, function (i, p) {
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value) + '</b>' +
+                    ' <span style="color:' + INK_DIM + '">(' + fmt(p.data.date) + ')</span>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: tools,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
+        };
+        opt.yAxis = valueAxis(group, 'newest');
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 3. TBT ----------
+    // X 軸為類別軸：每台機台佔一段，段內依時間排列。每台每個參數一條 series，
+    // 同一台的 series 用同一個名稱，所以圖例以機台為單位開關；其他段落填 null，
+    // 所以每台只畫在自己的區段，相鄰機台以交錯底色分隔。
+    function drawTbt(box, data) {
+        var group = box.group;
+        var keys = [];      // 類別值（唯一）："APAN01|2026-01-01"
+        var segments = [];  // { tool, from, to }
+        $.each(data, function (tool, s) {
+            var from = keys.length;
+            for (var i = 0; i < s.Date.length; i++) {
+                keys.push(tool + '|' + s.Date[i]);
+            }
+            segments.push({ tool: tool, from: from, to: keys.length - 1 });
+        });
+
+        var centers = {};
+        var bands = [];
+        $.each(segments, function (i, seg) {
+            centers[Math.floor((seg.from + seg.to) / 2)] = seg.tool;
+            if (i % 2 === 1) {
+                bands.push([{ xAxis: keys[seg.from] }, { xAxis: keys[seg.to] }]);
+            }
+        });
+
+        var series = [];
+        var legend = [];
+        var paramOf = [];   // seriesIndex → 參數名稱（tooltip 用）
+        $.each(segments, function (i, seg) {
+            var s = data[seg.tool];
+            legend.push(seg.tool);
+            $.each(group.params, function (pi, param) {
+                var col = s.Data[param] || [];
+                var arr = new Array(keys.length);
+                for (var k = 0; k < keys.length; k++) {
+                    arr[k] = null;
+                }
+                for (var j = 0; j < s.Date.length; j++) {
+                    arr[seg.from + j] = col[j] === undefined ? null : col[j];
+                }
+                paramOf.push(param);
+                series.push({
+                    name: seg.tool,
+                    type: 'line',
+                    data: arr,
+                    connectNulls: false,
+                    showSymbol: false,
+                    symbolSize: 8,
+                    color: colorOf(seg.tool),
+                    lineStyle: { width: 2, type: lineTypeOf(pi) },
+                    emphasis: { focus: 'series' }
+                });
+            });
+        });
+        // 交錯底色放在一條不顯示的輔助 series 上
+        series.push({
+            name: '_bands',
+            type: 'line',
+            data: [],
+            silent: true,
+            markArea: { silent: true, itemStyle: { color: BAND }, data: bands }
+        });
+
+        var opt = baseOption();
+        opt.grid.top = 64;
+        opt.grid.bottom = 70;
+        opt.legend = legendBase(legend);
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        opt.tooltip.formatter = function (params) {
+            var html = '';
+            $.each(params, function (i, p) {
+                if (p.seriesName === '_bands' || p.value === null || p.value === undefined) {
+                    return;
+                }
+                if (!html) {
+                    html = p.marker + AISLE.escape(p.seriesName) + '<br>' + AISLE.escape(String(p.name).split('|')[1]);
+                }
+                html += '<br>' + AISLE.escape(paramOf[p.seriesIndex]) + '：<b>' + fmt(p.value) + '</b>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: keys,
+            boundaryGap: false,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: {
+                color: INK,
+                interval: function (idx) { return centers.hasOwnProperty(idx); },
+                formatter: function (v) { return String(v).split('|')[0]; }
+            },
+            splitLine: { show: false }
+        };
+        opt.yAxis = valueAxis(group, 'tbt');
+        opt.dataZoom = [
+            { type: 'inside' },
+            {
+                type: 'slider', height: 18, bottom: 12,
+                borderColor: AXIS, fillerColor: 'rgba(0,255,65,0.12)',
+                handleStyle: { color: INK_DIM }, moveHandleStyle: { color: INK_DIM },
+                dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: 'rgba(0,255,65,0.08)' } },
+                textStyle: { color: INK_DIM },
+                labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
+            }
+        ];
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+
+        var styles = $.map(group.params, function (p, i) {
+            return shortName(p, group) + ' ' + LINE_NAMES[i % LINE_NAMES.length];
+        });
+        box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
+    }
+
+    // ---------- 從 cache 取出各圖要的資料 ----------
+    /** 只保留某組的參數 */
+    function pick(s, params) {
+        var out = { Date: s.Date, Data: {} };
+        $.each(params, function (i, p) { out.Data[p] = s.Data[p] || []; });
+        return out;
+    }
+
+    function showTbt() {
+        eachBox('tbt', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) { data[tool] = pick(s, box.group.params); });
+            show(box, data, drawTbt);
+        });
+    }
+
+    /** 單台機台：從 cache.tbt 取出，不發 request */
+    function showSingle() {
+        var tool = $('#cd-tool').val();
+        $('.cd-single-title').text(tool ? '· ' + tool : '');
+        if (!cache.tbt || !tool) {
+            return;
+        }
+        eachBox('single', function (box) {
+            var data = {};
+            if (cache.tbt[tool]) {
+                data[tool] = pick(cache.tbt[tool], box.group.params);
+            }
+            show(box, data, drawSingle);
+        });
+    }
+
+    /**
+     * 最新值：每台每個參數在區間內最後一個非 null 的值，再依機型篩選，不發 request
+     * 各參數最後一筆的日期可能不同，所以 Date 也依參數分開存：
+     *   { Date: { param: [日期] }, Data: { param: [值] } }
+     */
+    function showNewest() {
+        if (!cache.tbt) {
+            return;
+        }
+        var model = $('#cd-model').val();
+        eachBox('newest', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) {
+                if (model !== 'All' && CFG.models[tool] !== model) {
+                    return;
+                }
+                var latest = { Date: {}, Data: {} };
+                var any = false;
+                $.each(box.group.params, function (pi, p) {
+                    var col = s.Data[p] || [];
+                    latest.Date[p] = [null];
+                    latest.Data[p] = [null];
+                    for (var i = col.length - 1; i >= 0; i--) {
+                        if (col[i] !== null && col[i] !== undefined) {
+                            latest.Date[p] = [s.Date[i]];
+                            latest.Data[p] = [col[i]];
+                            any = true;
+                            break;
+                        }
+                    }
+                });
+                if (any) {
+                    data[tool] = latest;
+                }
+            });
+            show(box, data, drawNewest);
+        });
+    }
+
+    // ---------- 選擇器 ----------
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function isDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s); }
+
+    function range() {
+        var start = $.trim($('#cd-start').val());
+        var end = $.trim($('#cd-end').val());
+        var $msg = $('#cd-msg').text('');
+        if (!isDate(start) || !isDate(end)) {
+            $msg.text('> 日期格式需為 YYYY-MM-DD');
+            return null;
+        }
+        if (start > end) {
+            $msg.text('> 起始日期不可晚於結束日期');
+            return null;
+        }
+        return { start: start, end: end };
+    }
+
+    /** 取日期區間內全部機台、全部參數的資料（所有圖共用），進頁面與改日期時呼叫 */
+    function loadRange() {
+        var r = range();
+        if (!r) {
+            return;
+        }
+        if (request) {
+            request.abort();
+        }
+        eachBox(null, function (box) { box.chart.showLoading('default', loadingOpts()); });
+        request = $.ajax({ url: CFG.urls.tbt, data: { start: r.start, end: r.end }, dataType: 'json', cache: false })
+            .done(function (res) {
+                cache.tbt = res || {};
+                eachBox(null, function (box) { box.chart.hideLoading(); });
+                showTbt();
+                showSingle();
+                showNewest();
+            })
+            .fail(function (xhr, status) {
+                if (status === 'abort') {
+                    return;
+                }
+                var msg = (xhr.responseJSON && xhr.responseJSON.error) || ('HTTP ' + xhr.status);
+                eachBox(null, function (box) {
+                    box.chart.hideLoading();
+                    showMessage(box.chart, '> ERROR: ' + msg);
+                });
+            });
+    }
+
+    $(function () {
+        if (!window.echarts) {
+            $('.cd-chart').html('<p class="text-red">&gt; ECharts 載入失敗：請確認可連到 CDN，或執行 scripts/shell/fetch_vendor.sh 放到 public/assets/vendor/</p>');
+            return;
+        }
+        $('.cd-box').each(function () {
+            var $el = $(this);
+            var kind = $el.data('kind');
+            var group = GROUPS[$el.data('group')];
+            boxes[kind + ':' + group.id] = {
+                kind: kind,
+                group: group,
+                $el: $el,
+                chart: window.echarts.init($el.find('.cd-chart')[0]),
+                shown: {}
+            };
+        });
+
+        if (!CFG.tools.length) {
+            eachBox(null, function (box) { showMessage(box.chart, '> 沒有任何機台 // NO TOOLS'); });
+            return;
+        }
+
+        $('#cd-filters').on('submit', function () {
+            loadRange();
+            return false;
+        });
+        $('#cd-tool').on('change', showSingle);
+        $('#cd-model').on('change', showNewest);
+        $('.cd-quick').on('click', 'button', function () {
+            var days = parseInt($(this).data('days'), 10);
+            var end = new Date();
+            var start = new Date(end.getTime() - (days - 1) * 86400000);
+            $('#cd-start').val(ymd(start));
+            $('#cd-end').val(ymd(end));
+            loadRange();
+        });
+
+        // 點最新值長條 → 切換單台機台
+        eachBox('newest', function (box) {
+            box.chart.on('click', function (p) {
+                if (p.componentType === 'series' && p.name) {
+                    $('#cd-tool').val(p.name);
+                    showSingle();
+                    var $first = $('.cd-box[data-kind="single"]').first();
+                    if ($first.length) {
+                        $('html, body').animate({ scrollTop: $first.offset().top - 80 }, 200);
+                    }
+                }
+            });
+        });
+
+        function boxOf(el) {
+            var $el = $(el).closest('.cd-box');
+            return boxes[$el.data('kind') + ':' + $el.data('group')];
+        }
+        $('.cd-legend-all').on('click', function () {
+            boxOf(this).chart.dispatchAction({ type: 'legendAllSelect' });
+        });
+        $('.cd-legend-none').on('click', function () {
+            var box = boxOf(this);
+            $.each(box.shown, function (tool) {
+                box.chart.dispatchAction({ type: 'legendUnSelect', name: tool });
+            });
+        });
+        $('.cd-table-btn').on('click', function () {
+            boxOf(this).$el.find('.cd-table').toggle();
+        });
+
+        var resizeTimer = null;
+        $(window).on('resize', function () {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                eachBox(null, function (box) { box.chart.resize(); });
+            }, 150);
+        });
+
+        loadRange();
+    });
+})(window.jQuery, window);
+#@@@ FILE scripts/python/apply_update.py sha1=f8e454052f71d3b08ff6e203d4ae767c8f83fbc5 base=- mode=755 enc=text nl=1
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+套用 AISLE 單檔更新（Python 2.7）
+
+主機不能 git pull、不能下載壓縮檔時使用：在 GitHub 打開 updates/ 底下的更新檔，
+按 Raw → 全選複製 → 貼到主機上的一個檔案，再用這支腳本一次套用。
+
+用法：
+  python apply_update.py <更新檔>                 預覽：列出會新增 / 覆蓋 / 刪除哪些檔案，不寫入
+  python apply_update.py <更新檔> --apply         實際套用
+  python apply_update.py --list                    列出過去的更新紀錄
+  python apply_update.py --rollback <時間>         預覽還原某次更新（時間如 20261104_204500，或 last）
+  python apply_update.py --rollback <時間> --apply 實際還原
+
+選項：
+  --root <目錄>   AISLE 根目錄。預設：腳本在 scripts/python/ 底下時自動找上兩層，
+                  否則用目前目錄（目錄內要有 core/bootstrap.php）
+  --force         主機上的檔案和更新檔預期的版本不同（衝突）時仍然套用 / 還原
+
+行為：
+  - 被覆蓋的舊檔先複製一份在原位置，檔名後面加上 _<時間>，例 Auth.php_20261104_204500；
+    被刪除的檔案不會真的刪掉，而是改名成同樣格式的備份
+  - 同一次執行的所有備份共用同一個時間，紀錄寫在 storage/logs/update_<時間>.json
+  - 每個檔案都用 sha1 驗證；只要有一個檔案內容不對（複製漏行、被編輯器改掉縮排），
+    或更新檔被截斷，整批都不寫入
+  - 套用到一半出錯時，自動把已經改過的檔案還原
+
+回傳碼：0 = 成功（或預覽沒有問題），1 = 有錯誤或衝突，2 = 用法錯誤
+"""
+from __future__ import print_function
+
+import base64
+import binascii
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+import time
+
+FORMAT_HEADER = '#AISLE-UPDATE v1'
+MARK = '#@@@ '
+STAMP_FORMAT = '%Y%m%d_%H%M%S'
+RE_STAMP = re.compile(r'^\d{8}_\d{6}$')
+RE_SHA1 = re.compile(r'^[0-9a-f]{40}$')
+NO_FILE = '-'          # base=- 代表更新前這個檔案不存在
+LOG_DIR = os.path.join('storage', 'logs')
+
+
+class UpdateError(Exception):
+    pass
+
+
+def out(msg=''):
+    print(msg)
+    sys.stdout.flush()
+
+
+def sha1_of(data):
+    return hashlib.sha1(data).hexdigest()
+
+
+def file_sha1(path):
+    if not os.path.isfile(path):
+        return None
+    fp = open(path, 'rb')
+    try:
+        return sha1_of(fp.read())
+    finally:
+        fp.close()
+
+
+# --------------------------------------------------------------------------
+# 解析更新檔
+# --------------------------------------------------------------------------
+
+def parse_attrs(text, lineno):
+    attrs = {}
+    for part in text.split():
+        if '=' not in part:
+            raise UpdateError('第 %d 行：無法解析 "%s"' % (lineno, part))
+        k, v = part.split('=', 1)
+        attrs[k] = v
+    return attrs
+
+
+def check_path(path, lineno):
+    bad = (not path or path.startswith('/') or '\\' in path or '\0' in path
+           or ':' in path.split('/')[0])
+    parts = path.split('/')
+    if bad or '..' in parts or '.' in parts or '' in parts or parts[0] == '.git':
+        raise UpdateError('第 %d 行：不允許的路徑 "%s"' % (lineno, path))
+    return path
+
+
+def build_content(entry, lines):
+    """把更新檔內的區塊還原成要寫入的 bytes，並驗證 sha1"""
+    enc = entry['enc']
+    if enc == 'base64':
+        try:
+            data = base64.b64decode(''.join(l.strip() for l in lines))
+        except (TypeError, binascii.Error):
+            raise UpdateError('%s：base64 內容損毀（第 %d 行起）' % (entry['path'], entry['lineno']))
+    elif enc == 'text':
+        if lines:
+            data = '\n'.join(lines) + '\n'
+            if entry['nl'] == '0':
+                data = data[:-1]
+        else:
+            data = ''
+        if entry['eol'] == 'crlf':
+            data = data.replace('\n', '\r\n')
+    else:
+        raise UpdateError('%s：不支援的 enc=%s' % (entry['path'], enc))
+
+    actual = sha1_of(data)
+    if actual != entry['sha1']:
+        raise UpdateError(
+            '%s 的內容和 sha1 不符（第 %d 行起，%d 行）。\n'
+            '    通常是複製時漏了內容、多了內容，或編輯器自動改了縮排；請重新複製整個更新檔。\n'
+            '    預期 %s\n    實際 %s' % (entry['path'], entry['lineno'], len(lines), entry['sha1'], actual))
+    return data
+
+
+def parse_update(path):
+    fp = open(path, 'rb')
+    try:
+        raw = fp.read()
+    finally:
+        fp.close()
+    if raw.startswith('\xef\xbb\xbf'):          # 有些編輯器會加 UTF-8 BOM
+        raw = raw[3:]
+    raw = raw.replace('\r\n', '\n')             # 從 Windows 瀏覽器複製可能變成 CRLF
+    lines = raw.split('\n')
+
+    meta = {}
+    entries = []
+    current = None
+    block = []
+    ended = False
+    seen_header = False
+    seen_paths = set()
+
+    def finish():
+        if current is not None and current['op'] == 'file':
+            current['data'] = build_content(current, block)
+
+    for idx, line in enumerate(lines):
+        lineno = idx + 1
+        if not seen_header:
+            if line.strip() == '':
+                continue
+            if line.rstrip() != FORMAT_HEADER:
+                raise UpdateError('第 %d 行：不是 AISLE 更新檔（第一行應為 "%s"）' % (lineno, FORMAT_HEADER))
+            seen_header = True
+            continue
+        if ended:
+            if line.strip():
+                raise UpdateError('第 %d 行：END 之後還有內容，可能貼了兩次' % lineno)
+            continue
+
+        if line.startswith(MARK):
+            finish()
+            block = []
+            current = None
+            parts = line[len(MARK):].strip().split(None, 2)
+            if not parts:
+                raise UpdateError('第 %d 行：空的標記行' % lineno)
+            kind = parts[0]
+            if kind == 'END':
+                attrs = parse_attrs(' '.join(parts[1:]), lineno)
+                if 'count' in attrs and attrs['count'] != str(len(entries)):
+                    raise UpdateError('更新檔應有 %s 個項目，實際讀到 %d 個，可能沒有複製完整'
+                                      % (attrs['count'], len(entries)))
+                ended = True
+                continue
+            if kind not in ('FILE', 'DELETE') or len(parts) < 2:
+                raise UpdateError('第 %d 行：無法解析的標記 "%s"' % (lineno, line.strip()))
+            fpath = check_path(parts[1], lineno)
+            if fpath in seen_paths:
+                raise UpdateError('第 %d 行：%s 出現兩次' % (lineno, fpath))
+            seen_paths.add(fpath)
+            attrs = parse_attrs(parts[2] if len(parts) > 2 else '', lineno)
+            base = attrs.get('base')
+            if base is not None and base != NO_FILE and not RE_SHA1.match(base):
+                raise UpdateError('第 %d 行：base 格式錯誤' % lineno)
+            current = {'op': kind.lower(), 'path': fpath, 'base': base, 'lineno': lineno + 1}
+            if kind == 'FILE':
+                if not RE_SHA1.match(attrs.get('sha1', '')):
+                    raise UpdateError('第 %d 行：缺少 sha1' % lineno)
+                current.update({
+                    'sha1': attrs['sha1'],
+                    'enc': attrs.get('enc', 'text'),
+                    'nl': attrs.get('nl', '1'),
+                    'eol': attrs.get('eol', 'lf'),
+                    'mode': attrs.get('mode', ''),
+                })
+            entries.append(current)
+            continue
+
+        if current is None:
+            if line.startswith('#@ '):           # 更新檔資訊：#@ key=value
+                k, _, v = line[3:].partition('=')
+                meta[k.strip()] = v.strip()
+            elif line.strip() and not line.startswith('#'):
+                raise UpdateError('第 %d 行：檔案區塊外出現內容' % lineno)
+            continue
+        if current['op'] == 'delete':
+            if line.strip():
+                raise UpdateError('第 %d 行：DELETE 後面不應有內容' % lineno)
+            continue
+        block.append(line)
+
+    if not seen_header:
+        raise UpdateError('更新檔是空的')
+    if not ended:
+        raise UpdateError('找不到結尾的 "%sEND"，更新檔沒有複製完整' % MARK)
+    return meta, entries
+
+
+# --------------------------------------------------------------------------
+# 規劃
+# --------------------------------------------------------------------------
+
+def make_plan(root, entries):
+    """比對主機上的現況，決定每個檔案的動作。回傳 (plan, conflicts)"""
+    plan = []
+    conflicts = []
+    for e in entries:
+        full = os.path.join(root, e['path'])
+        if os.path.islink(full) or (os.path.lexists(full) and not os.path.isfile(full)):
+            raise UpdateError('%s 在主機上是目錄或連結，無法處理' % e['path'])
+        current = file_sha1(full)
+        base = e['base']
+        item = {'entry': e, 'path': e['path'], 'full': full, 'current': current, 'note': ''}
+
+        if e['op'] == 'file':
+            if current == e['sha1']:
+                item['action'] = 'same'
+            elif current is None:
+                item['action'] = 'create'
+                if base not in (None, NO_FILE):
+                    item['note'] = '主機上沒有這個檔案（預期應該存在）'
+            else:
+                item['action'] = 'overwrite'
+                if base == NO_FILE:
+                    item['note'] = '主機上已經有這個檔案（預期是新檔）'
+                elif base is not None and current != base:
+                    item['note'] = '主機上的檔案和更新前的版本不同（可能被直接改過）'
+        else:
+            if current is None:
+                item['action'] = 'gone'
+            else:
+                item['action'] = 'delete'
+                if base not in (None, NO_FILE) and current != base:
+                    item['note'] = '主機上的檔案和更新前的版本不同（可能被直接改過）'
+        if item['note']:
+            conflicts.append(item)
+        plan.append(item)
+    return plan, conflicts
+
+
+LABELS = {
+    'create': '[新增]',
+    'overwrite': '[覆蓋]',
+    'delete': '[刪除]',
+    'same': '[相同]',
+    'gone': '[已無]',
+}
+
+
+def print_plan(plan, stamp):
+    counts = {}
+    for item in plan:
+        a = item['action']
+        counts[a] = counts.get(a, 0) + 1
+        line = '  %s %s' % (LABELS[a], item['path'])
+        if a in ('overwrite', 'delete'):
+            line += '    → 備份 %s_%s' % (item['path'], stamp)
+        if a == 'same':
+            line += '    (內容相同，略過)'
+        if a == 'gone':
+            line += '    (主機上已經沒有，略過)'
+        out(line)
+        if item['note']:
+            out('      ! 衝突：%s' % item['note'])
+    out()
+    out('  新增 %d、覆蓋 %d、刪除 %d、相同 %d' % (
+        counts.get('create', 0), counts.get('overwrite', 0),
+        counts.get('delete', 0), counts.get('same', 0) + counts.get('gone', 0)))
+
+
+# --------------------------------------------------------------------------
+# 寫入
+# --------------------------------------------------------------------------
+
+def is_root_user():
+    return hasattr(os, 'geteuid') and os.geteuid() == 0
+
+
+def copy_owner(path, ref_stat):
+    if is_root_user():
+        try:
+            os.chown(path, ref_stat.st_uid, ref_stat.st_gid)
+        except OSError:
+            pass
+
+
+def make_dirs(root, rel_dir, created_dirs):
+    """逐層建立目錄，擁有者跟上一層相同；記下新建的目錄以便還原"""
+    parent = root
+    for part in rel_dir.split('/'):
+        if not part:
+            continue
+        path = os.path.join(parent, part)
+        if not os.path.isdir(path):
+            os.mkdir(path, 0o755)
+            copy_owner(path, os.stat(parent))
+            created_dirs.append(os.path.relpath(path, root).replace(os.sep, '/'))
+        parent = path
+
+
+def write_file(full, data, ref_stat, mode):
+    tmp = os.path.join(os.path.dirname(full), '.%s.aisle-tmp' % os.path.basename(full))
+    try:
+        fp = open(tmp, 'wb')
+        try:
+            fp.write(data)
+        finally:
+            fp.close()
+        if ref_stat is not None:
+            perm = ref_stat.st_mode & 0o7777
+            if mode == '755':
+                perm |= 0o111
+            os.chmod(tmp, perm)
+            copy_owner(tmp, ref_stat)
+        else:
+            os.chmod(tmp, 0o755 if mode == '755' else 0o644)
+            copy_owner(tmp, os.stat(os.path.dirname(full)))
+        os.rename(tmp, full)
+    except (OSError, IOError):
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def log_path(root, stamp):
+    return os.path.join(root, LOG_DIR, 'update_%s.json' % stamp)
+
+
+def save_log(root, record):
+    d = os.path.join(root, LOG_DIR)
+    if not os.path.isdir(d):
+        os.makedirs(d)
+    fp = open(log_path(root, record['stamp']), 'wb')
+    try:
+        fp.write(json.dumps(record, indent=2, sort_keys=True, separators=(',', ': ')))
+    finally:
+        fp.close()
+
+
+def undo(root, done):
+    """把已完成的動作倒著還原（套用中途失敗時使用）"""
+    for act in reversed(done):
+        full = os.path.join(root, act['path'])
+        try:
+            if act['op'] == 'create':
+                if os.path.exists(full):
+                    os.remove(full)
+            elif act['op'] in ('overwrite', 'delete'):
+                backup = os.path.join(root, act['backup'])
+                if os.path.exists(backup):
+                    os.rename(backup, full)
+            elif act['op'] == 'mkdir':
+                os.rmdir(full)
+        except OSError as ex:
+            out('  ! 還原 %s 失敗：%s' % (act['path'], ex))
+
+
+def apply_plan(root, plan, stamp, update_file, meta):
+    record = {
+        'stamp': stamp,
+        'update_file': os.path.abspath(update_file),
+        'from': meta.get('from', ''),
+        'to': meta.get('to', ''),
+        'applied_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'status': 'applying',
+        'actions': [],
+    }
+    done = record['actions']
+    try:
+        for item in plan:
+            e = item['entry']
+            a = item['action']
+            full = item['full']
+            rel_backup = '%s_%s' % (e['path'], stamp)
+            backup = os.path.join(root, rel_backup)
+            if a == 'create':
+                created_dirs = []
+                rel_dir = os.path.dirname(e['path'])
+                if rel_dir:
+                    make_dirs(root, rel_dir, created_dirs)
+                for d in created_dirs:
+                    done.append({'op': 'mkdir', 'path': d})
+                write_file(full, e['data'], None, e['mode'])
+                done.append({'op': 'create', 'path': e['path'], 'sha1': e['sha1']})
+            elif a == 'overwrite':
+                st = os.stat(full)
+                shutil.copy2(full, backup)
+                copy_owner(backup, st)
+                done.append({'op': 'overwrite', 'path': e['path'], 'backup': rel_backup,
+                             'sha1': e['sha1'], 'old_sha1': item['current']})
+                write_file(full, e['data'], st, e['mode'])
+            elif a == 'delete':
+                os.rename(full, backup)
+                done.append({'op': 'delete', 'path': e['path'], 'backup': rel_backup,
+                             'old_sha1': item['current']})
+            else:
+                continue
+            out('  %s %s' % (LABELS[a], e['path']))
+    except (OSError, IOError) as ex:
+        out()
+        out('[ERROR] 寫入 %s 時失敗：%s' % (item['path'], ex))
+        out('        正在還原已經改過的檔案...')
+        undo(root, done)
+        record['status'] = 'failed'
+        try:
+            save_log(root, record)
+        except (OSError, IOError):
+            pass
+        out('        已還原。請確認目錄權限（例：用 sudo 執行）後再試一次。')
+        return False
+    record['status'] = 'applied'
+    save_log(root, record)
+    return True
+
+
+# --------------------------------------------------------------------------
+# 紀錄與還原
+# --------------------------------------------------------------------------
+
+def to_str(value):
+    """json.loads 在 Python 2 回傳 unicode，轉回 UTF-8 str，避免和中文訊息字串混用時出錯"""
+    if isinstance(value, dict):
+        return dict((to_str(k), to_str(v)) for k, v in value.items())
+    if isinstance(value, list):
+        return [to_str(v) for v in value]
+    if sys.version_info[0] == 2 and isinstance(value, unicode):  # noqa: F821
+        return value.encode('utf-8')
+    return value
+
+
+def load_logs(root):
+    d = os.path.join(root, LOG_DIR)
+    logs = []
+    if os.path.isdir(d):
+        for name in sorted(os.listdir(d)):
+            m = re.match(r'^update_(\d{8}_\d{6})\.json$', name)
+            if not m:
+                continue
+            try:
+                fp = open(os.path.join(d, name), 'rb')
+                try:
+                    logs.append(to_str(json.loads(fp.read())))
+                finally:
+                    fp.close()
+            except (IOError, ValueError):
+                out('  ! 無法讀取 %s' % name)
+    return logs
+
+
+def cmd_list(root):
+    logs = load_logs(root)
+    if not logs:
+        out('沒有更新紀錄（%s）' % os.path.join(root, LOG_DIR))
+        return 0
+    status_text = {'applied': '已套用', 'rolled_back': '已還原', 'failed': '失敗已還原', 'applying': '中斷'}
+    for r in logs:
+        n = len([a for a in r['actions'] if a['op'] != 'mkdir'])
+        out('  %s  %s  %3d 個檔案  版本 %s → %s  %s' % (
+            r['stamp'], status_text.get(r['status'], r['status']), n,
+            (r.get('from') or '?')[:7], (r.get('to') or '?')[:7], os.path.basename(r['update_file'])))
+    return 0
+
+
+def cmd_rollback(root, stamp, do_apply, force):
+    logs = load_logs(root)
+    if stamp == 'last':
+        applied = [r for r in logs if r['status'] == 'applied']
+        if not applied:
+            out('[ERROR] 沒有可以還原的更新')
+            return 1
+        record = applied[-1]
+    else:
+        if not RE_STAMP.match(stamp):
+            out('[ERROR] 時間格式應為 YYYYMMDD_HHMMSS，例 20261104_204500')
+            return 2
+        found = [r for r in logs if r['stamp'] == stamp]
+        if not found:
+            out('[ERROR] 找不到 %s 的更新紀錄，可用 --list 查看' % stamp)
+            return 1
+        record = found[0]
+    if record['status'] != 'applied':
+        out('[ERROR] %s 的狀態是 %s，不能還原' % (record['stamp'], record['status']))
+        return 1
+
+    out('還原 %s 的更新（%s）' % (record['stamp'], os.path.basename(record['update_file'])))
+    out()
+    problems = 0
+    for act in reversed(record['actions']):
+        full = os.path.join(root, act['path'])
+        note = ''
+        if act['op'] == 'create':
+            line = '  [移除] %s' % act['path']
+            if file_sha1(full) not in (act['sha1'], None):
+                note = '更新後又被改過，移除會遺失這些修改'
+        elif act['op'] == 'overwrite':
+            line = '  [還原] %s  ← %s' % (act['path'], os.path.basename(act['backup']))
+            if not os.path.isfile(os.path.join(root, act['backup'])):
+                out(line)
+                out('      ! 找不到備份檔，無法還原')
+                problems += 1
+                continue
+            if file_sha1(full) not in (act['sha1'], None):
+                note = '更新後又被改過，還原會遺失這些修改'
+        elif act['op'] == 'delete':
+            line = '  [放回] %s  ← %s' % (act['path'], os.path.basename(act['backup']))
+            if not os.path.isfile(os.path.join(root, act['backup'])):
+                out(line)
+                out('      ! 找不到備份檔，無法還原')
+                problems += 1
+                continue
+            if os.path.exists(full):
+                note = '原位置已經有新的檔案，會被覆蓋'
+        else:
+            continue
+        out(line)
+        if note:
+            out('      ! 衝突：%s' % note)
+            problems += 1
+    out()
+    if problems and not force:
+        out('[ERROR] 有 %d 個問題。確認可以覆蓋後加上 --force' % problems)
+        return 1
+    if not do_apply:
+        out('這是預覽，沒有改動任何檔案。確認無誤後加上 --apply 執行還原。')
+        return 0
+
+    for act in reversed(record['actions']):
+        full = os.path.join(root, act['path'])
+        try:
+            if act['op'] == 'create':
+                if os.path.exists(full):
+                    os.remove(full)
+            elif act['op'] in ('overwrite', 'delete'):
+                backup = os.path.join(root, act['backup'])
+                if os.path.isfile(backup):
+                    os.rename(backup, full)
+            elif act['op'] == 'mkdir':
+                if os.path.isdir(full) and not os.listdir(full):
+                    os.rmdir(full)
+        except OSError as ex:
+            out('[ERROR] %s：%s' % (act['path'], ex))
+            return 1
+    record['status'] = 'rolled_back'
+    record['rolled_back_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    save_log(root, record)
+    out('[OK] 已還原 %s 的更新，備份檔已改回原檔名' % record['stamp'])
+    return 0
+
+
+# --------------------------------------------------------------------------
+# 主程式
+# --------------------------------------------------------------------------
+
+def find_root(opt_root):
+    def ok(d):
+        return os.path.isfile(os.path.join(d, 'core', 'bootstrap.php'))
+    if opt_root:
+        if not ok(opt_root):
+            raise UpdateError('%s 不是 AISLE 根目錄（找不到 core/bootstrap.php）' % opt_root)
+        return os.path.abspath(opt_root)
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.path.join(here, '..', '..'), os.getcwd()):
+        if ok(d):
+            return os.path.abspath(d)
+    raise UpdateError('找不到 AISLE 根目錄，請用 --root 指定，例 --root /var/www/html/aisle')
+
+
+def usage():
+    out(__doc__.strip())
+    return 2
+
+
+def main(argv):
+    args = list(argv)
+    opts = {'apply': False, 'force': False, 'list': False, 'root': None, 'rollback': None}
+    files = []
+    while args:
+        a = args.pop(0)
+        if a in ('-h', '--help'):
+            return usage()
+        elif a == '--apply':
+            opts['apply'] = True
+        elif a == '--force':
+            opts['force'] = True
+        elif a == '--list':
+            opts['list'] = True
+        elif a in ('--root', '--rollback'):
+            if not args:
+                out('[ERROR] %s 後面要接參數' % a)
+                return 2
+            opts[a[2:]] = args.pop(0)
+        elif a.startswith('-'):
+            out('[ERROR] 不認得的選項 %s（-h 看用法）' % a)
+            return 2
+        else:
+            files.append(a)
+
+    try:
+        root = find_root(opts['root'])
+        if opts['list']:
+            return cmd_list(root)
+        if opts['rollback']:
+            return cmd_rollback(root, opts['rollback'], opts['apply'], opts['force'])
+        if len(files) != 1:
+            return usage()
+        update_file = files[0]
+        if not os.path.isfile(update_file):
+            out('[ERROR] 找不到更新檔 %s' % update_file)
+            return 1
+
+        meta, entries = parse_update(update_file)
+        out('更新檔：%s' % update_file)
+        if meta.get('from') or meta.get('to'):
+            out('版本　：%s → %s' % (meta.get('from', '?')[:7] or '?', meta.get('to', '?')[:7]))
+        if meta.get('note'):
+            out('說明　：%s' % meta['note'])
+        out('目錄　：%s' % root)
+        out('驗證　：%d 個項目的 sha1 都正確' % len(entries))
+        out()
+
+        stamp = time.strftime(STAMP_FORMAT)
+        plan, conflicts = make_plan(root, entries)
+        for item in plan:
+            if item['action'] in ('overwrite', 'delete') and os.path.lexists(
+                    os.path.join(root, '%s_%s' % (item['path'], stamp))):
+                raise UpdateError('備份檔 %s_%s 已經存在，請稍等一秒再執行' % (item['path'], stamp))
+        print_plan(plan, stamp)
+        out()
+
+        if conflicts and not opts['force']:
+            out('[ERROR] 有 %d 個衝突：主機上的檔案不是更新檔預期的版本。' % len(conflicts))
+            out('        確認可以覆蓋（會先備份）後加上 --force。')
+            return 1
+        changes = [p for p in plan if p['action'] in ('create', 'overwrite', 'delete')]
+        if not changes:
+            out('[OK] 所有檔案都已經是最新的，不需要更新')
+            return 0
+        if not opts['apply']:
+            out('這是預覽，沒有改動任何檔案。確認無誤後加上 --apply 執行。')
+            return 0
+
+        out('開始套用（備份時間 %s）' % stamp)
+        if not apply_plan(root, plan, stamp, update_file, meta):
+            return 1
+        out()
+        out('[OK] 已更新 %d 個檔案，紀錄：%s' % (len(changes), log_path(root, stamp)))
+        out('     要還原這次更新：python %s --rollback %s' % (sys.argv[0], stamp))
+        return 0
+    except UpdateError as ex:
+        out('[ERROR] %s' % ex)
+        out('        沒有改動任何檔案。')
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
+#@@@ FILE scripts/python/chart_data.py sha1=77977c151626dcd145a91cc59dd703c8da9c8e7a base=- mode=755 enc=text nl=1
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+chart_demo 的 Python 資料來源（Python 2.7）
+
+config/app.ini 設定 [chart_demo] source = "script" 時，
+modules/chart_demo/ChartDataSource.php 會呼叫本腳本並讀取 stdout 的 JSON。
+適合資料要從其他系統、檔案或需要 Python 前處理時使用；直接查 MariaDB 用 source = "db" 即可。
+
+用法：
+  python scripts/python/chart_data.py tools
+      → {"tools": ["APAN01", "APAP01", ...]}
+  python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-31 \
+      --tools APAN01,APAP01 --params M1BF_Z_C1,M1BF_Z_C2
+      → {"APAN01": {"Date": [...], "Data": {"M1BF_Z_C1": [...], "M1BF_Z_C2": [...]}}, ...}
+        每個參數陣列與 Date 等長，沒有值的位置放 null
+
+排序與格式整理由 PHP 端統一處理，這裡回傳順序不拘。
+錯誤時請寫到 stderr 並以非 0 結束，PHP 端會顯示錯誤。
+
+目前輸出的是範例資料；接真實資料請實作下方「★ 部署者實作區」。
+"""
+from __future__ import print_function
+
+import argparse
+import datetime
+import json
+import math
+import sys
+import zlib
+
+SAMPLE_TOOLS = ['APAN%02d' % i for i in range(1, 7)] + ['APAP%02d' % i for i in range(1, 7)]
+
+
+# =====================================================================
+# ★ 部署者實作區：把下面兩個函式換成實際的資料來源
+# ---------------------------------------------------------------------
+# 例：用 MySQLdb 查 MariaDB（帳密可用 ConfigParser 讀 config/app.ini 的 [database]）
+#
+#   import MySQLdb
+#   conn = MySQLdb.connect(host=..., user=..., passwd=..., db=..., charset='utf8')
+#   cur = conn.cursor()
+#   cur.execute("SELECT tool_id, DATE_FORMAT(data_time, '%%Y-%%m-%%d %%H:%%i:%%s'), param, value "
+#               "FROM tool_data WHERE tool_id IN (" + ','.join(['%s'] * len(tools)) + ") "
+#               "AND param IN (" + ','.join(['%s'] * len(params)) + ") "
+#               "AND data_time >= %s AND data_time < DATE_ADD(%s, INTERVAL 1 DAY)",
+#               tools + params + [start, end])
+#   return pivot(cur.fetchall())
+#
+# 一律使用參數化查詢（%s），不要把參數串進 SQL 字串
+# =====================================================================
+
+def fetch_tools():
+    # TODO(部署者)：回傳全部機台代號的 list
+    return list(SAMPLE_TOOLS)
+
+
+def fetch_series(tools, params, start, end):
+    # TODO(部署者)：回傳 {tool: {"Date": [...], "Data": {param: [...]}}}，含 start 與 end 兩天
+    out = {}
+    for tool in tools:
+        out[tool] = {'Date': [], 'Data': dict((p, []) for p in params)}
+    day = start
+    while day <= end:
+        for tool in tools:
+            if sample_down(tool, day):
+                continue
+            out[tool]['Date'].append(day.strftime('%Y-%m-%d'))
+            for p in params:
+                out[tool]['Data'][p].append(sample_value(tool, p, day))
+        day += datetime.timedelta(days=1)
+    return out
+
+
+def pivot(rows):
+    """(tool, date, param, value) 的資料列整理成輸出格式；同一台同一時間的參數合併，缺的補 None"""
+    tmp = {}
+    names = {}
+    for tool, date, param, value in rows:
+        tmp.setdefault(tool, {}).setdefault(str(date), {})[param] = None if value is None else float(value)
+        names.setdefault(tool, set()).add(param)
+    out = {}
+    for tool, by_date in tmp.items():
+        dates = sorted(by_date)
+        out[tool] = {
+            'Date': dates,
+            'Data': dict((p, [by_date[d].get(p) for d in dates]) for p in names[tool]),
+        }
+    return out
+
+
+# =====================================================================
+# 範例資料（與 PHP 端 sample 模式相同的固定演算法）
+# =====================================================================
+
+def crc(s):
+    return zlib.crc32(s.encode('utf-8')) & 0xffffffff
+
+
+def sample_down(tool, day):
+    """約 1/9 的日子整台沒有資料（模擬停機）"""
+    return crc('%s|%s' % (tool, day.strftime('%Y-%m-%d'))) % 9 == 0
+
+
+def sample_value(tool, param, day):
+    h = crc('%s|%s|%s' % (tool, param, day.strftime('%Y-%m-%d')))
+    seed = crc(tool)
+    # 同一台的參數走勢相近，各參數再加一點固定偏移
+    base = 1.2 + (seed % 300) / 100.0 + (crc(param) % 60) / 100.0 - 0.3
+    n = (day - datetime.date(1970, 1, 1)).days
+    wave = 0.6 * math.sin(float(n) / (5 + seed % 7) + seed % 10)
+    noise = ((h % 1000) / 1000.0 - 0.5) * 0.5
+    return round(max(0.0, base + wave + noise), 3)
+
+
+# =====================================================================
+
+def parse_date(s):
+    try:
+        return datetime.datetime.strptime(s, '%Y-%m-%d').date()
+    except ValueError:
+        raise argparse.ArgumentTypeError('日期格式需為 YYYY-MM-DD：%s' % s)
+
+
+def parse_tools(s):
+    return [t.strip() for t in s.split(',') if t.strip()]
+
+
+def main():
+    parser = argparse.ArgumentParser(description='chart_demo 資料來源')
+    sub = parser.add_subparsers(dest='cmd')
+    sub.add_parser('tools')
+    p = sub.add_parser('series')
+    p.add_argument('--start', type=parse_date, required=True)
+    p.add_argument('--end', type=parse_date, required=True)
+    p.add_argument('--tools', type=parse_tools, required=True)
+    p.add_argument('--params', type=parse_tools, required=True)
+    args = parser.parse_args()
+
+    if args.cmd == 'tools':
+        result = {'tools': fetch_tools()}
+    elif args.cmd == 'series':
+        result = fetch_series(args.tools, args.params, args.start, args.end)
+    else:
+        parser.print_help(sys.stderr)
+        return 2
+
+    print(json.dumps(result, separators=(',', ':')))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+#@@@ FILE scripts/python/make_update.py sha1=ef74c8dd4ee077580562dec43be537b09e22f4ff base=- mode=755 enc=text nl=1
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+產生 AISLE 單檔更新（在有 git 的電腦上執行，Python 2.7 / 3 都可以）
+
+把兩個版本之間的差異（新增、修改、刪除的檔案）打包成一個純文字檔，
+主機上用 scripts/python/apply_update.py 套用。
+
+用法：
+  python scripts/python/make_update.py <舊版本> [<新版本>] [選項]
+      <舊版本>  主機目前的版本（commit、branch 或 tag），例 7d8729a
+      <新版本>  要更新到的版本，預設 HEAD
+
+  python scripts/python/make_update.py --all [<版本>]
+      打包該版本的所有檔案（主機版本不明、或第一次安裝時使用），不檢查主機上的舊版本
+
+選項：
+  -o <檔案>          輸出位置，預設 updates/update_<日期>_<舊>_<新>.txt
+  --note "<說明>"    寫進更新檔的說明，套用時會顯示
+  --exclude <路徑>   不打包的路徑前綴，可重複；預設排除 updates/ 與 docs/screenshots/
+  --no-base          不記錄舊版本的 sha1（主機不檢查衝突）
+
+範例：
+  python scripts/python/make_update.py 7d8729a HEAD --note "新增單檔更新工具"
+"""
+from __future__ import print_function
+
+import base64
+import hashlib
+import os
+import subprocess
+import sys
+import time
+
+FORMAT_HEADER = b'#AISLE-UPDATE v1'
+MARK = b'#@@@ '
+DEFAULT_EXCLUDES = ['updates/', 'docs/screenshots/']
+
+
+PY2 = sys.version_info[0] == 2
+
+
+def native(b):
+    """git 輸出的 bytes 轉成本版本 Python 的 str（Python 2 本來就是 bytes）"""
+    return b if PY2 else b.decode('utf-8')
+
+
+def to_bytes(s):
+    return s if isinstance(s, bytes) else s.encode('utf-8')
+
+
+def die(msg):
+    print('[ERROR] %s' % msg)
+    sys.exit(1)
+
+
+def git(*args):
+    p = subprocess.Popen(('git',) + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = p.communicate()
+    if p.returncode != 0:
+        die('git %s 失敗：%s' % (' '.join(args), (err if PY2 else err.decode('utf-8', 'replace')).strip()))
+    return out
+
+
+def rev(ref):
+    return native(git('rev-parse', '--verify', ref + '^{commit}')).strip()
+
+
+def blob(commit, path):
+    return git('show', '%s:%s' % (commit, path))
+
+
+def file_mode(commit, path):
+    out = native(git('ls-tree', commit, '--', path))
+    return '755' if out.startswith('100755') else '644'
+
+
+def encode_entry(path, data, base, mode):
+    """回傳一個 FILE 區塊（bytes）"""
+    sha1 = hashlib.sha1(data).hexdigest()
+    attrs = ['sha1=' + sha1]
+    if base is not None:
+        attrs.append('base=' + base)
+    attrs.append('mode=' + mode)
+    is_text = b'\0' not in data
+    if is_text:
+        try:
+            data.decode('utf-8')
+        except UnicodeDecodeError:
+            is_text = False
+    eol = 'lf'
+    body = data
+    if is_text and b'\r' in data:
+        # 整個檔案都是 CRLF 時轉成 LF 存放、套用時還原；混用或有單獨的 \r 就改用 base64
+        if b'\r' not in data.replace(b'\r\n', b'') and data.count(b'\n') == data.count(b'\r\n'):
+            eol = 'crlf'
+            body = data.replace(b'\r\n', b'\n')
+        else:
+            is_text = False
+    if is_text and any(line.startswith(MARK) for line in body.split(b'\n')):
+        is_text = False          # 內容剛好有標記行，改用 base64 避免誤判
+
+    if is_text:
+        nl = '1'
+        if body and not body.endswith(b'\n'):
+            nl = '0'
+            body += b'\n'
+        attrs += ['enc=text', 'nl=' + nl]
+        if eol == 'crlf':
+            attrs.append('eol=crlf')
+    else:
+        b64 = base64.b64encode(data)
+        body = b''.join(b64[i:i + 76] + b'\n' for i in range(0, len(b64), 76))
+        attrs.append('enc=base64')
+    head = MARK + b'FILE ' + to_bytes(path) + b' ' + ' '.join(attrs).encode('ascii') + b'\n'
+    return head + body
+
+
+def excluded(path, excludes):
+    return any(path == e.rstrip('/') or path.startswith(e) for e in excludes)
+
+
+def main(argv):
+    args = list(argv)
+    refs = []
+    out_path = None
+    note = ''
+    excludes = []
+    use_base = True
+    full = False
+    while args:
+        a = args.pop(0)
+        if a in ('-h', '--help'):
+            print(__doc__.strip())
+            return 0
+        elif a in ('-o', '--note', '--exclude'):
+            if not args:
+                die('%s 後面要接參數' % a)
+            v = args.pop(0)
+            if a == '-o':
+                out_path = v
+            elif a == '--note':
+                note = v
+            else:
+                excludes.append(v)
+        elif a == '--no-base':
+            use_base = False
+        elif a == '--all':
+            full = True
+        elif a.startswith('-'):
+            die('不認得的選項 %s（-h 看用法）' % a)
+        else:
+            refs.append(a)
+    excludes = excludes or DEFAULT_EXCLUDES
+
+    top = native(git('rev-parse', '--show-toplevel')).strip()
+    os.chdir(top)
+
+    if full:
+        if len(refs) > 1:
+            die('--all 只接一個版本')
+        old = None
+        new = rev(refs[0] if refs else 'HEAD')
+        names = git('ls-tree', '-r', '-z', '--name-only', new).split(b'\0')
+        changes = [('A', native(n)) for n in names if n]
+        use_base = False
+    else:
+        if not refs or len(refs) > 2:
+            die('要指定主機目前的版本，例：make_update.py 7d8729a HEAD（-h 看用法）')
+        old = rev(refs[0])
+        new = rev(refs[1] if len(refs) > 1 else 'HEAD')
+        raw = git('diff', '--name-status', '--no-renames', '-z', old, new).split(b'\0')
+        raw = [r for r in raw if r]
+        changes = []
+        for i in range(0, len(raw), 2):
+            changes.append((native(raw[i])[0], native(raw[i + 1])))
+
+    if git('status', '--porcelain', '--untracked-files=no').strip():
+        print('[注意] 工作目錄有尚未 commit 的修改，更新檔只會包含已 commit 的內容')
+
+    entries = []
+    skipped = []
+    for status, path in sorted(changes, key=lambda c: c[1]):
+        if excluded(path, excludes):
+            skipped.append(path)
+            continue
+        if status in ('A', 'M', 'T'):
+            base = None
+            if use_base:
+                base = '-' if status == 'A' else hashlib.sha1(blob(old, path)).hexdigest()
+            block = encode_entry(path, blob(new, path), base, file_mode(new, path))
+            entries.append((status, path, block))
+        elif status == 'D':
+            line = MARK + b'DELETE ' + to_bytes(path)
+            if use_base:
+                line += b' base=' + hashlib.sha1(blob(old, path)).hexdigest().encode('ascii')
+            entries.append((status, path, line + b'\n'))
+        else:
+            die('不支援的變更類型 %s：%s' % (status, path))
+
+    if not entries:
+        die('兩個版本之間沒有需要更新的檔案')
+
+    short_old = old[:7] if old else 'all'
+    short_new = new[:7]
+    if not out_path:
+        out_path = os.path.join('updates', 'update_%s_%s_%s.txt' % (time.strftime('%Y%m%d'), short_old, short_new))
+    d = os.path.dirname(out_path)
+    if d and not os.path.isdir(d):
+        os.makedirs(d)
+
+    lines = [FORMAT_HEADER + b'\n']
+    lines.append(b'# AISLE single-file update. Apply on the server:\n')
+    lines.append(b'#   python scripts/python/apply_update.py <this file>          (preview)\n')
+    lines.append(b'#   python scripts/python/apply_update.py <this file> --apply  (apply)\n')
+    lines.append(('#@ from=%s\n' % (old or '')).encode('ascii'))
+    lines.append(('#@ to=%s\n' % new).encode('ascii'))
+    lines.append(('#@ created=%s\n' % time.strftime('%Y-%m-%d %H:%M:%S')).encode('ascii'))
+    if note:
+        lines.append(b'#@ note=' + to_bytes(note) + b'\n')
+    for _, _, block in entries:
+        lines.append(block)
+    lines.append(MARK + ('END count=%d\n' % len(entries)).encode('ascii'))
+
+    fp = open(out_path, 'wb')
+    try:
+        fp.write(b''.join(lines))
+    finally:
+        fp.close()
+
+    label = {'A': '新增', 'M': '修改', 'T': '修改', 'D': '刪除'}
+    for status, path, _ in entries:
+        print('  [%s] %s' % (label[status], path))
+    for path in skipped:
+        print('  [略過] %s' % path)
+    print()
+    print('[OK] %s → %s，%d 個項目，寫入 %s（%d KB）' % (
+        short_old, short_new, len(entries), out_path, (os.path.getsize(out_path) + 1023) // 1024))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
+#@@@ FILE scripts/shell/fetch_vendor.sh sha1=091a8d5c36c272664c312d1d69557d478166d238 base=05d8ec59c1da6b8d31d73d2440f741c4d19f5572 mode=755 enc=text nl=1
+#!/bin/bash
+# 下載前端第三方套件（jQuery、ECharts）到 public/assets/vendor/（內網主機可先在外網電腦執行再複製過去）
+set -e
+. "$(dirname "$0")/_common.sh"
+
+VENDOR="$AISLE_ROOT/public/assets/vendor"
+mkdir -p "$VENDOR"
+
+# jQuery 1.12.4：仍支援舊版 IE，與專案的 jQuery 寫法相容
+curl -fSL -o "$VENDOR/jquery-1.12.4.min.js" https://code.jquery.com/jquery-1.12.4.min.js
+info "已下載 $VENDOR/jquery-1.12.4.min.js"
+
+# ECharts 5.4.3：chart_demo 圖表頁使用；檔案存在時頁面優先用本機的，否則走 CDN
+curl -fSL -o "$VENDOR/echarts-5.4.3.min.js" https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js
+info "已下載 $VENDOR/echarts-5.4.3.min.js"
+#@@@ END count=18

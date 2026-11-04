@@ -13,6 +13,17 @@ DirectoryIndex index.php
     RewriteRule ^(.*)$ public/$1 [L]
 </IfModule>
 
+# apply_update.py 留下的備份檔（例 Auth.php_20261104_204500）與暫存檔一律拒絕存取
+<FilesMatch "(_[0-9]{8}_[0-9]{6}|\.aisle-tmp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
 # 沒有 mod_rewrite 時整個目錄拒絕存取，避免設定檔外洩（public/.htaccess 會再開放 public/）
 <IfModule !mod_rewrite.c>
     <IfModule mod_authz_core.c>

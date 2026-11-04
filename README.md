@@ -73,6 +73,8 @@ AISLE/
 ├── scripts/
 │   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
 │   ├── python/chart_data.py   # 圖表 Demo 的 Python 資料來源（source = script 時使用）
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
 │   └── shell/
 │       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
 │       ├── create_user.sh     # 建立使用者（互動輸入密碼）
@@ -85,6 +87,7 @@ AISLE/
 ├── storage/
 │   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
 │   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
 └── docs/screenshots/          # 介面截圖
 ```
 

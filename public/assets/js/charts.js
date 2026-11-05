@@ -1,8 +1,8 @@
 /*
- * chart_demo 頁面 (jQuery 1.12 + ECharts 5)
+ * charts 頁面 (jQuery 1.12 + ECharts 5)，所有 chart（BSLr、M1BF…）共用
  *
  * 三個區塊：single 單台趨勢 / newest 最新值排排站 / tbt 歷史趨勢排排站
- * 每個區塊依 config/chart_demo.ini 的圖表分組各畫一張圖（CFG.groups），
+ * 每個區塊依 charts/<名稱>.ini 的 [plot.xxx] 各畫一張圖（CFG.groups），
  * 同一組的參數（例 M1BF_Z_C1、M1BF_Z_C2）畫在同一張圖上。
  *
  * 後端回傳格式：
@@ -21,7 +21,7 @@
 (function ($, window) {
     'use strict';
 
-    var CFG = window.AISLE_CHART_DEMO;
+    var CFG = window.AISLE_CHARTS;
     if (!$ || !CFG) {
         return;
     }
@@ -225,7 +225,7 @@
                 name: param,
                 type: 'line',
                 data: points,
-                connectNulls: false,
+                connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
                 showSymbol: points.length <= 45,
                 symbolSize: 8,
                 color: colorOf(tool),
@@ -357,7 +357,7 @@
                     name: seg.tool,
                     type: 'line',
                     data: arr,
-                    connectNulls: false,
+                    connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
                     showSymbol: false,
                     symbolSize: 8,
                     color: colorOf(seg.tool),
@@ -470,7 +470,7 @@
         if (!cache.tbt) {
             return;
         }
-        var model = $('#cd-model').val();
+        var model = $('#cd-model').val() || 'All';  // ini 沒設定機型時沒有下拉選單
         eachBox('newest', function (box) {
             var data = {};
             $.each(cache.tbt, function (tool, s) {

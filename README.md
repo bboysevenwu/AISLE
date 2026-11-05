@@ -20,8 +20,10 @@ AISLE/
 ├── README.md
 ├── config/
 │   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
-│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
-│   └── chart_demo.ini         # 圖表 Demo 的圖表分組、各區塊開關
+│   └── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
+│   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
+│   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
 ├── core/                      # 框架核心（一般開發不需修改）
 │   ├── bootstrap.php          # 載入類別、設定、Session
 │   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
@@ -44,7 +46,7 @@ AISLE/
 │   ├── profile/               # EE + PE（改密碼）
 │   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
 │   ├── pe_recipe/             # 只有 PE
-│   ├── chart_demo/            # EE + PE（圖表 Demo：ECharts + AJAX，見第 10 節）
+│   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
 │   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
@@ -68,17 +70,17 @@ AISLE/
 │       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
 │       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
 │       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
-│       ├── js/chart_demo.js   # 圖表 Demo 頁的 ECharts 繪圖
+│       ├── js/charts.js       # 圖表頁的 ECharts 繪圖（所有圖表共用）
 │       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
 ├── scripts/
 │   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
-│   ├── python/chart_data.py   # 圖表 Demo 的 Python 資料來源（source = script 時使用）
 │   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
 │   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
 │   └── shell/
 │       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
 │       ├── create_user.sh     # 建立使用者（互動輸入密碼）
 │       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── new_chart.sh       # 由範本產生新圖表 charts/<名稱>.ini + .php（見第 10 節）
 │       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
 │       └── fetch_vendor.sh    # 下載 jQuery、ECharts
 ├── sql/
@@ -210,7 +212,7 @@ auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出�
 | 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
 | 製程配方 pe_recipe | | ✓ | ✓ |
 | 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
-| 圖表 Demo chart_demo | ✓ | ✓ | ✓ |
+| 圖表 › M1BF m1bf（module:charts） | ✓ | ✓ | ✓ |
 | 使用者管理 admin_users | | | ✓ |
 
 修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
@@ -389,21 +391,50 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 
 ---
 
-## 10. 圖表 Demo（chart_demo）
+## 10. 圖表（charts）
 
-資料視覺化頁面範本，網址 `index.php?m=chart_demo`，EE、PE 可用。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+多張圖表（BSLr、M1BF、CDM、BMMF…）共用同一個模組 `modules/charts`，每張圖表是選單「圖表 // CHARTS」底下的一頁。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+每張圖表只由兩個同名檔案定義，新增圖表不需要改任何程式：
+
+| 檔案 | 內容 |
+|---|---|
+| `charts/<名稱>.ini` | 畫什麼、怎麼畫：`[page]` 整頁設定、`[plot.<代號>]` 每組圖 |
+| `charts/<名稱>.php` | 部署者寫 SQL，整理成資料格式（`class <名稱>Chart extends ChartSource`） |
+| `config/config.ini` | `[page.<小寫名稱>]`，`route = "module:charts"`、`group = "charts"`；哪些身份看得到寫在 `[access]` |
+
+頁面代號 = 圖表名稱轉小寫：`[page.bslr]` → `charts/BSLr.ini`、`charts/BSLr.php`，網址 `index.php?m=bslr`。
 
 | 區塊 | 內容 |
 |---|---|
-| 全域選擇器 | 起訖日期（含 7D / 30D / 90D 快捷）、單台機台 |
+| 全域選擇器 | 起訖日期（快捷按鈕由 `quick_days` 設定）、單台機台 |
 | single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
-| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選 1980 / 2000 / All；點長條會切換上方的單台機台 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選（`model.<機型>`）；點長條會切換上方的單台機台 |
 | TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
 
-### 圖表分組：`config/chart_demo.ini`
+### 新增一張圖表
+
+```bash
+bash scripts/shell/new_chart.sh CDM      # 建立 charts/CDM.ini、charts/CDM.php，並印出 config.ini 要貼的區段
+```
+
+1. 編輯 `charts/CDM.ini` 的 `[plot.xxx]`；此時 `source = sample`，用範例資料就能看到完整畫面
+2. 編輯 `charts/CDM.php` 寫 `tools()`、`series()` 的 SQL，寫好把 ini 改成 `source = php`
+3. 把腳本印出的 `[page.cdm]` 貼進 `config/config.ini`，並把 `cdm` 加到 `[access]` 要看得到的身份
+4. `python scripts/python/check_config.py` 檢查
+
+### 設定檔：`charts/<名稱>.ini`
 
 ```ini
-[chart.m1bf_z]
+[page]
+source       = php          ; php = 用 <名稱>.php 查資料庫；sample = 內建範例資料
+default_days = 60           ; 預設顯示最近幾天
+max_days     = 366          ; 一次最多查幾天
+quick_days   = "7, 30, 90"  ; 快速區間按鈕
+model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
+model.2000   = "PAP"
+
+[plot.m1bf_z]
 title  = "M1BF_Z"
 params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
 single = On                        ; 是否畫單台機台趨勢
@@ -413,7 +444,7 @@ ymin   = 0                         ; Y 軸下限（三張圖共用）
 ymax   = 6                         ; Y 軸上限（三張圖共用）
 newest_ymax = 5                    ; 只改最新值排排站的上限
 
-[chart.m1bf_ry]
+[plot.m1bf_ry]
 title  = "M1BF_Ry"
 params = "M1BF_Ry_C1, M1BF_Ry_C2"
 newest = Off                       ; 這組不顯示最新值排排站
@@ -421,15 +452,63 @@ tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，�
 tbt_ymax = 6
 ```
 
-- 每個 `[chart.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 每個 `[plot.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
 - 某區塊沒有任何一組開啟時，整個區塊不顯示
-- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
 - Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
-- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/chart_demo/ChartConfig.php` 檢查）
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
+
+### 資料來源：`charts/<名稱>.php`
+
+```php
+<?php
+class BSLrChart extends ChartSource
+{
+    public function tools()
+    {
+        $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM bslr_x_data');
+        $tools = array();
+        foreach ($rows as $r) {
+            $tools[] = $r['tool_id'];
+        }
+        return $tools;
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $where = 'tool_id IN (' . $this->in($tools) . ')
+                  AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        $bind  = array_merge($tools, array($start, $end));
+
+        // 長表（tool_id, data_time, param, value）
+        $a = self::pivot($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+               FROM bslr_x_data WHERE ' . $where, $bind), 'tool_id', 'd', 'param', 'value');
+
+        // 寬表，欄位 c1 / c2 對應參數 BSLr_Y_C1 / BSLr_Y_C2
+        $b = self::wide($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+               FROM bslr_y_summary WHERE ' . $where, $bind),
+            'tool_id', 'd', array('BSLr_Y_C1' => 'c1', 'BSLr_Y_C2' => 'c2'));
+
+        return self::merge($a, $b);   // 不同 table 的結果依機台 + 時間合併
+    }
+}
+```
+
+| 工具（`modules/charts/ChartSource.php`） | 用途 |
+|---|---|
+| `$this->fetchAll($sql, $bind)` | prepared statement 查詢，值一律用 `?` 綁定 |
+| `$this->in($list)` | 產生 `IN (...)` 用的 `?,?,?` |
+| `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
+| `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
+| `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+
+資料庫連線在 `config/app.ini` 的 `[charts_db]`（host / port / name / user / password，所有圖表共用）；`host` 留空時使用 AISLE 自己的 `[database]`。
 
 ### 資料格式與載入
 
-後端 `index.php?m=chart_demo&a=tbt&start=&end=` 回傳區間內全部機台、`chart_demo.ini` 用到的全部參數：
+後端 `index.php?m=<頁面代號>&a=tbt&start=&end=` 回傳區間內全部機台、ini 用到的全部參數：
 
 ```json
 {
@@ -438,18 +517,10 @@ tbt_ymax = 6
 }
 ```
 
-- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null 由 controller 統一處理，資料來源不需要先排好
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
 - 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
-- 機型判斷：名稱含 `PAN` → 1980、含 `PAP` → 2000（`ChartDemoController::modelOf()`）
 - 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
-- 每張圖都有「資料表」按鈕可切換成表格檢視；查詢區間上限 366 天（`ChartDemoController::MAX_DAYS`）
+- 每張圖都有「資料表」按鈕可切換成表格檢視
+- 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
 
-### 資料來源：`config/app.ini` 的 `[chart_demo] source`
-
-| source | 說明 | 部署者要做的事 |
-|---|---|---|
-| `sample`（預設） | 內建範例資料，不需資料庫 | 無 |
-| `db` | PHP 用 PDO 直接查 MariaDB | 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區」兩個方法（已附範例 SQL；長表用 `pivot()`、寬表用 `wide()` 轉換） |
-| `script` | 呼叫 `scripts/python/chart_data.py` 取得 JSON | 實作該腳本的「★ 部署者實作區」 |
-
-![chart_demo](docs/screenshots/chart_demo.png)
+![charts](docs/screenshots/charts.png)

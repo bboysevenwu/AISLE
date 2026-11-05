@@ -1,9 +1,13 @@
 <?php
 /**
- * chart_demo 模組：資料視覺化範本（config.ini：EE、PE 可用）
+ * charts 模組：多張圖表共用的 Controller
  *
- *   index.php?m=chart_demo                                      頁面
- *   index.php?m=chart_demo&a=tbt&start=&end=                    區間內全部機台的資料
+ * 每張 chart 是 config/config.ini 裡的一個頁面，route 都指向 module:charts，
+ * 頁面代號 = chart 名稱轉小寫，例：
+ *   [page.bslr]  route = "module:charts"   →  charts/BSLr.ini + charts/BSLr.php
+ *
+ *   index.php?m=bslr                                      頁面
+ *   index.php?m=bslr&a=tbt&start=&end=                    區間內全部機台的資料
  *
  * 頁面只呼叫 tbt 一次，三個區塊都從這份資料取得：
  *   TBT 直接畫；single 取出單台；Newest_TBT 取每台在區間內的最後一筆
@@ -12,72 +16,103 @@
  * 回傳格式：
  *   { "APAN01": { "Date": ["2026-01-01", ...],
  *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... } }, ... }
- * 機台依名稱自然排序，每台內部依時間排序；Data 只含 config/chart_demo.ini 用到的參數，
- * 每個參數陣列與 Date 一樣長，沒有值的位置是 null。錯誤時回 HTTP 400 + {"ok":false,"error":"..."}
+ * 機台依名稱自然排序，每台內部依時間排序；Data 只含 ini 用到的參數，
+ * 每個參數陣列與 Date 一樣長，沒有值的位置是 null。錯誤時回 HTTP 400 / 500 + {"ok":false,"error":"..."}
  *
- * 哪些參數畫在同一張圖、各區塊是否顯示：config/chart_demo.ini（ChartConfig.php 讀取）
- * 取資料的程式在 ChartDataSource.php，部署時只需要改那個檔案
+ * 新增 chart 不需要修改這個檔案：見 charts/_template.ini、charts/_template.php
  */
 require_once dirname(__FILE__) . '/ChartConfig.php';
-require_once dirname(__FILE__) . '/ChartDataSource.php';
+require_once dirname(__FILE__) . '/ChartSource.php';
 
-class ChartDemoController extends Controller
+class ChartsController extends Controller
 {
-    /** 一次最多查詢的天數，避免一次撈太多資料 */
-    const MAX_DAYS = 366;
-    /** 預設顯示最近幾天 */
-    const DEFAULT_DAYS = 60;
+    /** @var ChartConfig */
+    private $cfg = null;
+    /** @var ChartSource */
+    private $source = null;
 
     public function indexAction()
     {
-        $tools = $this->sortTools(ChartDataSource::tools());
+        try {
+            $cfg = $this->cfg();
+            $tools = $this->sortTools($this->source()->tools());
+        } catch (Exception $e) {
+            $this->render('error', array('message' => $this->errorMessage($e)));
+            return;
+        }
         $models = array();
         foreach ($tools as $t) {
-            $models[$t] = self::modelOf($t);
+            $models[$t] = $cfg->modelOf($t);
         }
         $this->render('index', array(
-            'groups' => ChartConfig::groups(),
-            'tools'  => $tools,
-            'models' => $models,
-            'start'  => date('Y-m-d', strtotime('-' . (self::DEFAULT_DAYS - 1) . ' day')),
-            'end'    => date('Y-m-d'),
-            'source' => ChartDataSource::mode(),
+            'chart'      => $cfg->name,
+            'plots'      => $cfg->plots(),
+            'tools'      => $tools,
+            'models'     => $models,
+            'modelRules' => $cfg->models(),
+            'quickDays'  => $cfg->quickDays(),
+            'start'      => date('Y-m-d', strtotime('-' . ($cfg->defaultDays() - 1) . ' day')),
+            'end'        => date('Y-m-d'),
+            'source'     => $cfg->source(),
         ));
     }
 
     /** 所有機台在期間內的資料（三個區塊共用） */
     public function tbtAction()
     {
-        $range = $this->range();
-        if ($range === null) {
-            return;
+        try {
+            $cfg = $this->cfg();
+            $range = $this->range($cfg->maxDays());
+            if ($range === null) {
+                return;
+            }
+            $tools = $this->sortTools($this->source()->tools());
+            $params = $cfg->params();
+            $data = $tools ? $this->source()->series($tools, $params, $range[0], $range[1]) : array();
+            $this->output($this->normalize($data, $tools, $params));
+        } catch (Exception $e) {
+            $this->json(array('ok' => false, 'error' => $this->errorMessage($e)), 500);
         }
-        $tools = $this->sortTools(ChartDataSource::tools());
-        $params = ChartConfig::params();
-        $data = $tools ? ChartDataSource::series($tools, $params, $range[0], $range[1]) : array();
-        $this->output($this->normalize($data, $tools, $params));
+    }
+
+    /** 這個頁面對應的 chart 設定 */
+    private function cfg()
+    {
+        if ($this->cfg === null) {
+            $name = ChartConfig::nameForPage($this->module);
+            if ($name === null) {
+                throw new RuntimeException('charts/ 裡找不到與頁面代號 ' . $this->module . ' 同名（不分大小寫）的 ini');
+            }
+            $this->cfg = new ChartConfig($name);
+        }
+        return $this->cfg;
+    }
+
+    private function source()
+    {
+        if ($this->source === null) {
+            $this->source = ChartSource::create($this->cfg());
+        }
+        return $this->source;
     }
 
     /**
-     * 機型判斷：名稱含 PAN → 1980，含 PAP → 2000，其他回傳 ''（只出現在 All）
-     * 規則改變時只要改這裡
+     * 設定錯誤（RuntimeException）直接顯示訊息，方便部署者修正；
+     * 其他錯誤（例如資料庫連線、SQL 錯誤）可能含主機資訊，只在 app.ini debug = 1 時顯示，否則寫到 log
      */
-    public static function modelOf($tool)
+    private function errorMessage(Exception $e)
     {
-        $tool = strtoupper($tool);
-        if (strpos($tool, 'PAN') !== false) {
-            return '1980';
+        error_log('[AISLE charts:' . $this->module . '] ' . get_class($e) . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+        if (get_class($e) === 'RuntimeException' || Config::get('app', 'debug', 0)) {
+            return $e->getMessage();
         }
-        if (strpos($tool, 'PAP') !== false) {
-            return '2000';
-        }
-        return '';
+        return '資料查詢失敗（' . get_class($e) . '），詳細內容請看 PHP error log';
     }
 
     // ------------------------------------------------------------------
 
     /** 讀取並檢查 start / end，失敗時已輸出錯誤並回傳 null */
-    private function range()
+    private function range($maxDays)
     {
         $start = $this->query('start');
         $end = $this->query('end');
@@ -90,8 +125,8 @@ class ChartDemoController extends Controller
             return null;
         }
         $days = (strtotime($end) - strtotime($start)) / 86400 + 1;
-        if ($days > self::MAX_DAYS) {
-            $this->fail('查詢區間最多 ' . self::MAX_DAYS . ' 天');
+        if ($days > $maxDays) {
+            $this->fail('查詢區間最多 ' . $maxDays . ' 天');
             return null;
         }
         return array($start, $end);
@@ -151,7 +186,7 @@ class ChartDemoController extends Controller
             if (!$rows) {
                 continue;
             }
-            usort($rows, array('ChartDemoController', 'cmpRow'));
+            usort($rows, array('ChartsController', 'cmpRow'));
             $series = array('Date' => array(), 'Data' => array());
             foreach ($params as $p) {
                 $series['Data'][$p] = array();

@@ -240,29 +240,31 @@ crontab -e
 
 備份檔放在 `storage/backups/`，預設保留 14 天。先手動執行一次 `bash scripts/shell/backup_db.sh` 確認能成功。
 
-## 17.（選用）圖表 Demo 接上實際資料
+## 17.（選用）圖表接上實際資料
 
-圖表 Demo（`index.php?m=chart_demo`）預設使用範例資料，部署後即可看到畫面。接上實際資料：
+每張圖表（BSLr、M1BF…）是選單「圖表」底下的一頁，由 `charts/<名稱>.ini` 與 `charts/<名稱>.php` 定義（說明見 README 第 10 節）。內附的 M1BF 預設使用範例資料（`source = sample`），部署後即可看到畫面。
 
-1. 編輯 `config/chart_demo.ini`：設定哪些參數畫在同一張圖（`params`）、各組是否顯示單台 / 最新值排排站 / 歷史趨勢排排站（`single` / `newest` / `tbt`），以及 Y 軸上下限（`ymin` / `ymax`，或 `tbt_ymin` 等只套用到單一區塊）。參數名稱必須與資料中的名稱完全一致
-2. 在 `config/app.ini` 加上（範本見 `app.ini.example` 的 `[chart_demo]`）：
+1. 在主機的 `config/app.ini` 加上圖表用的資料庫連線（範本見 `app.ini.example` 的 `[charts_db]`；`host` 留空則使用 AISLE 自己的資料庫）：
    ```ini
-   [chart_demo]
-   source = "db"
+   [charts_db]
+   host     = "10.x.x.x"
+   port     = 3306
+   name     = "資料庫名稱"
+   user     = "唯讀帳號"
+   password = "密碼"
+   charset  = "utf8mb4"
    ```
-3. 實作 `modules/chart_demo/ChartDataSource.php` 的「★ 部署者實作區 (db)」：`dbTools()`、`dbSeries()`，註解內附範例 SQL：
-   - 資料表是「一列一個參數值」（例 `tool_data(tool_id, data_time, param, value)`）→ 查出後用 `self::pivot()` 轉換
-   - 資料表是「一列一個時間點、每個參數一個欄位」→ 查出後用 `self::wide()` 轉換
-4. 確認 `aisle_app` 對資料表有 `SELECT` 權限：
+   建議用只有 SELECT 權限的帳號：
    ```sql
-   GRANT SELECT ON `資料庫`.`資料表` TO 'aisle_app'@'localhost';
+   GRANT SELECT ON `資料庫`.* TO '唯讀帳號'@'AISLE 主機 IP' IDENTIFIED BY '密碼';
    ```
-5. 要改用 Python 取資料時設 `source = "script"`，實作 `scripts/python/chart_data.py` 的部署者實作區；`python` 指定 Python 2.7 的路徑，並先測試：
-   ```bash
-   python scripts/python/chart_data.py series --start 2026-01-01 --end 2026-01-07 \
-       --tools APAN01,APAP01 --params M1BF_Z_C1,M1BF_Z_C2
-   ```
-6. 以 EE 或 PE 帳號登入開啟頁面，各圖都有資料即完成；`debug = 1` 時錯誤訊息會直接顯示在圖表中
+2. 新增圖表：`bash scripts/shell/new_chart.sh BSLr`，建立 `charts/BSLr.ini`、`charts/BSLr.php`
+3. 編輯 `charts/BSLr.ini`：`[plot.xxx]` 設定哪些參數畫在同一張圖、各區塊開關與 Y 軸上下限；`[page]` 設定機型規則、預設天數。參數名稱必須與 `BSLr.php` 回傳的名稱完全一致
+4. 編輯 `charts/BSLr.php`：在 `tools()`、`series()` 寫 SQL，用 `pivot()` / `wide()` 轉換、不同 table 用 `merge()` 合併（檔案內附三種寫法），寫好後把 ini 的 `source` 改成 `php`
+5. 把腳本印出的 `[page.bslr]` 區段貼進 `config/config.ini`，並把 `bslr` 加到 `[access]` 要看得到的身份
+6. `python scripts/python/check_config.py` 檢查，再以 EE 或 PE 帳號登入開啟頁面；`debug = 1` 時 SQL 錯誤會直接顯示在圖表中
+
+由舊版圖表 Demo 升級時：`config/app.ini` 的 `[chart_demo]` 區段可以刪除；舊網址 `index.php?m=chart_demo` 改為 `index.php?m=m1bf`。
 
 ## 18. 不能 git pull 時的更新方式（單檔更新）
 

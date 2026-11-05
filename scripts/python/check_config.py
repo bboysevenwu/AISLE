@@ -14,6 +14,9 @@
   - [register] 的 listed_role / unlisted_role 有效且不是超級身份 ("*")
   - [ee_accounts] 名單帳號格式正確、沒有重複
   - 沒有任何身份能使用的頁面、modules/ 下沒登記的資料夾（警告）
+  - 圖表（route = module:charts 的頁面）：charts/<名稱>.ini 存在且格式正確、
+    source = php 時 charts/<名稱>.php 存在且有 <名稱>Chart 類別、
+    charts/ 底下沒有頁面使用的 chart（警告）
   - 列出每個身份可用的頁面
 
 用法：python scripts/python/check_config.py
@@ -29,6 +32,9 @@ from ConfigParser import RawConfigParser  # Python 2.7；RawConfigParser 不會�
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 INI = os.path.join(ROOT, 'config', 'config.ini')
 MODULES = os.path.join(ROOT, 'modules')
+CHARTS = os.path.join(ROOT, 'charts')
+RE_CHART = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')
+RE_PLOT = re.compile(r'^plot\.[a-z][a-z0-9_]{0,63}$')
 RE_KEY = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
 RE_ACCOUNT = re.compile(r'^[A-Za-z0-9_.-]{3,64}$')
 
@@ -64,6 +70,70 @@ def read_array(section_name, key):
             elif section == section_name and pattern.match(line):
                 values.append(unquote(line.split('=', 1)[1]))
     return values
+
+
+def chart_names():
+    """charts/ 底下的 chart 名稱（不含 _ 開頭的範本）"""
+    if not os.path.isdir(CHARTS):
+        return []
+    return sorted(f[:-4] for f in os.listdir(CHARTS) if f.endswith('.ini') and RE_CHART.match(f[:-4]))
+
+
+def check_chart(name, errors, warnings):
+    """檢查一張 chart 的 ini 與 php"""
+    label = 'charts/%s.ini' % name
+    parser = RawConfigParser()
+    parser.optionxform = str
+    try:
+        with open(os.path.join(CHARTS, name + '.ini')) as fp:
+            parser.readfp(fp)
+    except Exception as e:  # 語法錯誤
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def get(section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    source = (get('page', 'source') or 'php').lower() if parser.has_section('page') else 'php'
+    if source not in ('php', 'sample'):
+        errors.append('%s [page] source 只能是 php 或 sample' % label)
+    for key in ('default_days', 'max_days'):
+        v = get('page', key) if parser.has_section('page') else ''
+        if v and (not v.isdigit() or int(v) < 1):
+            errors.append('%s [page] %s 必須是正整數' % (label, key))
+
+    plots = 0
+    for section in parser.sections():
+        if section == 'page':
+            continue
+        if not RE_PLOT.match(section):
+            errors.append('%s 區段名稱錯誤：[%s]，應為 [page] 或 [plot.<小寫代號>]' % (label, section))
+            continue
+        plots += 1
+        if not split_list(get(section, 'params')):
+            errors.append('%s [%s] 沒有設定 params' % (label, section))
+        for opt in parser.options(section):
+            if opt.endswith('ymin') or opt.endswith('ymax'):
+                v = get(section, opt)
+                if v:
+                    try:
+                        float(v)
+                    except ValueError:
+                        errors.append('%s [%s] %s 必須是數字：%s' % (label, section, opt, v))
+    if plots == 0:
+        errors.append('%s 沒有任何 [plot.xxx] 圖' % label)
+
+    php = os.path.join(CHARTS, name + '.php')
+    if source == 'php':
+        if not os.path.isfile(php):
+            errors.append('charts/%s.php 不存在（尚未寫好時可先把 ini 的 source 設為 sample）' % name)
+        else:
+            with open(php) as fp:
+                code = fp.read()
+            if not re.search(r'class\s+' + re.escape(name) + r'Chart\s+extends\s+ChartSource\b', code):
+                errors.append('charts/%s.php 裡找不到 class %sChart extends ChartSource' % (name, name))
+            if '尚未實作' in code:
+                warnings.append('charts/%s.php 似乎還沒寫好 SQL（仍有「尚未實作」），但 ini 的 source = php' % name)
 
 
 def main():
@@ -158,6 +228,23 @@ def main():
     for name in sorted(os.listdir(MODULES)):
         if os.path.isdir(os.path.join(MODULES, name)) and not name.startswith('_') and name not in module_dirs:
             warnings.append('modules/%s 沒有登記在 config.ini，目前無法存取' % name)
+
+    # 圖表
+    names = chart_names()
+    lower = {}
+    for n in names:
+        if n.lower() in lower:
+            errors.append('charts/%s.ini 與 charts/%s.ini 只差大小寫，頁面代號會衝突' % (lower[n.lower()], n))
+        lower[n.lower()] = n
+    chart_pages = [k for k, r in pages.items() if r == 'module:charts']
+    for key in sorted(chart_pages):
+        if key not in lower:
+            errors.append('[page.%s] route = module:charts，但 charts/ 裡沒有同名（不分大小寫）的 ini' % key)
+        else:
+            check_chart(lower[key], errors, warnings)
+    for n in names:
+        if n.lower() not in chart_pages:
+            warnings.append('charts/%s.ini 沒有對應的 [page.%s]（route = "module:charts"），目前無法存取' % (n, n.lower()))
 
     # 註冊
     if parser.has_section('register'):

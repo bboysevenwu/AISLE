@@ -20,9 +20,9 @@ $echartsSrc = is_file(AISLE_ROOT . '/public/assets/' . $echartsLocal)
             <div class="cd-field">
                 <label>快速區間</label>
                 <span class="cd-quick">
-                    <button type="button" class="btn btn-sm" data-days="7">7D</button>
-                    <button type="button" class="btn btn-sm" data-days="30">30D</button>
-                    <button type="button" class="btn btn-sm" data-days="90">90D</button>
+                    <?php foreach ($quickDays as $d): ?>
+                        <button type="button" class="btn btn-sm" data-days="<?php echo (int) $d; ?>"><?php echo (int) $d; ?>D</button>
+                    <?php endforeach; ?>
                 </span>
             </div>
             <div class="cd-field">
@@ -40,15 +40,15 @@ $echartsSrc = is_file(AISLE_ROOT . '/public/assets/' . $echartsLocal)
         </form>
         <p class="cd-msg text-red" id="cd-msg"></p>
         <?php if ($source === 'sample'): ?>
-            <p class="dim cd-note">&gt; 目前使用範例資料（app.ini [chart_demo] source = sample）。接資料庫請實作 modules/chart_demo/ChartDataSource.php 的部署者實作區。</p>
+            <p class="dim cd-note">&gt; 目前使用範例資料（charts/<?php echo e($chart); ?>.ini 的 [page] source = sample）。寫好 charts/<?php echo e($chart); ?>.php 的 SQL 後改成 source = php。</p>
         <?php endif; ?>
     </div>
 </div>
 
 <?php
-// 依 config/chart_demo.ini 決定每個區塊要畫哪些圖
+// 依 charts/<名稱>.ini 的 [plot.xxx] 決定每個區塊要畫哪些圖
 $byKind = array('single' => array(), 'newest' => array(), 'tbt' => array());
-foreach ($groups as $g) {
+foreach ($plots as $g) {
     foreach ($byKind as $kind => $list) {
         if ($g[$kind]) {
             $byKind[$kind][] = $g;
@@ -79,12 +79,15 @@ foreach ($groups as $g) {
     <div class="panel-head">&gt; NEWEST_TBT // 最新值排排站</div>
     <div class="panel-body cd-boxes">
         <div class="cd-sub">
+            <?php if ($modelRules): ?>
             <label for="cd-model" class="inline">機型 // MODEL</label>
             <select id="cd-model">
                 <option value="All">All</option>
-                <option value="1980">1980（PAN）</option>
-                <option value="2000">2000（PAP）</option>
+                <?php foreach ($modelRules as $model => $needle): ?>
+                    <option value="<?php echo e($model); ?>"><?php echo e($model . '（' . $needle . '）'); ?></option>
+                <?php endforeach; ?>
             </select>
+            <?php endif; ?>
             <span class="dim">&gt; 每台取區間內最後一筆 · 點長條可切換上方的單台機台</span>
         </div>
         <?php foreach ($byKind['newest'] as $g): ?>
@@ -126,13 +129,13 @@ foreach ($groups as $g) {
 
 <script src="<?php echo e($echartsSrc); ?>"></script>
 <script>
-window.AISLE_CHART_DEMO = {
-    groups: <?php echo js($groups); ?>,
+window.AISLE_CHARTS = {
+    groups: <?php echo js($plots); ?>,
     tools:  <?php echo js($tools); ?>,
     models: <?php echo js((object) $models); ?>,
     urls: {
-        tbt:    <?php echo js(url('chart_demo', 'tbt')); ?>
+        tbt:    <?php echo js(url($module, 'tbt')); ?>
     }
 };
 </script>
-<script src="<?php echo e(asset('js/chart_demo.js')); ?>"></script>
+<script src="<?php echo e(asset('js/charts.js')); ?>"></script>

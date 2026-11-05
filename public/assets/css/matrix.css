@@ -308,7 +308,7 @@ input.is-valid { border-color: #00ff41; }
 .register-box { width: 440px; }
 
 /* ---------- 手機版 ---------- */
-/* ---------- chart_demo 圖表頁 ---------- */
+/* ---------- charts 圖表頁（modules/charts） ---------- */
 input[type=date] {
     padding: 7px 10px;
     border: 1px solid #008f11;

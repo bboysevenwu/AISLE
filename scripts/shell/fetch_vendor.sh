@@ -10,6 +10,6 @@ mkdir -p "$VENDOR"
 curl -fSL -o "$VENDOR/jquery-1.12.4.min.js" https://code.jquery.com/jquery-1.12.4.min.js
 info "已下載 $VENDOR/jquery-1.12.4.min.js"
 
-# ECharts 5.4.3：chart_demo 圖表頁使用；檔案存在時頁面優先用本機的，否則走 CDN
+# ECharts 5.4.3：charts 圖表頁使用；檔案存在時頁面優先用本機的，否則走 CDN
 curl -fSL -o "$VENDOR/echarts-5.4.3.min.js" https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js
 info "已下載 $VENDOR/echarts-5.4.3.min.js"

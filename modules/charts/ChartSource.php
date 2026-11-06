@@ -30,7 +30,11 @@
  */
 abstract class ChartSource
 {
-    private static $pdo = null;
+    /** 已開啟的連線，key = 連線設定（同一個 request 內相同設定共用一條） */
+    private static $pdos = array();
+
+    /** @var ChartConfig 這張 chart 的設定（create() 設定） */
+    private $cfg = null;
 
     abstract public function tools();
 
@@ -60,40 +64,38 @@ abstract class ChartSource
         if (!($obj instanceof ChartSource)) {
             throw new RuntimeException($label . ' 的 ' . $class . ' 必須 extends ChartSource');
         }
+        $obj->cfg = $cfg;
         return $obj;
     }
 
     // =====================================================================
     // 資料庫
     // ---------------------------------------------------------------------
-    // 連線設定在 config/app.ini 的 [charts_db]（所有 chart 共用）：
-    //   host / port / name / user / password / charset
-    // [charts_db] 沒有填 host 時，直接用 AISLE 自己的 [database] 連線。
+    // 連線設定在各 chart 自己的 charts/<名稱>.ini 的 [db]：
+    //   ip / port / name / user / password / charset
+    // [db] 沒有填 ip（或沒有 [db]）時，直接用 AISLE 自己的 [database] 連線。
     // =====================================================================
 
     /** @return PDO */
     protected function db()
     {
-        if (self::$pdo === null) {
-            $c = Config::section('charts_db');
-            if (trim((string) array_get($c, 'host', '')) === '') {
-                self::$pdo = Database::pdo();
-            } else {
-                $dsn = sprintf(
-                    'mysql:host=%s;port=%d;dbname=%s;charset=%s',
-                    trim((string) $c['host']),
-                    (int) array_get($c, 'port', 3306),
-                    array_get($c, 'name', ''),
-                    array_get($c, 'charset', 'utf8mb4')
-                );
-                self::$pdo = new PDO($dsn, array_get($c, 'user', ''), array_get($c, 'password', ''), array(
-                    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES   => false,
-                ));
-            }
+        $c = $this->cfg === null ? null : $this->cfg->db();
+        if ($c === null) {
+            return Database::pdo();
         }
-        return self::$pdo;
+        $dsn = sprintf('mysql:host=%s;port=%d;charset=%s', $c['ip'], $c['port'], $c['charset']);
+        if ($c['name'] !== '') {
+            $dsn .= ';dbname=' . $c['name'];
+        }
+        $key = $dsn . "\n" . $c['user'];
+        if (!isset(self::$pdos[$key])) {
+            self::$pdos[$key] = new PDO($dsn, $c['user'], $c['password'], array(
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+            ));
+        }
+        return self::$pdos[$key];
     }
 
     /** 查詢並回傳所有資料列（關聯陣列）。參數一律用 ? 綁定，不要把值串進 SQL 字串 */

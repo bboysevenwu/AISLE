@@ -79,6 +79,52 @@ def chart_names():
     return sorted(f[:-4] for f in os.listdir(CHARTS) if f.endswith('.ini') and RE_CHART.match(f[:-4]))
 
 
+DB_KEYS = ('ip', 'port', 'name', 'user', 'password', 'charset')
+SPEC_KEYS = ('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos')
+
+
+def check_chart_db(label, parser, get, errors):
+    """[db]：只能有 DB_KEYS；port 為整數；ip 留空時 name / user / password 也要留空"""
+    for opt in parser.options('db'):
+        if opt not in DB_KEYS:
+            errors.append('%s [db] 不認得的欄位：%s（可用：%s）' % (label, opt, '、'.join(DB_KEYS)))
+    ip = get('db', 'ip')
+    if ip and not re.match(r'^[A-Za-z0-9._:-]+$', ip):
+        errors.append('%s [db] ip 格式錯誤（只能是 IP 或主機名稱）' % label)
+    port = get('db', 'port')
+    if port and (not port.isdigit() or not 1 <= int(port) <= 65535):
+        errors.append('%s [db] port 必須是 1 ~ 65535 的整數' % label)
+    for key in ('name', 'charset'):
+        v = get('db', key)
+        if v and not re.match(r'^[A-Za-z0-9_$-]+$', v):
+            errors.append('%s [db] %s 只能有英文、數字、底線、$、-' % (label, key))
+    if not ip:
+        for key in ('name', 'user', 'password'):
+            if get('db', key):
+                errors.append('%s [db] 有填 %s 但沒有填 ip（ip 留空 = 使用 AISLE 自己的資料庫）' % (label, key))
+
+
+def check_spec(label, section, get, errors):
+    """spec 線：數字或留空；lower_oos <= lower_ooc < upper_ooc <= upper_oos"""
+    vals = {}
+    for key in SPEC_KEYS:
+        v = get(section, key)
+        if not v:
+            continue
+        try:
+            vals[key] = float(v)
+        except ValueError:
+            errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, key, v))
+    for i, a in enumerate(SPEC_KEYS):
+        for b in SPEC_KEYS[i + 1:]:
+            if a not in vals or b not in vals:
+                continue
+            same_side = a[:5] == b[:5]
+            if (vals[a] < vals[b]) if same_side else (vals[a] <= vals[b]):
+                errors.append('%s [%s] %s（%s）必須%s %s（%s）' % (
+                    label, section, a, vals[a], '大於等於' if same_side else '大於', b, vals[b]))
+
+
 def check_chart(name, errors, warnings):
     """檢查一張 chart 的 ini 與 php"""
     label = 'charts/%s.ini' % name
@@ -102,12 +148,15 @@ def check_chart(name, errors, warnings):
         if v and (not v.isdigit() or int(v) < 1):
             errors.append('%s [page] %s 必須是正整數' % (label, key))
 
+    if parser.has_section('db'):
+        check_chart_db(label, parser, get, errors)
+
     plots = 0
     for section in parser.sections():
-        if section == 'page':
+        if section in ('page', 'db'):
             continue
         if not RE_PLOT.match(section):
-            errors.append('%s 區段名稱錯誤：[%s]，應為 [page] 或 [plot.<小寫代號>]' % (label, section))
+            errors.append('%s 區段名稱錯誤：[%s]，應為 [page]、[db] 或 [plot.<小寫代號>]' % (label, section))
             continue
         plots += 1
         if not split_list(get(section, 'params')):
@@ -120,6 +169,7 @@ def check_chart(name, errors, warnings):
                         float(v)
                     except ValueError:
                         errors.append('%s [%s] %s 必須是數字：%s' % (label, section, opt, v))
+        check_spec(label, section, get, errors)
     if plots == 0:
         errors.append('%s 沒有任何 [plot.xxx] 圖' % label)
 

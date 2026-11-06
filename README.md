@@ -434,6 +434,14 @@ quick_days   = "7, 30, 90"  ; 快速區間按鈕
 model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
 model.2000   = "PAP"
 
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
 [plot.m1bf_z]
 title  = "M1BF_Z"
 params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
@@ -443,6 +451,10 @@ tbt    = On                        ; 是否畫歷史趨勢排排站
 ymin   = 0                         ; Y 軸下限（三張圖共用）
 ymax   = 6                         ; Y 軸上限（三張圖共用）
 newest_ymax = 5                    ; 只改最新值排排站的上限
+upper_oos = 5                      ; spec 線（可留空 = 不畫）
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
 
 [plot.m1bf_ry]
 title  = "M1BF_Ry"
@@ -456,6 +468,7 @@ tbt_ymax = 6
 - 某區塊沒有任何一組開啟時，整個區塊不顯示
 - 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
 - Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
 - 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
 
 ### 資料來源：`charts/<名稱>.php`
@@ -504,7 +517,7 @@ class BSLrChart extends ChartSource
 | `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
 | `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
 
-資料庫連線在 `config/app.ini` 的 `[charts_db]`（host / port / name / user / password，所有圖表共用）；`host` 留空時使用 AISLE 自己的 `[database]`。
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
 
 ### 資料格式與載入
 

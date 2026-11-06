@@ -47,6 +47,14 @@
     var AXIS = '#00661a';      // 軸線
     var NEUTRAL = '#7dffb0';   // 圖例中代表「參數」的中性色
     var BAND = 'rgba(0, 255, 65, 0.05)';  // TBT 交錯底色
+    var OOS_COLOR = '#ff3b3b';  // spec 線：OOS（規格界限）
+    var OOC_COLOR = '#ffb000';  // spec 線：OOC（管制界限）
+    var SPEC_KEYS = [
+        { key: 'upper_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' },
+        { key: 'upper_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
+        { key: 'lower_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
+        { key: 'lower_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' }
+    ];
     var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
 
     var COLOR = {};
@@ -88,7 +96,7 @@
         };
     }
 
-    /** Y 軸；config 有設上下限就固定，否則自動。kind = single / newest / tbt */
+    /** Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt */
     function valueAxis(group, kind) {
         var lim = (group.limits && group.limits[kind]) || {};
         var axis = {
@@ -101,13 +109,101 @@
             splitLine: { lineStyle: { color: GRID } },
             scale: kind !== 'newest'
         };
+        var spec = specValues(group);
         if (lim.min !== null && lim.min !== undefined) {
             axis.min = lim.min;
+        } else if (spec.length) {
+            axis.min = function (v) { return specBounds(v, spec, kind).min; };
         }
         if (lim.max !== null && lim.max !== undefined) {
             axis.max = lim.max;
+        } else if (spec.length) {
+            axis.max = function (v) { return specBounds(v, spec, kind).max; };
         }
         return axis;
+    }
+
+    /** 這組圖有設定的 spec 值（數字陣列） */
+    function specValues(group) {
+        var out = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v !== null && v !== undefined) {
+                out.push(v);
+            }
+        });
+        return out;
+    }
+
+    /** 資料範圍 v（{min, max}）加上 spec 線後的 Y 軸上下限，取整到刻度間距 */
+    function specBounds(v, spec, kind) {
+        var lo = Math.min.apply(null, spec);
+        var hi = Math.max.apply(null, spec);
+        if (isFinite(v.min)) {
+            lo = Math.min(lo, v.min);
+        }
+        if (isFinite(v.max)) {
+            hi = Math.max(hi, v.max);
+        }
+        if (kind === 'newest') {   // 長條圖從 0 開始
+            lo = Math.min(lo, 0);
+            hi = Math.max(hi, 0);
+        }
+        var span = hi - lo;
+        if (span <= 0) {
+            span = Math.abs(hi) || 1;
+        }
+        var step = niceStep(span / 5);
+        var min = Math.floor(lo / step) * step;
+        var max = Math.ceil(hi / step) * step;
+        return { min: +min.toFixed(10), max: +max.toFixed(10) };
+    }
+
+    function niceStep(x) {
+        var p = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
+        var f = x / p;
+        return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+    }
+
+    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒設定 spec 時回傳 null */
+    function specSeries(group) {
+        var lines = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v === null || v === undefined) {
+                return;
+            }
+            lines.push({
+                name: k.key,
+                yAxis: v,
+                lineStyle: { color: k.color, type: k.type, width: 1.5 },
+                label: {
+                    show: true,
+                    position: k.key.indexOf('upper') === 0 ? 'insideEndTop' : 'insideEndBottom',
+                    color: k.color,
+                    fontFamily: FONT,
+                    formatter: k.label + ' ' + fmt(v)
+                }
+            });
+        });
+        if (!lines.length) {
+            return null;
+        }
+        return {
+            name: '_spec',
+            type: 'line',
+            data: [],
+            silent: true,
+            markLine: { silent: true, symbol: 'none', animation: false, data: lines }
+        };
+    }
+
+    /** 有 spec 時把輔助 series 加到 series 陣列最後 */
+    function pushSpec(series, group) {
+        var s = specSeries(group);
+        if (s) {
+            series.push(s);
+        }
     }
 
     function axisLine() {
@@ -246,6 +342,7 @@
         };
         opt.yAxis = valueAxis(group, 'single');
         opt.dataZoom = [{ type: 'inside' }];
+        pushSpec(series, group);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -307,6 +404,7 @@
             axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
         };
         opt.yAxis = valueAxis(group, 'newest');
+        pushSpec(series, group);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -384,7 +482,7 @@
         opt.tooltip.formatter = function (params) {
             var html = '';
             $.each(params, function (i, p) {
-                if (p.seriesName === '_bands' || p.value === null || p.value === undefined) {
+                if (p.seriesName === '_bands' || p.seriesName === '_spec' || p.value === null || p.value === undefined) {
                     return;
                 }
                 if (!html) {
@@ -419,6 +517,7 @@
                 labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
             }
         ];
+        pushSpec(series, group);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);

@@ -26,7 +26,7 @@
  *
  * 可用的工具（定義在 modules/charts/ChartSource.php）：
  *   $this->fetchAll($sql, $bind)   查詢；值一律用 ? 綁定，不要串進 SQL 字串
- *                                  連線設定：config/app.ini 的 [charts_db]（沒填 host 時用 AISLE 自己的資料庫）
+ *                                  連線設定：charts/<名稱>.ini 的 [db]（沒填 ip 時用 AISLE 自己的資料庫）
  *   $this->in($list)               產生 IN (...) 用的 ?,?,?
  *   self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)    長表（一列一個參數值）→ 回傳格式
  *   self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)     寬表（每個參數一個欄位）→ 回傳格式

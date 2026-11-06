@@ -69,6 +69,7 @@ class ChartsController extends Controller
             $tools = $this->sortTools($this->source()->tools());
             $params = $cfg->params();
             $data = $tools ? $this->source()->series($tools, $params, $range[0], $range[1]) : array();
+            $data = $this->source()->toToolKeys($data);   // machine_id → tool_id
             $this->output($this->normalize($data, $tools, $params));
         } catch (Exception $e) {
             $this->json(array('ok' => false, 'error' => $this->errorMessage($e)), 500);

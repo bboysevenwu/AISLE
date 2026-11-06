@@ -19,6 +19,15 @@
  *       Data 裡每個參數的陣列與 Date 一一對應（同樣長度），該時間沒有值的放 null；沒有的參數可以不回傳。
  *
  * 排序、型別轉換、空值處理、只留 ini 用到的參數，都由 ChartsController 統一做，這裡回傳順序不拘。
+ *
+ * 選用：machines()
+ *   有些 table 用 machine_id 而不是 tool_id（例 table M1BF_HP23，HP23 是 APAN01 的 machine_id）。
+ *   實作 machines() 回傳 tool_id => machine_id 對照，例 array('APAN01' => 'HP23', ...)，就可以：
+ *     - 不寫 tools()：預設用 machines() 的 tool_id
+ *     - $this->machineOf('APAN01') → 'HP23'；$this->toolOf('HP23') → 'APAN01'
+ *     - $this->machinesOf($tools) → 這些機台的 machine_id（給 IN (...) 用）
+ *     - series() 回傳的 key 可以直接是 machine_id，controller 會自動換成 tool_id
+ *   網頁上顯示的機台名稱一律是 tool_id。
  * 錯誤時 throw RuntimeException。
  *
  * 可用的工具：
@@ -27,6 +36,7 @@
  *   self::pivot(...)               長表（一列一個參數值）→ 資料格式
  *   self::wide(...)                寬表（每個參數一個欄位）→ 資料格式
  *   self::merge($a, $b, ...)       多個 table 的結果依機台 + 時間合併
+ *   self::table($name)             把組出來的 table 名稱（例 'M1BF_' . $machineId）檢查後加上 `反引號`
  */
 abstract class ChartSource
 {
@@ -36,7 +46,30 @@ abstract class ChartSource
     /** @var ChartConfig 這張 chart 的設定（create() 設定） */
     private $cfg = null;
 
-    abstract public function tools();
+    /** @var array|null tool_id => machine_id（machines() 的結果，第一次使用時讀取） */
+    private $machineMap = null;
+
+    /**
+     * 這張 chart 的全部機台代號（tool_id）。
+     * 有實作 machines() 時預設回傳它的 tool_id，否則必須自己實作
+     */
+    public function tools()
+    {
+        $map = $this->machineMap();
+        if (!$map) {
+            throw new RuntimeException('charts/<名稱>.php 必須實作 tools() 或 machines()');
+        }
+        return array_keys($map);
+    }
+
+    /**
+     * 選用：tool_id => machine_id 對照，例 array('APAN01' => 'HP23', 'APAN02' => 'HP24')
+     * 可以直接寫死，也可以用 $this->fetchAll() 從對照表查出來。沒有 machine_id 的 table 不用實作
+     */
+    public function machines()
+    {
+        return array();
+    }
 
     abstract public function series($tools, $params, $start, $end);
 
@@ -111,6 +144,95 @@ abstract class ChartSource
     {
         $n = count($list);
         return $n > 0 ? implode(',', array_fill(0, $n, '?')) : 'NULL';
+    }
+
+    // =====================================================================
+    // tool_id / machine_id 對照
+    // =====================================================================
+
+    /** machines() 的結果（只讀一次）；key、value 都轉成字串並去掉空白 */
+    protected function machineMap()
+    {
+        if ($this->machineMap === null) {
+            $map = array();
+            $raw = $this->machines();
+            foreach (is_array($raw) ? $raw : array() as $tool => $machine) {
+                $tool = trim((string) $tool);
+                $machine = trim((string) $machine);
+                if ($tool !== '' && $machine !== '') {
+                    $map[$tool] = $machine;
+                }
+            }
+            $this->machineMap = $map;
+        }
+        return $this->machineMap;
+    }
+
+    /** tool_id → machine_id；沒有對照時拋出錯誤（避免查錯機台） */
+    protected function machineOf($tool)
+    {
+        $map = $this->machineMap();
+        if (!isset($map[$tool])) {
+            throw new RuntimeException('machines() 裡沒有機台 ' . $tool . ' 的 machine_id');
+        }
+        return $map[$tool];
+    }
+
+    /** machine_id → tool_id；找不到回傳 null */
+    protected function toolOf($machine)
+    {
+        $tool = array_search((string) $machine, $this->machineMap(), true);
+        return $tool === false ? null : $tool;
+    }
+
+    /** 多台 tool_id → machine_id 陣列（順序相同） */
+    protected function machinesOf($tools)
+    {
+        $out = array();
+        foreach ($tools as $t) {
+            $out[] = $this->machineOf($t);
+        }
+        return $out;
+    }
+
+    /**
+     * series() 結果的 key 是 machine_id 時換成 tool_id（controller 呼叫，部署者不用管）
+     * 已經是 tool_id 或對照不到的 key 原樣保留；換完後同一台有兩份時依時間合併
+     */
+    public function toToolKeys($data)
+    {
+        if (!is_array($data) || !$this->machineMap()) {
+            return $data;
+        }
+        $map = $this->machineMap();
+        $out = array();
+        foreach ($data as $key => $series) {
+            $key = (string) $key;
+            $tool = isset($map[$key]) ? $key : $this->toolOf($key);
+            if ($tool === null) {
+                $tool = $key;
+            }
+            if (isset($out[$tool])) {
+                $merged = self::merge(array($tool => $out[$tool]), array($tool => $series));
+                $out[$tool] = $merged[$tool];
+            } else {
+                $out[$tool] = $series;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * 組出來的 table 名稱（例 'M1BF_' . $this->machineOf($tool)）檢查後加上反引號。
+     * table 名稱不能用 ? 綁定，所以一定要經過這裡，只允許英文、數字、底線（可含一個 . 指定資料庫）
+     */
+    public static function table($name)
+    {
+        $name = (string) $name;
+        if (!preg_match('/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$/', $name)) {
+            throw new RuntimeException('table 名稱格式錯誤：' . $name);
+        }
+        return '`' . str_replace('.', '`.`', $name) . '`';
     }
 
     // =====================================================================

@@ -8,6 +8,7 @@
  * 後端回傳格式：
  *   { "APAN01": { "Date": [...], "Data": { "M1BF_Z_C1": [...], "M1BF_Z_C2": [...] } }, ... }
  *   每個參數陣列與 Date 等長，沒有值的位置是 null
+ *   選用 "Url": [...]（與 Date 等長）：單台趨勢圖點擊數據點時在新分頁開啟該網址
  *
  * 資料載入方式：
  *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台、全部參數」的資料存在 cache，所有圖都從這份資料取得：
@@ -262,6 +263,7 @@
     /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
     function show(box, data, draw) {
         box.shown = data;
+        box.urlInfo = null;
         if ($.isEmptyObject(data)) {
             showMessage(box.chart, '> 查無資料 // NO DATA');
         } else {
@@ -277,6 +279,15 @@
         $.each(params, function (i, p) { head += '<th>' + AISLE.escape(p) + '</th>'; });
         head += '</tr>';
         var rows = [];
+        var withUrl = false;
+        $.each(box.shown, function (tool, s) {
+            if ($.isArray(s.Url)) {
+                withUrl = true;
+            }
+        });
+        if (withUrl) {
+            head = head.replace(/<\/tr>$/, '<th>URL</th></tr>');
+        }
         $.each(box.shown, function (tool, s) {
             if (!$.isArray(s.Date)) {
                 // newest：各參數的日期分開存，值後面附上日期
@@ -291,6 +302,10 @@
                 var tr = '<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) + '</td>';
                 for (var j = 0; j < params.length; j++) {
                     tr += '<td>' + fmt(s.Data[params[j]] ? s.Data[params[j]][i] : null) + '</td>';
+                }
+                if (withUrl) {
+                    var u = $.isArray(s.Url) ? safeUrl(s.Url[i]) : null;
+                    tr += '<td>' + (u ? '<a href="' + AISLE.escape(u) + '" target="_blank" rel="noopener noreferrer">開啟</a>' : '-') + '</td>';
                 }
                 rows.push(tr + '</tr>');
             }
@@ -310,6 +325,7 @@
             }
         }
         var s = data[tool];
+        var urls = $.isArray(s.Url) ? s.Url : null;
         var series = [];
         $.each(group.params, function (pi, param) {
             var points = [];
@@ -334,6 +350,28 @@
         opt.legend.formatter = function (name) { return shortName(name, group); };
         opt.tooltip.trigger = 'axis';
         opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        if (urls) {
+            // 有 Url：tooltip 多一行提示，點數據點開新分頁（見 bindUrlClick）
+            opt.tooltip.formatter = function (params) {
+                var html = '';
+                var idx = null;
+                $.each(params, function (i, p) {
+                    if (p.seriesName === '_spec') {
+                        return;
+                    }
+                    if (!html) {
+                        html = AISLE.escape(s.Date[p.dataIndex]);
+                        idx = p.dataIndex;
+                    }
+                    html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
+                });
+                if (idx !== null && safeUrl(urls[idx])) {
+                    html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+                }
+                return html;
+            };
+            box.urlInfo = { dates: s.Date, urls: urls, cols: $.map(group.params, function (p) { return [s.Data[p] || []]; }) };
+        }
         opt.xAxis = {
             type: 'time',
             axisLine: axisLine(),
@@ -528,11 +566,75 @@
         box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
     }
 
+    // ---------- single 點擊數據點開啟 Url ----------
+    /** 只接受 http://、https:// 或 / 開頭（不含 //）的網址，其他回傳 null（後端已過濾，這裡再擋一次） */
+    function safeUrl(u) {
+        if (typeof u !== 'string') {
+            return null;
+        }
+        u = $.trim(u);
+        return /^https?:\/\/\S+$/i.test(u) || /^\/(?!\/)\S*$/.test(u) ? u : null;
+    }
+
+    /** 滑鼠位置最近、且有網址的數據點（距離 14px 內），回傳網址或 null */
+    function urlAt(box, x, y) {
+        var info = box.urlInfo;
+        if (!info || !box.chart.containPixel('grid', [x, y])) {
+            return null;
+        }
+        var best = null;
+        var bestDist = 14 * 14;
+        for (var i = 0; i < info.dates.length; i++) {
+            var u = safeUrl(info.urls[i]);
+            if (!u) {
+                continue;
+            }
+            for (var c = 0; c < info.cols.length; c++) {
+                var v = info.cols[c][i];
+                if (v === null || v === undefined) {
+                    continue;
+                }
+                var pt = box.chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [info.dates[i], v]);
+                if (!pt) {
+                    continue;
+                }
+                var d = (pt[0] - x) * (pt[0] - x) + (pt[1] - y) * (pt[1] - y);
+                if (d <= bestDist) {
+                    bestDist = d;
+                    best = u;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** single 圖：點擊數據點在新分頁開啟網址；滑過有網址的點顯示手指游標。沒有 Url 時不做任何事 */
+    function bindUrlClick(box) {
+        var zr = box.chart.getZr();
+        zr.on('mousemove', function (e) {
+            if (box.urlInfo && urlAt(box, e.offsetX, e.offsetY)) {
+                zr.setCursorStyle('pointer');
+            }
+        });
+        zr.on('click', function (e) {
+            var u = urlAt(box, e.offsetX, e.offsetY);
+            if (u) {
+                var w = window.open(u, '_blank');
+                if (w) {
+                    w.opener = null;
+                }
+            }
+        });
+    }
+
     // ---------- 從 cache 取出各圖要的資料 ----------
-    /** 只保留某組的參數 */
+    /** 只保留某組的參數（有 Url 時一併帶上） */
     function pick(s, params) {
         var out = { Date: s.Date, Data: {} };
         $.each(params, function (i, p) { out.Data[p] = s.Data[p] || []; });
+        if ($.isArray(s.Url)) {
+            out.Url = s.Url;
+        }
         return out;
     }
 
@@ -663,8 +765,12 @@
                 group: group,
                 $el: $el,
                 chart: window.echarts.init($el.find('.cd-chart')[0]),
-                shown: {}
+                shown: {},
+                urlInfo: null
             };
+            if (kind === 'single') {
+                bindUrlClick(boxes[kind + ':' + group.id]);
+            }
         });
 
         if (!CFG.tools.length) {

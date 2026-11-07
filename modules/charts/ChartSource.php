@@ -17,6 +17,8 @@
  *         ...
  *       )
  *       Data 裡每個參數的陣列與 Date 一一對應（同樣長度），該時間沒有值的放 null；沒有的參數可以不回傳。
+ *       選用 'Url' => array(url1, url2, ...)：與 Date 等長，單台趨勢圖點擊該時間點的數據點會在新分頁開啟；
+ *       只接受 http://、https:// 或 / 開頭的網址，沒有網址的位置放 null。沒有 Url 時與原本一樣。
  *
  * 排序、型別轉換、空值處理、只留 ini 用到的參數，都由 ChartsController 統一做，這裡回傳順序不拘。
  *
@@ -242,25 +244,37 @@ abstract class ChartSource
     /**
      * 長表（一列一個參數值）→ 資料格式
      *   pivot($rows, 'tool_id', 'd', 'param', 'value')
+     *   pivot($rows, 'tool_id', 'd', 'param', 'value', 'url')   第 6 個參數（選用）：網址欄位 → 回傳多一個 Url
      * 同一台同一時間的不同參數合併成同一個 Date，缺少的參數補 null
      */
-    public static function pivot($rows, $toolCol, $dateCol, $paramCol, $valueCol)
+    public static function pivot($rows, $toolCol, $dateCol, $paramCol, $valueCol, $urlCol = null)
     {
         $tmp = array();     // tool => date => param => value
         $params = array();  // tool => param => true
+        $urls = array();    // tool => date => url（同一時間取第一個非空的）
         foreach ($rows as $r) {
             $tool = (string) $r[$toolCol];
-            $tmp[$tool][(string) $r[$dateCol]][(string) $r[$paramCol]] = $r[$valueCol];
+            $date = (string) $r[$dateCol];
+            $tmp[$tool][$date][(string) $r[$paramCol]] = $r[$valueCol];
             $params[$tool][(string) $r[$paramCol]] = true;
+            if ($urlCol !== null && !isset($urls[$tool][$date]) && isset($r[$urlCol]) && $r[$urlCol] !== '') {
+                $urls[$tool][$date] = (string) $r[$urlCol];
+            }
         }
         $out = array();
         foreach ($tmp as $tool => $byDate) {
             ksort($byDate);
-            $series = array('Date' => array_keys($byDate), 'Data' => array());
+            $series = array('Date' => array_map('strval', array_keys($byDate)), 'Data' => array());
             foreach (array_keys($params[$tool]) as $p) {
                 $series['Data'][$p] = array();
                 foreach ($byDate as $values) {
                     $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            if ($urlCol !== null) {
+                $series['Url'] = array();
+                foreach (array_keys($byDate) as $date) {
+                    $series['Url'][] = isset($urls[$tool][(string) $date]) ? $urls[$tool][(string) $date] : null;
                 }
             }
             $out[$tool] = $series;
@@ -272,8 +286,9 @@ abstract class ChartSource
      * 寬表（一列一個時間點、每個參數一個欄位）→ 資料格式
      *   $map 欄位名稱就是參數名稱時：array('M1BF_Z_C1', 'M1BF_Z_C2')
      *   欄位名稱不同時給對照表：     array('M1BF_Z_C1' => 'c1', 'M1BF_Z_C2' => 'c2')（參數 => 欄位）
+     *   第 5 個參數（選用）：網址欄位，例 wide($rows, 'tool_id', 'd', $map, 'url') → 回傳多一個 Url
      */
-    public static function wide($rows, $toolCol, $dateCol, $map)
+    public static function wide($rows, $toolCol, $dateCol, $map, $urlCol = null)
     {
         $cols = array();  // param => column
         foreach ($map as $k => $v) {
@@ -287,10 +302,16 @@ abstract class ChartSource
                 foreach ($cols as $p => $c) {
                     $out[$tool]['Data'][$p] = array();
                 }
+                if ($urlCol !== null) {
+                    $out[$tool]['Url'] = array();
+                }
             }
             $out[$tool]['Date'][] = (string) $r[$dateCol];
             foreach ($cols as $p => $c) {
                 $out[$tool]['Data'][$p][] = array_key_exists($c, $r) ? $r[$c] : null;
+            }
+            if ($urlCol !== null) {
+                $out[$tool]['Url'][] = isset($r[$urlCol]) && $r[$urlCol] !== '' ? (string) $r[$urlCol] : null;
             }
         }
         return $out;
@@ -306,6 +327,8 @@ abstract class ChartSource
     {
         $tmp = array();     // tool => date => param => value
         $params = array();  // tool => param => true
+        $urls = array();    // tool => date => url（先出現的優先）
+        $withUrl = array(); // tool => true：有任何一份結果帶 Url
         foreach (func_get_args() as $data) {
             if (!is_array($data)) {
                 continue;
@@ -319,6 +342,15 @@ abstract class ChartSource
                 foreach ($dates as $date) {
                     if (!isset($tmp[$tool][(string) $date])) {
                         $tmp[$tool][(string) $date] = array();
+                    }
+                }
+                if (isset($s['Url']) && is_array($s['Url'])) {
+                    $withUrl[$tool] = true;
+                    $col = array_values($s['Url']);
+                    foreach ($dates as $i => $date) {
+                        if (!isset($urls[$tool][(string) $date]) && isset($col[$i]) && $col[$i] !== '') {
+                            $urls[$tool][(string) $date] = (string) $col[$i];
+                        }
                     }
                 }
                 foreach ($s['Data'] as $p => $col) {
@@ -341,6 +373,12 @@ abstract class ChartSource
                 $series['Data'][$p] = array();
                 foreach ($byDate as $values) {
                     $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            if (isset($withUrl[$tool])) {
+                $series['Url'] = array();
+                foreach (array_keys($byDate) as $date) {
+                    $series['Url'][] = isset($urls[$tool][(string) $date]) ? $urls[$tool][(string) $date] : null;
                 }
             }
             $out[$tool] = $series;

@@ -75,3 +75,12 @@ function audit($module, $action, $detail = array())
         array($user ? $user['id'] : null, $module, $action, json_encode($detail), client_ip(), now())
     );
 }
+
+/**
+ * 目前的畫面風格：dark（駭客任務，預設）/ light（淺色底的駭客任務）
+ * 使用者的選擇記在 cookie aisle_theme，每台電腦各自記憶；由 app.js 的切換按鈕寫入
+ */
+function current_theme()
+{
+    return (isset($_COOKIE['aisle_theme']) && $_COOKIE['aisle_theme'] === 'light') ? 'light' : 'dark';
+}

@@ -26,17 +26,37 @@
         }
     }
 
+    // 兩種風格的配色：深色＝黑底亮綠字；淺色＝淡綠白底、深綠字
+    var THEMES = {
+        dark:  { fade: 'rgba(0, 0, 0, 0.06)',        head: '#d4ffe0', body: '#00ff41' },
+        light: { fade: 'rgba(242, 251, 244, 0.08)',  head: '#003d12', body: '#00a832' }
+    };
+    var theme = null;
+
+    /** body 有 theme-light 就是淺色；風格變了就清空畫布，避免殘留上一種風格的拖尾 */
+    function syncTheme() {
+        var now = /(^|\s)theme-light(\s|$)/.test(document.body.className) ? 'light' : 'dark';
+        if (now !== theme) {
+            theme = now;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            return true;
+        }
+        return false;
+    }
+
     function draw() {
-        // 半透明黑色覆蓋，形成拖尾
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+        syncTheme();
+        var t = THEMES[theme];
+        // 半透明底色覆蓋，形成拖尾
+        ctx.fillStyle = t.fade;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.font = fontSize + 'px monospace';
 
         for (var i = 0; i < columns; i++) {
             var ch = chars.charAt(Math.floor(Math.random() * chars.length));
             var y = drops[i] * fontSize;
-            // 雨滴最前端偏白，其餘為綠色
-            ctx.fillStyle = Math.random() > 0.975 ? '#d4ffe0' : '#00ff41';
+            // 雨滴最前端顏色較突出，其餘為綠色
+            ctx.fillStyle = Math.random() > 0.975 ? t.head : t.body;
             ctx.fillText(ch, i * fontSize, y);
             if (y > canvas.height && Math.random() > 0.975) {
                 drops[i] = 0;
@@ -48,8 +68,18 @@
     resize();
     window.addEventListener('resize', resize);
 
-    if (reduceMotion) {
+    function drawStatic() {
         for (var n = 0; n < 60; n++) { draw(); }
+    }
+    if (reduceMotion) {
+        drawStatic();
+        // 靜態畫面：切換風格時重畫一次
+        setInterval(function () {
+            if (syncTheme()) {
+                resize();
+                drawStatic();
+            }
+        }, 500);
         return;
     }
 

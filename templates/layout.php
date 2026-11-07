@@ -3,20 +3,26 @@
  * 共用版面
  * 可用變數：$content $title $user $menu $current $flash
  */
+$theme = current_theme();
+// 風格切換按鈕顯示「按下去會切換成的風格」
+$themeLabel = $theme === 'light' ? '[ ☾ 深色 ]' : '[ ☀ 淺色 ]';
+$themeTip = $theme === 'light' ? '切換為駭客任務（深色）風格' : '切換為淺色底的駭客任務風格';
 ?><!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="zh-Hant"<?php echo $theme === 'light' ? ' class="theme-light"' : ''; ?>>
 <head>
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="<?php echo e(Security::csrfToken()); ?>">
 <meta name="login-url" content="<?php echo e(page_url('login.php')); ?>">
+<meta name="base-path" content="<?php echo e(base_url() . '/'); ?>">
 <title><?php echo e($title); ?> :: <?php echo e(Config::get('app', 'name', 'AISLE')); ?></title>
 <link rel="stylesheet" href="<?php echo e(asset('css/matrix.css')); ?>">
+<link rel="stylesheet" href="<?php echo e(asset('css/matrix-light.css')); ?>">
 <script>document.documentElement.className += ' js';</script>
 <script src="<?php echo e(asset('vendor/jquery-1.12.4.min.js')); ?>"></script>
 </head>
-<body class="<?php echo $user ? 'has-user' : 'is-guest'; ?>">
+<body class="<?php echo $user ? 'has-user' : 'is-guest'; ?><?php echo $theme === 'light' ? ' theme-light' : ''; ?>">
 <canvas id="matrix-rain" aria-hidden="true"></canvas>
 <div class="crt-overlay" aria-hidden="true"></div>
 
@@ -30,6 +36,7 @@
         <b><?php echo e($user['display_name']); ?></b>
         <span class="role-badge role-<?php echo e($user['role']); ?>"><?php echo e($user['role']); ?></span>
         <span id="clock" class="hide-sm"></span>
+        <button type="button" class="btn btn-ghost btn-sm theme-toggle" title="<?php echo e($themeTip); ?>"><?php echo e($themeLabel); ?></button>
         <form method="post" action="<?php echo e(page_url('logout.php')); ?>" class="inline">
             <input type="hidden" name="_csrf" value="<?php echo e(Security::csrfToken()); ?>">
             <button type="submit" class="btn btn-ghost btn-sm">[ 登出 ]</button>
@@ -77,6 +84,7 @@
     </main>
 </div>
 <?php else: ?>
+<button type="button" class="btn btn-sm theme-toggle theme-toggle-float" title="<?php echo e($themeTip); ?>"><?php echo e($themeLabel); ?></button>
 <main class="guest">
     <?php echo $content; ?>
 </main>

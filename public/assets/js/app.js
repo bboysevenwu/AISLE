@@ -50,6 +50,37 @@
         });
     });
 
+    // 畫面風格切換：dark（駭客任務）/ light（淺色底的駭客任務）
+    // 選擇記在 cookie aisle_theme（每台電腦各自記憶，一年），PHP 輸出頁面時就會套上 body.theme-light，換頁不會閃爍
+    // 切換後觸發 $(document) 的 'aisle:theme' 事件，圖表等元件可以跟著重畫
+    var THEME_COOKIE = 'aisle_theme';
+    var THEME_TEXT = {
+        dark:  { label: '[ ☀ 淺色 ]', tip: '切換為淺色底的駭客任務風格' },
+        light: { label: '[ ☾ 深色 ]', tip: '切換為駭客任務（深色）風格' }
+    };
+    function currentTheme() {
+        return $('body').hasClass('theme-light') ? 'light' : 'dark';
+    }
+    function saveTheme(theme) {
+        // path 用網站的路徑前綴（例 /D1C1/aisle/），經過 proxy 也只作用在 AISLE 底下
+        var path = $('meta[name="base-path"]').attr('content') || '/';
+        var expires = new Date();
+        expires.setFullYear(expires.getFullYear() + 1);
+        document.cookie = THEME_COOKIE + '=' + theme + '; expires=' + expires.toUTCString() + '; path=' + path;
+    }
+    function applyTheme(theme) {
+        $('html, body').toggleClass('theme-light', theme === 'light');
+        $('.theme-toggle').text(THEME_TEXT[theme].label).attr('title', THEME_TEXT[theme].tip);
+        $(document).trigger('aisle:theme', [theme]);
+    }
+    $(function () {
+        $(document).on('click', '.theme-toggle', function () {
+            var next = currentTheme() === 'light' ? 'dark' : 'light';
+            saveTheme(next);
+            applyTheme(next);
+        });
+    });
+
     // 共用工具，模組 view 中可使用 AISLE.typewriter(...)
     // 用 extend 合併，保留頁面先載入的擴充（例如 auth.js 的 AISLE.auth）
     window.AISLE = $.extend(window.AISLE || {}, {

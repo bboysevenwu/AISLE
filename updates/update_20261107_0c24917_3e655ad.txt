@@ -1,0 +1,3673 @@
+#AISLE-UPDATE v1
+# AISLE single-file update. Apply on the server:
+#   python scripts/python/apply_update.py <this file>          (preview)
+#   python scripts/python/apply_update.py <this file> --apply  (apply)
+#@ from=0c24917132f6fc4f1f10f24486b3f81bc87691e9
+#@ to=3e655adbdc34eadd90d8813e1eea9f85e0f02ef4
+#@ created=2026-11-07 10:30:11
+#@ note=charts：各 chart 的 [db] 連線、[plot] spec 線、machine_id 對照、Url 點擊開新分頁（PR #7）
+#@@@ FILE README.md sha1=65e4582068f932dce57a0132938e8f961a3ef796 base=0323510dd6fdfa99405db307cd4d74efde58da1c mode=644 enc=text nl=1
+# AISLE 系統架構
+
+多功能、模組化的內部網頁系統。依「身份」(EE / PE) 決定每位使用者能看到哪些功能頁面，介面採用駭客任務 (The Matrix) 綠色終端機風格。
+
+| 層級 | 技術 | 備註 |
+|---|---|---|
+| 後端 | PHP 5.4 | 不使用 5.5+ 語法；資料庫一律 PDO prepared statement |
+| 資料庫 | MariaDB 5.5 / 10.x | InnoDB、utf8mb4 |
+| 輔助腳本 | Python 2.7、Bash | 權限檢查、建帳號、備份、產生模組 |
+| 前端 | HTML5、jQuery 1.12.4、原生 Canvas | 不需要 Node / 建置工具 |
+
+---
+
+## 1. 資料夾結構
+
+```
+AISLE/
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
+├── .gitignore
+├── README.md
+├── config/
+│   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
+│   └── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
+│   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
+│   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
+├── core/                      # 框架核心（一般開發不需修改）
+│   ├── bootstrap.php          # 載入類別、設定、Session
+│   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
+│   ├── App.php                # 路由：index.php?m=<頁面>&a=<動作>，依 config.ini 的 route 載入
+│   ├── Acl.php                # 讀 config.ini，判斷權限、產生選單
+│   ├── Auth.php               # 登入 / 登出 / 失敗鎖定 / 閒置登出
+│   ├── Registration.php       # 註冊驗證、依 EE 名單判定身份
+│   ├── guard.php              # 頁面內細部判斷 require_role() / has_role() / csrf_field() …
+│   ├── password_compat.php    # PHP 5.4 補上 password_hash() / password_verify()
+│   ├── Password.php           # 包裝 password_hash()，成本讀 app.ini
+│   ├── Security.php           # 安全亂數、常數時間比較、CSRF
+│   ├── Database.php           # PDO 單例 + 查詢捷徑
+│   ├── Controller.php         # 模組 Controller 基底類別
+│   ├── View.php               # 純 PHP 樣板
+│   └── helpers.php            # e() js() url() asset() audit() 等
+├── modules/                   # 功能模組（route = "module:<資料夾>"）
+│   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
+│   ├── dashboard/             # EE + PE
+│   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── profile/               # EE + PE（改密碼）
+│   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
+│   ├── pe_recipe/             # 只有 PE
+│   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
+│   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
+│       ├── controller.php     #   class AdminUsersController extends Controller
+│       └── views/index.php    #   該模組的畫面
+├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
+├── templates/
+│   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
+│   ├── error.php
+│   └── auth/                  # 登入、註冊頁面樣板
+├── public/                    # ★ 唯一對外的目錄
+│   ├── index.php              # 功能模組入口
+│   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
+│   ├── register.php           # 註冊（含帳號即時檢查）
+│   ├── logout.php             # 登出（需 CSRF token）
+│   ├── legacy/pe_notice.php   # 獨立頁面範例（route = "public/..."），第一行 require auth_check.php
+│   ├── .htaccess
+│   └── assets/
+│       ├── css/matrix.css     # 駭客任務主題
+│       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
+│       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
+│       ├── js/charts.js       # 圖表頁的 ECharts 繪圖（所有圖表共用）
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
+├── scripts/
+│   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
+│   └── shell/
+│       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
+│       ├── create_user.sh     # 建立使用者（互動輸入密碼）
+│       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── new_chart.sh       # 由範本產生新圖表 charts/<名稱>.ini + .php（見第 10 節）
+│       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
+├── sql/
+│   ├── schema.sql             # 建表
+│   └── seed.sql               # 初始管理員
+├── storage/
+│   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
+│   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
+└── docs/screenshots/          # 介面截圖
+```
+
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
+
+---
+
+## 2. 資料庫
+
+`sql/schema.sql` 建立三張表：
+
+| 資料表 | 用途 |
+|---|---|
+| `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
+| `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
+| `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+
+設計重點：
+
+- **`role` 用 VARCHAR 而非 ENUM**：新增身份只要改 `config.ini`，不必 `ALTER TABLE`。
+- **`password_hash` 留 255 長度**：目前 bcrypt 固定 60 字元，保留未來更換演算法的空間。
+- **`created_at` 用 DATETIME 由程式寫入**：MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 `CURRENT_TIMESTAMP`，這個位置留給 `updated_at`。
+- 有索引的 VARCHAR 欄位長度 ≤ 191，避免舊版 InnoDB 在 utf8mb4 下超過 767 bytes 索引上限。
+
+### 密碼雜湊（PHP 5.4 的做法）
+
+`password_hash()` / `password_verify()` 是 PHP 5.5 才有的函式。`core/password_compat.php` 在函式不存在時補上同名函式：以 `crypt()` 搭配 `$2y$` bcrypt（PHP ≥ 5.3.7 支援），鹽來自 `openssl_random_pseudo_bytes`，驗證時使用常數時間比較。因此程式碼照標準 API 寫 `password_hash($pw, PASSWORD_BCRYPT)`，在 PHP 5.4 與 5.5+ 都能執行，雜湊格式也完全相同；日後升級 PHP 只要刪掉這個檔案，舊密碼不需重設。
+
+---
+
+## 3. 身份 → 頁面權限與路由（`config/config.ini` + `core/auth_check.php`）
+
+### config.ini
+
+```ini
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
+ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
+
+; ★ 頁面與路由
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
+action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
+```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
+
+`route` 有三種寫法：
+
+| route | 程式位置 | 網址 | 適合 |
+|---|---|---|---|
+| `module:<資料夾>` | `modules/<資料夾>/controller.php` | `index.php?m=<代號>&a=<動作>` | 有多個動作、AJAX 的功能 |
+| `pages/xxx.php` | `pages/xxx.php` | `index.php?m=<代號>` | 單純頁面，不用寫 Controller，自動套用版面 |
+| `public/xxx.php` | `public/xxx.php` | 直接開啟該檔案 | 既有網站的舊頁面，只需在第一行加一行 require |
+
+### auth_check.php：所有頁面共用同一套檢查
+
+```
+使用者開啟頁面
+  ├─ index.php?m=xxx  →  App 路由 ──────────┐
+  └─ public/legacy/xxx.php（第一行 require）─┤
+                                             ▼
+                              core/auth_check.php
+                    1. 未登入           → 導向 login.php（AJAX 回 401）
+                    2. 頁面未登記在 config.ini → 403
+                    3. 首次登入未改密碼 → 導向個人設定
+                    4. 身份不在 [access] 清單、或不符 action.* → 403
+                                             ▼
+                          通過 → 依 route 載入頁面程式
+```
+
+既有頁面接上權限只要在第一行加入（依檔案位置調整 `../`）：
+
+```php
+<?php require_once dirname(__FILE__) . '/../../core/auth_check.php';
+// 通過檢查後才會執行到這裡；可用 $AUTH_USER、$AUTH_PAGE
+```
+
+auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出頁面代號，所以頁面本身不用寫自己的代號或身份。檔案若沒登記在 config.ini，即使加了 require 也一律拒絕，避免漏設權限的頁面被看到。獨立頁面送出 POST 時會檢查 CSRF，舊表單請加上 `<?php echo csrf_field(); ?>`；若一時無法修改，可把 `[settings] direct_page_csrf` 設為 `Off`。
+
+權限一律在伺服器端檢查，隱藏選單只是介面效果；直接輸入網址也會得到 403。目前範例的結果：
+
+| 頁面 | EE | PE | ADMIN |
+|---|:-:|:-:|:-:|
+| 主控台 dashboard | ✓ | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
+| 個人設定 profile | ✓ | ✓ | ✓ |
+| 設備狀態 ee_equipment | ✓ | | ✓ |
+| 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
+| 製程配方 pe_recipe | | ✓ | ✓ |
+| 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 › M1BF m1bf（module:charts） | ✓ | ✓ | ✓ |
+| 使用者管理 admin_users | | | ✓ |
+
+修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
+
+---
+
+## 4. 註冊、登入、登出與權限檢查
+
+### 流程
+
+| 檔案 | 方法 | 行為 |
+|---|---|---|
+| `public/register.php` | GET | 註冊頁 |
+| | GET `?check_account=xxx`（AJAX） | 回傳帳號是否可用 |
+| | POST | 驗證 → 依 EE 名單判定身份 → 寫入 `users`，並在 `audit_logs` 記錄身份來源 |
+| `public/login.php` | GET / POST | 驗證帳密，成功後 `session_regenerate_id()` 並把使用者與身份寫入 `$_SESSION['user']` |
+| `public/logout.php` | POST（或 `?_csrf=`） | 清除 Session 與 Cookie，導回 `login.php?bye=1` |
+
+登入與註冊表單由 `js/auth.js` 以 jQuery 做即時驗證，並用 `$.ajax` 非同步送出，伺服器回 JSON。瀏覽器關閉 JavaScript 時表單照常以一般 POST 送出，伺服器端也會做完整驗證。
+
+### 註冊時的身份判定（`config.ini` 的 `[register]` 與 `[ee_accounts]`）
+
+註冊表單只填帳號、顯示名稱與密碼。身份在註冊當下依 INI 名單判定，直接寫入 `users.role`：
+
+```ini
+[register]
+enabled          = On
+require_approval = Off     ; On = 註冊後需管理員啟用
+listed_role      = "EE"    ; 名單上的帳號
+unlisted_role    = "PE"    ; 名單外的帳號；設為 "" 則名單外不能註冊
+
+[ee_accounts]              ; EE 正面表列，一行一個帳號，不分大小寫
+account[] = "neo"
+account[] = "trinity"
+```
+
+- 名單只在註冊時讀取。之後增減名單，不會改變已經註冊的人的身份，要調整請直接改資料庫的 `users.role`。
+- ADMIN 永遠無法經由註冊取得；`listed_role`、`unlisted_role` 若設成 superuser 角色會被忽略。
+- `audit_logs` 會記錄每個帳號的身份來源（`ee_accounts` 或 `unlisted_role`）。
+- 改完名單可以執行 `python scripts/python/check_config.py`，它會列出名單內容，並檢查帳號格式與重複。
+
+### 共用權限檢查函式（`core/guard.php`）
+
+```php
+require_login();                    // 未登入 → 導向 login.php；AJAX 回 401
+require_role('PE');                 // 身份不符 → 403（ADMIN 一律通過）
+require_role('EE,PE');              // 多個身份用逗號
+if (has_role('EE,PE')) { ... }      // 只判斷、不中止
+if (can_access('shared_report', 'export')) { ... }   // 依 [access] 與 [page.xxx] 判斷
+echo csrf_field();                  // 表單的 CSRF 隱藏欄位
+current_user();  current_role();  is_logged_in();
+```
+
+頁面層級的權限由 `auth_check.php` 處理；這些函式用在頁面內更細的判斷，例如只對某身份顯示某個按鈕。
+
+---
+
+## 5. 新增功能頁面
+
+只需要改 config.ini，核心程式（`core/`）不用動：
+
+1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
+2. 在 `[access]` 把頁面代號加進能使用它的身份
+3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
+
+例：新增一個 EE、PE 都能看的聯絡人頁面
+
+```ini
+[access]
+EE = "dashboard, ..., team_contacts"
+PE = "dashboard, ..., team_contacts"
+
+[page.team_contacts]
+title = "聯絡人 // CONTACTS"
+route = "pages/team_contacts.php"
+order = 60
+```
+
+需要多個動作或 AJAX 時用模組，腳本會產生程式骨架並自動完成上面第 2、3 步：
+
+```bash
+# 產生 modules/ee_alarm/，加入 EE、PE 的 [access] 清單並新增 [page.ee_alarm]
+bash scripts/shell/new_module.sh ee_alarm "EE,PE" "警報中心 // ALARMS" 35
+```
+
+產生的骨架：
+
+```php
+<?php
+class EeAlarmController extends Controller
+{
+    public function indexAction()          // index.php?m=ee_alarm
+    {
+        $this->render('index', array('message' => '...'));
+    }
+
+    public function listAction()           // index.php?m=ee_alarm&a=list
+    {
+        $rows = Database::fetchAll('SELECT ... WHERE x = ?', array($x));
+        $this->json(array('ok' => true, 'rows' => $rows));
+    }
+}
+```
+
+Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作')`、`isPost()`、`input()`、`query()`、`flash()`。View 中輸出變數一律用 `e($var)`；要放進 `<script>` 用 `js($var)`。
+
+---
+
+## 6. 安全機制
+
+- bcrypt 密碼雜湊，提高 `bcrypt_cost` 後使用者下次登入自動升級雜湊
+- 連續失敗 5 次鎖定 15 分鐘（`app.ini` 可調），帳號不存在時也執行一次 bcrypt，避免從回應時間猜出帳號
+- 登入成功 `session_regenerate_id()`，閒置 30 分鐘自動登出，Cookie 設 HttpOnly
+- 所有 POST（含 jQuery AJAX，透過 `X-CSRF-Token` 標頭）都檢查 CSRF token；登出也需要 token，避免被外部連結強制登出
+- 註冊無法取得 ADMIN 身份；可開啟 `require_approval` 讓新帳號需管理員啟用，或把 `unlisted_role` 設為空字串只開放名單內帳號註冊
+- 首次登入或被管理員重設密碼後強制改密碼
+- 所有 SQL 使用 PDO prepared statement，`ATTR_EMULATE_PREPARES = false`
+
+---
+
+## 7. PHP 5.4 相容規範
+
+可以用：`array()` 與 `[]` 短陣列、closure、`http_response_code()`、`JSON_UNESCAPED_UNICODE`、`session_status()`。
+
+不能用：
+
+| 不能用 | 版本 | 替代寫法 |
+|---|---|---|
+| `password_hash()` / `password_verify()` | 5.5 | 已由 `core/password_compat.php` 補上，可直接使用 |
+| `finally`、`yield`、`::class`、`array_column()`、`empty(函式())` | 5.5 | try/catch、迴圈、字串類別名稱、先存變數 |
+| `hash_equals()`、`...$args`、`const` 運算式 | 5.6 | `Security::equals()` |
+| `??`、`<=>`、純量 type hint、回傳型別、`random_bytes()` | 7.0 | `array_get()`、`Security::randomBytes()` |
+| `?->`、`match`、`fn() =>` | 8.0 | 一般寫法 |
+
+---
+
+## 8. 部署步驟
+
+完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
+
+1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
+2. `git clone -b main` 到 `/var/www/html/aisle/`
+3. `mysql -u root -p < sql/schema.sql`
+4. 建立 `aisle_app` 資料庫帳號
+5. `mysql -u root -p < sql/seed.sql`
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
+7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
+8. `python scripts/python/check_config.py`
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
+10. 目錄權限（storage 可寫）
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
+13. `admin` / `Neo@Zion2026` 首次登入並改密碼
+14. 註冊測試帳號，驗證 EE / PE 權限
+15.（選用）接入既有舊頁面
+16. 設定每日備份 crontab
+
+---
+
+## 9. 駭客任務主題
+
+| 元素 | 檔案 | 說明 |
+|---|---|---|
+| 數位雨背景 | `js/matrix-rain.js` | Canvas 半形片假名雨，約 20fps；系統設定「減少動態」時改為靜態畫面 |
+| CRT 掃描線 | `css/matrix.css` `.crt-overlay` | 全畫面細橫線疊層 |
+| 終端機面板 | `.panel` `.terminal` | 綠框黑底、亮綠標題列 |
+| 打字機效果 | `AISLE.typewriter()` | 登入頁標語、主控台訊息 |
+| 標題故障效果 | `.glitch` | 滑鼠移上時文字抖動 |
+| 狀態燈 | `.led-run/idle/down` | 綠、暗綠、閃爍紅 |
+| 身份徽章 | `.role-EE/PE/ADMIN` | EE 亮綠、PE 薄荷綠、ADMIN 紅藥丸 |
+
+色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
+
+截圖見 `docs/screenshots/`。
+
+---
+
+## 10. 圖表（charts）
+
+多張圖表（BSLr、M1BF、CDM、BMMF…）共用同一個模組 `modules/charts`，每張圖表是選單「圖表 // CHARTS」底下的一頁。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+每張圖表只由兩個同名檔案定義，新增圖表不需要改任何程式：
+
+| 檔案 | 內容 |
+|---|---|
+| `charts/<名稱>.ini` | 畫什麼、怎麼畫：`[page]` 整頁設定、`[plot.<代號>]` 每組圖 |
+| `charts/<名稱>.php` | 部署者寫 SQL，整理成資料格式（`class <名稱>Chart extends ChartSource`） |
+| `config/config.ini` | `[page.<小寫名稱>]`，`route = "module:charts"`、`group = "charts"`；哪些身份看得到寫在 `[access]` |
+
+頁面代號 = 圖表名稱轉小寫：`[page.bslr]` → `charts/BSLr.ini`、`charts/BSLr.php`，網址 `index.php?m=bslr`。
+
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（快捷按鈕由 `quick_days` 設定）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選（`model.<機型>`）；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
+
+### 新增一張圖表
+
+```bash
+bash scripts/shell/new_chart.sh CDM      # 建立 charts/CDM.ini、charts/CDM.php，並印出 config.ini 要貼的區段
+```
+
+1. 編輯 `charts/CDM.ini` 的 `[plot.xxx]`；此時 `source = sample`，用範例資料就能看到完整畫面
+2. 編輯 `charts/CDM.php` 寫 `tools()`、`series()` 的 SQL，寫好把 ini 改成 `source = php`
+3. 把腳本印出的 `[page.cdm]` 貼進 `config/config.ini`，並把 `cdm` 加到 `[access]` 要看得到的身份
+4. `python scripts/python/check_config.py` 檢查
+
+### 設定檔：`charts/<名稱>.ini`
+
+```ini
+[page]
+source       = php          ; php = 用 <名稱>.php 查資料庫；sample = 內建範例資料
+default_days = 60           ; 預設顯示最近幾天
+max_days     = 366          ; 一次最多查幾天
+quick_days   = "7, 30, 90"  ; 快速區間按鈕
+model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
+model.2000   = "PAP"
+
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
+[plot.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+ymin   = 0                         ; Y 軸下限（三張圖共用）
+ymax   = 6                         ; Y 軸上限（三張圖共用）
+newest_ymax = 5                    ; 只改最新值排排站的上限
+upper_oos = 5                      ; spec 線（可留空 = 不畫）
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
+
+[plot.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
+```
+
+- 每個 `[plot.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
+
+### 資料來源：`charts/<名稱>.php`
+
+```php
+<?php
+class BSLrChart extends ChartSource
+{
+    public function tools()
+    {
+        $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM bslr_x_data');
+        $tools = array();
+        foreach ($rows as $r) {
+            $tools[] = $r['tool_id'];
+        }
+        return $tools;
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $where = 'tool_id IN (' . $this->in($tools) . ')
+                  AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        $bind  = array_merge($tools, array($start, $end));
+
+        // 長表（tool_id, data_time, param, value）
+        $a = self::pivot($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+               FROM bslr_x_data WHERE ' . $where, $bind), 'tool_id', 'd', 'param', 'value');
+
+        // 寬表，欄位 c1 / c2 對應參數 BSLr_Y_C1 / BSLr_Y_C2
+        $b = self::wide($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+               FROM bslr_y_summary WHERE ' . $where, $bind),
+            'tool_id', 'd', array('BSLr_Y_C1' => 'c1', 'BSLr_Y_C2' => 'c2'));
+
+        return self::merge($a, $b);   // 不同 table 的結果依機台 + 時間合併
+    }
+}
+```
+
+| 工具（`modules/charts/ChartSource.php`） | 用途 |
+|---|---|
+| `$this->fetchAll($sql, $bind)` | prepared statement 查詢，值一律用 `?` 綁定 |
+| `$this->in($list)` | 產生 `IN (...)` 用的 `?,?,?` |
+| `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
+| `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
+| `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+| `$this->machineOf($tool)` / `$this->machinesOf($tools)` / `$this->toolOf($machine)` | tool_id 與 machine_id 互換（要先實作 `machines()`） |
+| `self::table($name)` | 組出來的 table 名稱（例 `'M1BF_' . $machineId`）檢查後加反引號；table 名稱不能用 `?` 綁定，一定要經過它 |
+
+**table 用 machine_id 時**（例 table `M1BF_HP23`，`HP23` 是 `APAN01` 的 machine_id）：在 `<名稱>.php` 實作 `machines()`，回傳 `array('APAN01' => 'HP23', ...)`（可寫死或從對照表查）。實作後 `tools()` 可以省略（預設用 `machines()` 的 tool_id），`series()` 回傳的 key 也可以直接是 machine_id，controller 會自動換成 tool_id；網頁上的機台名稱一律是 tool_id。範例見 `charts/_template.php` 的寫法 4（每台一個 table）、寫法 5（machine_id 欄位）。
+
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
+
+### 資料格式與載入
+
+後端 `index.php?m=<頁面代號>&a=tbt&start=&end=` 回傳區間內全部機台、ini 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 選用 `"Url": [...]`（與 `Date` 等長）：單台機台趨勢圖點擊數據點會在瀏覽器新分頁開啟該時間點的網址，tooltip 會提示「點擊數據點開啟連結」，資料表多一欄 URL。只接受 `http://`、`https://` 或 `/` 開頭的網址（其他如 `javascript:` 一律忽略）；`pivot()` / `wide()` 最後多給網址欄位名稱即可產生，`merge()` 會保留。沒有 `Url` 時與原本相同
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視
+- 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
+
+![charts](docs/screenshots/charts.png)
+#@@@ FILE charts/M1BF.ini sha1=1fed9accbc6af7ea2cd021cde6e6047d644eb71e base=4138274e2b0e83b17982ce87d7c393e9bb5bab7f mode=644 enc=text nl=1
+; =====================================================================
+; M1BF 圖表設定（由原本的 config/chart_demo.ini 搬過來）
+; ---------------------------------------------------------------------
+; 每張 chart 有兩個同名檔案：
+;   charts/<名稱>.ini   本檔：畫什麼、怎麼畫、連哪個資料庫
+;   charts/<名稱>.php   部署者寫 SQL、整理成資料格式
+; 並在 config/config.ini 加一個頁面（頁面代號 = 名稱轉小寫）：
+;   [page.<小寫名稱>]  route = "module:charts"  group = "charts"
+; 存檔後重新整理頁面即生效。
+;
+; 寫法注意：字串一律加雙引號；[plot.<代號>] 的代號只能用小寫英文、數字、底線
+; =====================================================================
+
+; ---------------------------------------------------------------------
+; [page] 整頁設定（都可省略）
+;   source        php    = 用 charts/<名稱>.php 查資料庫（預設）
+;                 sample = 內建範例資料，SQL 還沒寫好時先看畫面
+;   default_days  進頁面預設顯示最近幾天（預設 60）
+;   max_days      一次最多查幾天（預設 366）
+;   quick_days    快速區間按鈕（預設 "7, 30, 90"）
+;   model.<機型>  機台代號包含這個字（不分大小寫）就屬於這個機型，
+;                 用在「最新值排排站」的機型篩選與機台配色；不設定就沒有機型下拉選單
+; ---------------------------------------------------------------------
+[page]
+source       = sample
+default_days = 60
+max_days     = 366
+quick_days   = "7, 30, 90"
+model.1980   = "PAN"
+model.2000   = "PAP"
+
+; ---------------------------------------------------------------------
+; [db] 這張 chart 查資料用的資料庫連線（charts/<名稱>.php 的 fetchAll 使用）
+;   ip        資料庫主機 IP 或名稱。留空 = 直接使用 AISLE 自己的資料庫（config/app.ini 的 [database]），
+;             這時 name / user / password 也要留空
+;   port      預設 3306
+;   name      資料庫名稱（可留空，SQL 裡寫成 資料庫.table）
+;   user / password   建議使用只有 SELECT 權限的帳號；一律加雙引號，密碼不要含 " 字元
+;   charset   預設 utf8mb4
+;
+; ★ 安全性：帳號密碼只在主機上的檔案填寫，不要填進 GitHub 上的版本（repo 裡一律留空）。
+;   網址讀不到 charts/ 目錄（根目錄 .htaccess 會擋），密碼也不會送到瀏覽器。
+;   建議主機上執行 chmod 640 charts/*.ini（擁有者 / 群組讓 Apache 讀得到即可）
+; ---------------------------------------------------------------------
+[db]
+ip       = ""
+port     = 3306
+name     = ""
+user     = ""
+password = ""
+charset  = "utf8mb4"
+
+; ---------------------------------------------------------------------
+; [plot.<代號>] 一組圖：params 列出的參數畫在同一張圖上
+; 頁面三個區塊會依本檔的順序，各自為每一組畫一張圖：
+;   single  單台機台趨勢          （上方選擇的那一台，每個參數一條線）
+;   newest  最新值排排站          （每台在區間內的最後一筆，每個參數一根長條）
+;   tbt     歷史趨勢排排站        （每台一個區段，每個參數一條線）
+;
+; 欄位：
+;   title   圖表標題
+;   params  參數名稱，逗號分隔，必須與 <名稱>.php 回傳的 Data 裡的 key 一致（區分大小寫）
+;   unit    Y 軸名稱（選用，預設 "Data"）
+;   single / newest / tbt   On / Off，省略時為 On
+;   connect On = 線跨過沒有值的時間點連起來（選用，預設 Off = 斷開）。
+;           參數來自取樣時間不同的 table（merge 合併）時，其他參數的時間點會是空值，建議設 On
+;   ymin / ymax         Y 軸下限 / 上限（選用，套用到該組三張圖；不設或留空 = 自動）
+;   single_ymin / single_ymax、newest_ymin / newest_ymax、tbt_ymin / tbt_ymax
+;                       只設定某一區塊的上下限，優先於 ymin / ymax
+;   超出上下限的資料會被裁切，不會畫出圖外
+;   upper_oos / upper_ooc / lower_ooc / lower_oos
+;                       spec 線（選用，留空 = 不畫），三個區塊都會畫成水平線：
+;                       OOS（規格界限）紅色實線、OOC（管制界限）橘色虛線
+;                       有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+;                       Y 軸自動時會把 spec 線納入範圍；有設 ymin / ymax 時，超出範圍的線不會畫出
+; ---------------------------------------------------------------------
+[plot.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"
+single = On
+newest = On
+tbt    = On
+; 三張圖 Y 軸都是 0 ~ 6，最新值排排站另外設 0 ~ 5
+ymin   = 0
+ymax   = 6
+newest_ymax = 5
+; spec 線：四條都畫
+upper_oos = 5
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
+
+[plot.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+single = On
+newest = Off
+tbt    = On
+; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymin = 0
+tbt_ymax = 6
+; spec 線：只有上限，下限留空不畫
+upper_oos = 5.5
+upper_ooc = 5
+lower_ooc =
+lower_oos =
+#@@@ FILE charts/M1BF.php sha1=48db0ca86c6954551bcc40a367b246d48ef2af9f base=a1863cbce792fe4b43c12841cc9b7223744e1abc mode=644 enc=text nl=1
+<?php
+/**
+ * M1BF 的資料來源（目前 charts/M1BF.ini 的 source = sample，尚未使用本檔）
+ *
+ * 寫好 SQL 後，把 charts/<名稱>.ini 的 [page] source 改成 php。
+ *
+ * 只需要實作兩個方法：
+ *
+ *   tools()
+ *       這張 chart 的全部機台代號：array('APAN01', 'APAN02', ...)
+ *
+ *   series($tools, $params, $start, $end)
+ *       $tools   tools() 回傳的機台
+ *       $params  charts/<名稱>.ini 用到的全部參數名稱
+ *       $start / $end  查詢區間 'Y-m-d'（含兩端）
+ *       回傳：
+ *         array(
+ *           'APAN01' => array(
+ *             'Date' => array('2026-01-01 08:00:00', ...),
+ *             'Data' => array('XXX_C1' => array(1.0, ...), 'XXX_C2' => array(1.1, ...))
+ *           ),
+ *           ...
+ *         )
+ *       每個參數的陣列和 Date 一樣長，沒有值的位置放 null。
+ *       選用：再加一個 'Url' => array(url1, url2, ...)（和 Date 一樣長），單台機台趨勢圖點擊數據點時
+ *             會在新分頁開啟該時間點的網址；只接受 http://、https:// 或 / 開頭，沒有網址的位置放 null。
+ *             pivot() / wide() 最後多給一個網址欄位名稱就會自動產生，例 self::wide($rows, 'tool_id', 'd', $map, 'url')
+ *             沒有 Url 時頁面和原本一樣。
+ *       排序、轉數字、只留 ini 用到的參數由共用程式處理，這裡不用管。
+ *
+ *   machines()（選用）
+ *       table 用的是 machine_id 而不是 tool_id 時（例 table M1BF_HP23，HP23 是 APAN01 的 machine_id），
+ *       回傳 tool_id => machine_id 對照：array('APAN01' => 'HP23', 'APAN02' => 'HP24', ...)
+ *       有實作時：
+ *         - tools() 可以刪掉，預設就是 machines() 的 tool_id
+ *         - series() 回傳的 key 可以直接用 machine_id，會自動換成 tool_id
+ *         - 網頁上顯示的機台名稱一律是 tool_id
+ *
+ * 可用的工具（定義在 modules/charts/ChartSource.php）：
+ *   $this->fetchAll($sql, $bind)   查詢；值一律用 ? 綁定，不要串進 SQL 字串
+ *                                  連線設定：charts/<名稱>.ini 的 [db]（沒填 ip 時用 AISLE 自己的資料庫）
+ *   $this->in($list)               產生 IN (...) 用的 ?,?,?
+ *   self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)    長表（一列一個參數值）→ 回傳格式
+ *   self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)     寬表（每個參數一個欄位）→ 回傳格式
+ *   self::merge($a, $b, ...)       多個 table 的結果依「機台 + 時間」合併
+ *   $this->machineOf($tool)        tool_id → machine_id（要先實作 machines()）
+ *   $this->machinesOf($tools)      多台 tool_id → machine_id 陣列（給 IN (...) 用）
+ *   $this->toolOf($machine)        machine_id → tool_id
+ *   self::table($name)             組出來的 table 名稱（例 'M1BF_' . $machineId）檢查後加反引號；
+ *                                  table 名稱不能用 ? 綁定，一定要經過這個函式
+ *
+ * 注意（PHP 5.4）：不能用 ??、finally、::class 等 PHP 5.5 以後的語法；檔案結尾不要寫 ?>
+ * 查詢失敗或資料不對時 throw new RuntimeException('說明')，頁面會顯示訊息。
+ */
+class M1BFChart extends ChartSource
+{
+    // ★ 選用：table 用 machine_id 時才需要，把下面整段取消註解，並刪掉 tools()
+    //
+    // public function machines()
+    // {
+    //     // 寫法 A：直接寫死
+    //     return array(
+    //         'APAN01' => 'HP23',
+    //         'APAN02' => 'HP24',
+    //     );
+    //
+    //     // 寫法 B：從對照表查
+    //     // $map = array();
+    //     // foreach ($this->fetchAll('SELECT tool_id, machine_id FROM tool_machine_map') as $r) {
+    //     //     $map[$r['tool_id']] = $r['machine_id'];
+    //     // }
+    //     // return $map;
+    // }
+
+    public function tools()
+    {
+        // ★ 部署者實作：回傳全部機台代號（tool_id）；有實作 machines() 時把整個 tools() 刪掉
+        //
+        // $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM some_table ORDER BY tool_id');
+        // $tools = array();
+        // foreach ($rows as $r) {
+        //     $tools[] = $r['tool_id'];
+        // }
+        // return $tools;
+
+        throw new RuntimeException('M1BF：尚未實作 tools()，見 charts/M1BF.php');
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        // ★ 部署者實作：回傳 $tools、$params 在期間內的資料
+        //
+        // 共用的 WHERE 條件（機台 + 日期區間）
+        // $where = 'tool_id IN (' . $this->in($tools) . ')
+        //           AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        // $bind  = array_merge($tools, array($start, $end));
+        //
+        // --- 寫法 1：長表（一列一個參數值：tool_id, data_time, param, value）---
+        // $rows = $this->fetchAll(
+        //     'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+        //        FROM table_a
+        //       WHERE ' . $where . ' AND param IN (' . $this->in($params) . ')',
+        //     array_merge($bind, $params)
+        // );
+        // return self::pivot($rows, 'tool_id', 'd', 'param', 'value');
+        //
+        // --- 寫法 2：寬表（一列一個時間點，每個參數一個欄位）---
+        // $rows = $this->fetchAll(
+        //     'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+        //        FROM table_b WHERE ' . $where,
+        //     $bind
+        // );
+        // return self::wide($rows, 'tool_id', 'd', array('XXX_C1' => 'c1', 'XXX_C2' => 'c2'));
+        //
+        // --- 寫法 3：參數分散在不同 table，各查一次再合併 ---
+        // $a = self::pivot($this->fetchAll(...table_a...), 'tool_id', 'd', 'param', 'value');
+        // $b = self::wide($this->fetchAll(...table_b...), 'tool_id', 'd', array('XXX_C3' => 'c3'));
+        // return self::merge($a, $b);
+        // （兩邊的時間要用同樣的 DATE_FORMAT 格式才對得起來）
+        //
+        // --- 寫法 4：每台機台一個 table，table 名稱用 machine_id（例 M1BF_HP23），要實作 machines() ---
+        // $parts = array();
+        // foreach ($tools as $tool) {
+        //     $rows = $this->fetchAll(
+        //         'SELECT DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+        //            FROM ' . self::table('M1BF_' . $this->machineOf($tool)) . '
+        //           WHERE data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)',
+        //         array($start, $end)
+        //     );
+        //     foreach ($rows as $i => $r) {
+        //         $rows[$i]['tool_id'] = $tool;     // 補上機台欄位給 wide() 用
+        //     }
+        //     $parts[] = self::wide($rows, 'tool_id', 'd', array('XXX_C1' => 'c1', 'XXX_C2' => 'c2'));
+        // }
+        // return call_user_func_array(array('ChartSource', 'merge'), $parts);
+        //
+        // --- 寫法 5：table 裡的機台欄位是 machine_id，要實作 machines() ---
+        // $machines = $this->machinesOf($tools);
+        // $rows = $this->fetchAll(
+        //     'SELECT machine_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+        //        FROM table_c
+        //       WHERE machine_id IN (' . $this->in($machines) . ')
+        //         AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)',
+        //     array_merge($machines, array($start, $end))
+        // );
+        // return self::pivot($rows, 'machine_id', 'd', 'param', 'value');   // key 是 machine_id，會自動換成 tool_id
+
+        throw new RuntimeException('M1BF：尚未實作 series()，見 charts/M1BF.php');
+    }
+}
+#@@@ FILE charts/_template.ini sha1=3577c5aed6ebabbae6fcfa4100ad998fc69202e9 base=a9ef77952b6b678113c2bcea3e88a81192a94ab2 mode=644 enc=text nl=1
+; =====================================================================
+; chart 設定檔範本：複製成 charts/<名稱>.ini（或用 scripts/shell/new_chart.sh <名稱>）
+; ---------------------------------------------------------------------
+; 每張 chart 有兩個同名檔案：
+;   charts/<名稱>.ini   本檔：畫什麼、怎麼畫、連哪個資料庫
+;   charts/<名稱>.php   部署者寫 SQL、整理成資料格式
+; 並在 config/config.ini 加一個頁面（頁面代號 = 名稱轉小寫）：
+;   [page.<小寫名稱>]  route = "module:charts"  group = "charts"
+; 存檔後重新整理頁面即生效。
+;
+; 寫法注意：字串一律加雙引號；[plot.<代號>] 的代號只能用小寫英文、數字、底線
+; =====================================================================
+
+; ---------------------------------------------------------------------
+; [page] 整頁設定（都可省略）
+;   source        php    = 用 charts/<名稱>.php 查資料庫（預設）
+;                 sample = 內建範例資料，SQL 還沒寫好時先看畫面
+;   default_days  進頁面預設顯示最近幾天（預設 60）
+;   max_days      一次最多查幾天（預設 366）
+;   quick_days    快速區間按鈕（預設 "7, 30, 90"）
+;   model.<機型>  機台代號包含這個字（不分大小寫）就屬於這個機型，
+;                 用在「最新值排排站」的機型篩選與機台配色；不設定就沒有機型下拉選單
+; ---------------------------------------------------------------------
+[page]
+source       = sample
+default_days = 60
+max_days     = 366
+quick_days   = "7, 30, 90"
+model.1980   = "PAN"
+model.2000   = "PAP"
+
+; ---------------------------------------------------------------------
+; [db] 這張 chart 查資料用的資料庫連線（charts/<名稱>.php 的 fetchAll 使用）
+;   ip        資料庫主機 IP 或名稱。留空 = 直接使用 AISLE 自己的資料庫（config/app.ini 的 [database]），
+;             這時 name / user / password 也要留空
+;   port      預設 3306
+;   name      資料庫名稱（可留空，SQL 裡寫成 資料庫.table）
+;   user / password   建議使用只有 SELECT 權限的帳號；一律加雙引號，密碼不要含 " 字元
+;   charset   預設 utf8mb4
+;
+; ★ 安全性：帳號密碼只在主機上的檔案填寫，不要填進 GitHub 上的版本（repo 裡一律留空）。
+;   網址讀不到 charts/ 目錄（根目錄 .htaccess 會擋），密碼也不會送到瀏覽器。
+;   建議主機上執行 chmod 640 charts/*.ini（擁有者 / 群組讓 Apache 讀得到即可）
+; ---------------------------------------------------------------------
+[db]
+ip       = ""
+port     = 3306
+name     = ""
+user     = ""
+password = ""
+charset  = "utf8mb4"
+
+; ---------------------------------------------------------------------
+; [plot.<代號>] 一組圖：params 列出的參數畫在同一張圖上
+; 頁面三個區塊會依本檔的順序，各自為每一組畫一張圖：
+;   single  單台機台趨勢          （上方選擇的那一台，每個參數一條線）
+;   newest  最新值排排站          （每台在區間內的最後一筆，每個參數一根長條）
+;   tbt     歷史趨勢排排站        （每台一個區段，每個參數一條線）
+;
+; 欄位：
+;   title   圖表標題
+;   params  參數名稱，逗號分隔，必須與 <名稱>.php 回傳的 Data 裡的 key 一致（區分大小寫）
+;   unit    Y 軸名稱（選用，預設 "Data"）
+;   single / newest / tbt   On / Off，省略時為 On
+;   connect On = 線跨過沒有值的時間點連起來（選用，預設 Off = 斷開）。
+;           參數來自取樣時間不同的 table（merge 合併）時，其他參數的時間點會是空值，建議設 On
+;   ymin / ymax         Y 軸下限 / 上限（選用，套用到該組三張圖；不設或留空 = 自動）
+;   single_ymin / single_ymax、newest_ymin / newest_ymax、tbt_ymin / tbt_ymax
+;                       只設定某一區塊的上下限，優先於 ymin / ymax
+;   超出上下限的資料會被裁切，不會畫出圖外
+;   upper_oos / upper_ooc / lower_ooc / lower_oos
+;                       spec 線（選用，留空 = 不畫），三個區塊都會畫成水平線：
+;                       OOS（規格界限）紅色實線、OOC（管制界限）橘色虛線
+;                       有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+;                       Y 軸自動時會把 spec 線納入範圍；有設 ymin / ymax 時，超出範圍的線不會畫出
+; ---------------------------------------------------------------------
+[plot.example]
+title  = "EXAMPLE"
+params = "EXAMPLE_C1, EXAMPLE_C2"
+unit   = "Data"
+single = On
+newest = On
+tbt    = On
+upper_oos =
+upper_ooc =
+lower_ooc =
+lower_oos =
+#@@@ FILE charts/_template.php sha1=53c23078ee620c59e095eb386f01d526f71b084e base=c0a6bef7ea66299e75b87bfaf72fe7982385a192 mode=644 enc=text nl=1
+<?php
+/**
+ * chart 資料來源範本：複製成 charts/<名稱>.php，並把類別名稱 __NAME__Chart 改成 <名稱>Chart
+ * （用 scripts/shell/new_chart.sh <名稱> 會自動完成）
+ *
+ * 寫好 SQL 後，把 charts/<名稱>.ini 的 [page] source 改成 php。
+ *
+ * 只需要實作兩個方法：
+ *
+ *   tools()
+ *       這張 chart 的全部機台代號：array('APAN01', 'APAN02', ...)
+ *
+ *   series($tools, $params, $start, $end)
+ *       $tools   tools() 回傳的機台
+ *       $params  charts/<名稱>.ini 用到的全部參數名稱
+ *       $start / $end  查詢區間 'Y-m-d'（含兩端）
+ *       回傳：
+ *         array(
+ *           'APAN01' => array(
+ *             'Date' => array('2026-01-01 08:00:00', ...),
+ *             'Data' => array('XXX_C1' => array(1.0, ...), 'XXX_C2' => array(1.1, ...))
+ *           ),
+ *           ...
+ *         )
+ *       每個參數的陣列和 Date 一樣長，沒有值的位置放 null。
+ *       選用：再加一個 'Url' => array(url1, url2, ...)（和 Date 一樣長），單台機台趨勢圖點擊數據點時
+ *             會在新分頁開啟該時間點的網址；只接受 http://、https:// 或 / 開頭，沒有網址的位置放 null。
+ *             pivot() / wide() 最後多給一個網址欄位名稱就會自動產生，例 self::wide($rows, 'tool_id', 'd', $map, 'url')
+ *             沒有 Url 時頁面和原本一樣。
+ *       排序、轉數字、只留 ini 用到的參數由共用程式處理，這裡不用管。
+ *
+ *   machines()（選用）
+ *       table 用的是 machine_id 而不是 tool_id 時（例 table M1BF_HP23，HP23 是 APAN01 的 machine_id），
+ *       回傳 tool_id => machine_id 對照：array('APAN01' => 'HP23', 'APAN02' => 'HP24', ...)
+ *       有實作時：
+ *         - tools() 可以刪掉，預設就是 machines() 的 tool_id
+ *         - series() 回傳的 key 可以直接用 machine_id，會自動換成 tool_id
+ *         - 網頁上顯示的機台名稱一律是 tool_id
+ *
+ * 可用的工具（定義在 modules/charts/ChartSource.php）：
+ *   $this->fetchAll($sql, $bind)   查詢；值一律用 ? 綁定，不要串進 SQL 字串
+ *                                  連線設定：charts/<名稱>.ini 的 [db]（沒填 ip 時用 AISLE 自己的資料庫）
+ *   $this->in($list)               產生 IN (...) 用的 ?,?,?
+ *   self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)    長表（一列一個參數值）→ 回傳格式
+ *   self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)     寬表（每個參數一個欄位）→ 回傳格式
+ *   self::merge($a, $b, ...)       多個 table 的結果依「機台 + 時間」合併
+ *   $this->machineOf($tool)        tool_id → machine_id（要先實作 machines()）
+ *   $this->machinesOf($tools)      多台 tool_id → machine_id 陣列（給 IN (...) 用）
+ *   $this->toolOf($machine)        machine_id → tool_id
+ *   self::table($name)             組出來的 table 名稱（例 'M1BF_' . $machineId）檢查後加反引號；
+ *                                  table 名稱不能用 ? 綁定，一定要經過這個函式
+ *
+ * 注意（PHP 5.4）：不能用 ??、finally、::class 等 PHP 5.5 以後的語法；檔案結尾不要寫 ?>
+ * 查詢失敗或資料不對時 throw new RuntimeException('說明')，頁面會顯示訊息。
+ */
+class __NAME__Chart extends ChartSource
+{
+    // ★ 選用：table 用 machine_id 時才需要，把下面整段取消註解，並刪掉 tools()
+    //
+    // public function machines()
+    // {
+    //     // 寫法 A：直接寫死
+    //     return array(
+    //         'APAN01' => 'HP23',
+    //         'APAN02' => 'HP24',
+    //     );
+    //
+    //     // 寫法 B：從對照表查
+    //     // $map = array();
+    //     // foreach ($this->fetchAll('SELECT tool_id, machine_id FROM tool_machine_map') as $r) {
+    //     //     $map[$r['tool_id']] = $r['machine_id'];
+    //     // }
+    //     // return $map;
+    // }
+
+    public function tools()
+    {
+        // ★ 部署者實作：回傳全部機台代號（tool_id）；有實作 machines() 時把整個 tools() 刪掉
+        //
+        // $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM some_table ORDER BY tool_id');
+        // $tools = array();
+        // foreach ($rows as $r) {
+        //     $tools[] = $r['tool_id'];
+        // }
+        // return $tools;
+
+        throw new RuntimeException('__NAME__：尚未實作 tools()，見 charts/__NAME__.php');
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        // ★ 部署者實作：回傳 $tools、$params 在期間內的資料
+        //
+        // 共用的 WHERE 條件（機台 + 日期區間）
+        // $where = 'tool_id IN (' . $this->in($tools) . ')
+        //           AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        // $bind  = array_merge($tools, array($start, $end));
+        //
+        // --- 寫法 1：長表（一列一個參數值：tool_id, data_time, param, value）---
+        // $rows = $this->fetchAll(
+        //     'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+        //        FROM table_a
+        //       WHERE ' . $where . ' AND param IN (' . $this->in($params) . ')',
+        //     array_merge($bind, $params)
+        // );
+        // return self::pivot($rows, 'tool_id', 'd', 'param', 'value');
+        //
+        // --- 寫法 2：寬表（一列一個時間點，每個參數一個欄位）---
+        // $rows = $this->fetchAll(
+        //     'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+        //        FROM table_b WHERE ' . $where,
+        //     $bind
+        // );
+        // return self::wide($rows, 'tool_id', 'd', array('XXX_C1' => 'c1', 'XXX_C2' => 'c2'));
+        //
+        // --- 寫法 3：參數分散在不同 table，各查一次再合併 ---
+        // $a = self::pivot($this->fetchAll(...table_a...), 'tool_id', 'd', 'param', 'value');
+        // $b = self::wide($this->fetchAll(...table_b...), 'tool_id', 'd', array('XXX_C3' => 'c3'));
+        // return self::merge($a, $b);
+        // （兩邊的時間要用同樣的 DATE_FORMAT 格式才對得起來）
+        //
+        // --- 寫法 4：每台機台一個 table，table 名稱用 machine_id（例 M1BF_HP23），要實作 machines() ---
+        // $parts = array();
+        // foreach ($tools as $tool) {
+        //     $rows = $this->fetchAll(
+        //         'SELECT DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+        //            FROM ' . self::table('M1BF_' . $this->machineOf($tool)) . '
+        //           WHERE data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)',
+        //         array($start, $end)
+        //     );
+        //     foreach ($rows as $i => $r) {
+        //         $rows[$i]['tool_id'] = $tool;     // 補上機台欄位給 wide() 用
+        //     }
+        //     $parts[] = self::wide($rows, 'tool_id', 'd', array('XXX_C1' => 'c1', 'XXX_C2' => 'c2'));
+        // }
+        // return call_user_func_array(array('ChartSource', 'merge'), $parts);
+        //
+        // --- 寫法 5：table 裡的機台欄位是 machine_id，要實作 machines() ---
+        // $machines = $this->machinesOf($tools);
+        // $rows = $this->fetchAll(
+        //     'SELECT machine_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+        //        FROM table_c
+        //       WHERE machine_id IN (' . $this->in($machines) . ')
+        //         AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)',
+        //     array_merge($machines, array($start, $end))
+        // );
+        // return self::pivot($rows, 'machine_id', 'd', 'param', 'value');   // key 是 machine_id，會自動換成 tool_id
+
+        throw new RuntimeException('__NAME__：尚未實作 series()，見 charts/__NAME__.php');
+    }
+}
+#@@@ FILE config/app.ini.example sha1=158f5336494bf5d507eea128974ecccf864dd937 base=18ff531d9f1c253f3eaf1ee9a57b0e20b3382c2a mode=644 enc=text nl=1
+; =====================================================================
+; AISLE 主設定檔範本
+; 部署時複製為 config/app.ini 並填入實際值（app.ini 不要進版控）
+;   cp config/app.ini.example config/app.ini && chmod 640 config/app.ini
+; =====================================================================
+
+[app]
+name      = "AISLE"
+timezone  = "Asia/Taipei"
+; production 時請設為 0
+debug     = 0
+; 瀏覽器看到的網址路徑（不含主機名稱），結尾不加斜線
+; 經過 proxy 時要包含 proxy 的前綴：
+;   http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/  →  "/D1C1/aisle"
+;   直接連主機 http://host/aisle/                              →  "/aisle"
+;   DocumentRoot 指向 public/、網站在網域根目錄                 →  ""
+base_url  = "/D1C1/aisle"
+
+[database]
+host     = "127.0.0.1"
+port     = 3306
+name     = "aisle"
+user     = "aisle_app"
+password = "請改成強密碼"
+charset  = "utf8mb4"
+
+[security]
+; bcrypt 成本，10~12 之間；越高越安全但登入越慢
+bcrypt_cost      = 10
+; 連續失敗幾次後鎖定
+max_failed_login = 5
+; 鎖定分鐘數
+lock_minutes     = 15
+; 閒置幾秒自動登出
+session_idle     = 1800
+; HTTPS 環境請設為 1
+cookie_secure    = 0
+
+
+; 圖表（charts/<名稱>.php）的資料庫連線不在這裡設定，改在各 chart 自己的 charts/<名稱>.ini 的 [db]
+; （舊版的 [charts_db] 區段已不再使用，可以刪除）
+#@@@ FILE docs/DEPLOY.md sha1=531505f8e6767c9b50366cae6116521c8e787575 base=68ff336019d0d172a2083f48abf64e1d7c2c8b5d mode=644 enc=text nl=1
+# AISLE 部署步驟
+
+以下指令以實際環境為例：
+
+| 項目 | 值 |
+|---|---|
+| 程式來源 | GitHub `bboysevenwu/AISLE` 的 `main` branch |
+| 部署位置 | `/var/www/html/aisle/`（Apache DocumentRoot 為 `/var/www/html`） |
+| 對外網址 | `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`（proxy 前綴 `/D1C1/`） |
+| Web Server 執行身份 | `apache`（Debian/Ubuntu 為 `www-data`） |
+
+網址的對應關係：
+
+```
+瀏覽器  http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/login.php
+  │ proxy 去掉 /D1C1 前綴後轉給主機
+主機    http://<主機>/aisle/login.php
+  │ /var/www/html/aisle/.htaccess 在內部轉進 public/
+檔案    /var/www/html/aisle/public/login.php
+```
+
+網址不會出現 `public/`；`config/`、`core/` 等目錄經由網址存取一律 404。
+
+---
+
+## 1. 確認主機環境
+
+| 項目 | 需求 | 確認指令 |
+|---|---|---|
+| PHP | 5.4（至少 5.3.7，bcrypt 需要） | `php -v` |
+| PHP 擴充 | `pdo_mysql`、`openssl`、`json`、`session` | `php -m` |
+| MariaDB | 5.5 以上（utf8mb4 需 5.5.3+） | `mysql --version` |
+| MariaDB 用戶端 | `mysql`、`mysqldump`（建帳號、備份腳本用） | `which mysql mysqldump` |
+| Apache | 2.2 或 2.4，需要 `mod_rewrite`；`mod_headers` 選用 | `httpd -v`、`httpd -M` |
+| Python | 2.7（設定檢查腳本） | `python -V` |
+| 其他 | `bash`、`curl` 或可從外網複製檔案 | |
+
+`php.ini` 確認：`date.timezone` 有設定、`session.save_path` 目錄可寫入、正式環境 `display_errors = Off`。
+
+## 2. 放置程式
+
+```bash
+cd /var/www/html
+git clone -b main https://github.com/bboysevenwu/AISLE.git aisle
+cd /var/www/html/aisle
+```
+
+主機不能連 GitHub 時，在其他電腦 clone 或下載 ZIP 後整包複製到 `/var/www/html/aisle/`。腳本在 git 裡已設為可執行，若是用 ZIP 複製則補一行 `chmod +x scripts/shell/*.sh scripts/python/*.py`。
+
+之後更新程式：
+
+```bash
+cd /var/www/html/aisle && git pull origin main
+```
+
+`config/app.ini` 不在版控內，`git pull` 不會覆蓋它。
+
+主機不能 `git pull`、也不能下載壓縮檔時，改用單檔更新，見第 18 步。
+
+## 3. 建立資料庫與資料表
+
+```bash
+mysql -u root -p < sql/schema.sql
+```
+
+建立 `aisle` 資料庫與 `users`、`login_logs`、`audit_logs` 三張表。MariaDB 低於 5.5.3 時，先把 schema.sql 裡的 `utf8mb4` 全部改成 `utf8`。
+
+## 4. 建立應用程式專用的資料庫帳號
+
+不要讓網站使用 root。以 root 登入 MariaDB 後執行（密碼自訂）：
+
+```sql
+CREATE USER 'aisle_app'@'localhost' IDENTIFIED BY '強密碼';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `aisle`.* TO 'aisle_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+## 5. 匯入初始管理員
+
+```bash
+mysql -u root -p < sql/seed.sql
+```
+
+建立帳號 `admin`，密碼 `Neo@Zion2026`（第 13 步首次登入時會被要求修改）。
+
+## 6. 設定 config/app.ini（主機與資料庫）
+
+```bash
+cp config/app.ini.example config/app.ini
+vi config/app.ini
+```
+
+| 區段 | 項目 | 填寫 |
+|---|---|---|
+| `[app]` | `debug` | 正式環境 `0` |
+| `[app]` | `base_url` | **`"/D1C1/aisle"`**（瀏覽器看到的路徑，要包含 proxy 前綴 `/D1C1`，結尾不加 `/`） |
+| `[database]` | `user` / `password` | 第 4 步建立的 `aisle_app` 與密碼 |
+| `[security]` | `cookie_secure` | 使用 HTTPS 時設 `1` |
+
+```bash
+chown root:apache config/app.ini
+chmod 640 config/app.ini
+```
+
+## 7. 設定 config/config.ini（身份、頁面、註冊名單）
+
+1. `[ee_accounts]`：把範例 `neo / trinity / morpheus` 換成實際的 EE 帳號，一行一個
+2. `[register]`：`unlisted_role` 決定名單外帳號的身份（`"PE"`，或 `""` 表示不開放註冊）；需要管理員審核時把 `require_approval` 設為 `On`
+3. `[access]` / `[page.*]`：確認每個身份可用的頁面。範例頁面 `ee_daily_check`、`pe_notice` 若不需要，從 `[access]` 移除即可
+4. 既有網站的舊頁面若要接入，見第 15 步
+
+## 8. 檢查設定
+
+```bash
+python scripts/python/check_config.py
+```
+
+最後一行出現 `[OK] config.ini 檢查通過` 才往下做。`admin_users 只有 * 身份能使用` 這個警告是正常的。
+
+## 9. 下載 jQuery、ECharts
+
+```bash
+bash scripts/shell/fetch_vendor.sh
+```
+
+主機不能連外網時，在可連外網的電腦下載以下檔案，複製到 `public/assets/vendor/`：
+
+| 下載網址 | 存成 |
+|---|---|
+| `https://code.jquery.com/jquery-1.12.4.min.js` | `jquery-1.12.4.min.js` |
+| `https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js` | `echarts-5.4.3.min.js` |
+
+ECharts 只有圖表 Demo 頁使用；沒放本機檔案時頁面會改從 CDN 載入，使用者的瀏覽器需要能連到 cdn.jsdelivr.net。
+
+## 10. 設定目錄權限
+
+```bash
+chown -R root:apache /var/www/html/aisle
+chown -R apache:apache /var/www/html/aisle/storage
+chmod -R 775 storage
+```
+
+`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用。
+
+## 11. 設定 Apache
+
+程式放在 `/var/www/html/aisle/`，靠專案根目錄的 `.htaccess` 把請求轉進 `public/`，所以需要：
+
+1. 開啟 `mod_rewrite`：
+   ```bash
+   httpd -M | grep rewrite        # Debian/Ubuntu：a2enmod rewrite
+   ```
+2. 允許 `/var/www/html/aisle` 使用 `.htaccess`（寫在 `httpd.conf` 或 `conf.d/aisle.conf`）：
+   ```apache
+   <Directory /var/www/html/aisle>
+       AllowOverride All
+   </Directory>
+   ```
+3. 套用設定：
+   ```bash
+   apachectl configtest && apachectl graceful
+   ```
+
+沒有 `mod_rewrite` 時，根目錄 `.htaccess` 會拒絕整個 `/aisle/`（避免設定檔外洩），網站會是 403。
+
+> 另一種做法：若可以為 AISLE 開一個獨立的 VirtualHost，可把 `DocumentRoot` 直接指向 `/var/www/html/aisle/public`，此時根目錄 `.htaccess` 不會被讀到，`base_url` 依對外路徑調整。
+
+## 12. 確認網址與敏感檔案
+
+先在主機上直接測（不經 proxy，路徑沒有 `/D1C1`）：
+
+```bash
+curl -I http://localhost/aisle/login.php             # 200
+curl -I http://localhost/aisle/config/app.ini        # 404（不可是 200）
+curl -I http://localhost/aisle/core/bootstrap.php    # 404
+```
+
+再從自己的電腦經 proxy 測：
+
+```bash
+P=http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle
+curl -I $P/                      # 302，Location 為 /D1C1/aisle/login.php
+curl -I $P/login.php             # 200，Set-Cookie 的 path=/D1C1/aisle/
+curl -I $P/assets/css/matrix.css # 200
+curl -I $P/config/app.ini        # 404
+```
+
+（proxy 需要登入驗證時，用瀏覽器開啟 `$P/` 確認會跳到登入頁、畫面有綠色樣式即可。）
+
+注意：`base_url` 設成 `/D1C1/aisle` 後，網頁內的連結都帶 `/D1C1` 前綴，**直接連主機 `http://<主機>/aisle/` 時頁面能開但連結會失效**，這是正常的，請一律從 proxy 網址使用。若 proxy 轉址後出現 `/D1C1/D1C1/...` 或少了 `/D1C1`，代表 proxy 對 `Location` 標頭有另外改寫，請告知 proxy 管理者或改 `base_url`。
+
+## 13. 首次登入
+
+1. 開啟 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`，會自動導向 `login.php`
+2. 以 `admin` / `Neo@Zion2026` 登入
+3. 系統強制進入「個人設定」修改密碼，改完才能使用其他功能
+
+## 14. 驗證身份與權限
+
+1. 登出後到 `register.php`，用一個 `[ee_accounts]` 名單內的帳號註冊 → 應顯示身份 EE
+2. 再用名單外的帳號註冊 → 應顯示 PE（或依第 7 步設定被拒絕）
+3. 分別登入，確認左側選單只出現 `[access]` 中該身份的頁面
+4. 以 EE 帳號直接輸入 PE 頁面網址（例 `/D1C1/aisle/index.php?m=pe_recipe`）→ 應顯示 403
+5. 以 admin 登入「使用者管理」，確認剛註冊的帳號與身份正確
+
+也可用指令直接建立帳號（建立後首次登入需改密碼）：
+
+```bash
+bash scripts/shell/create_user.sh ee_chen EE "陳工程師"
+```
+
+## 15.（選用）接入既有網站的舊頁面
+
+1. 把舊頁面放到 `public/` 底下，例如 `public/legacy/old_report.php`（網址為 `/D1C1/aisle/legacy/old_report.php`）
+2. 在檔案第一行加入（依層數調整 `../`）：
+   ```php
+   <?php require_once dirname(__FILE__) . '/../../core/auth_check.php'; ?>
+   ```
+3. 在 config.ini 登記：
+   ```ini
+   [access]
+   PE = "..., old_report"
+
+   [page.old_report]
+   title = "舊報表"
+   route = "public/legacy/old_report.php"
+   ```
+4. 舊頁面有 POST 表單時，在 `<form>` 內加上 `<?php echo csrf_field(); ?>`；暫時無法修改的話，把 `[settings] direct_page_csrf` 設為 `Off`
+5. 重新執行第 8 步的檢查
+
+## 16. 設定每日備份
+
+```bash
+crontab -e
+```
+
+```cron
+0 2 * * * /var/www/html/aisle/scripts/shell/backup_db.sh >> /var/www/html/aisle/storage/logs/backup.log 2>&1
+```
+
+備份檔放在 `storage/backups/`，預設保留 14 天。先手動執行一次 `bash scripts/shell/backup_db.sh` 確認能成功。
+
+## 17.（選用）圖表接上實際資料
+
+每張圖表（BSLr、M1BF…）是選單「圖表」底下的一頁，由 `charts/<名稱>.ini` 與 `charts/<名稱>.php` 定義（說明見 README 第 10 節）。內附的 M1BF 預設使用範例資料（`source = sample`），部署後即可看到畫面。
+
+1. 每張圖表的資料庫連線寫在主機上的 `charts/<名稱>.ini` 的 `[db]`（`ip` 留空則使用 AISLE 自己的資料庫）：
+   ```ini
+   [db]
+   ip       = "10.x.x.x"
+   port     = 3306
+   name     = "資料庫名稱"
+   user     = "唯讀帳號"
+   password = "密碼"
+   charset  = "utf8mb4"
+   ```
+   帳號密碼只填在主機上，**不要 commit 到 GitHub**；之後的單檔更新若包含這個 ini，套用前先記下 `[db]`，套用後再填回（`apply_update.py` 會先備份原檔）。
+   建議 `chmod 640 charts/*.ini`，並用只有 SELECT 權限的帳號：
+   ```sql
+   GRANT SELECT ON `資料庫`.* TO '唯讀帳號'@'AISLE 主機 IP' IDENTIFIED BY '密碼';
+   ```
+2. 新增圖表：`bash scripts/shell/new_chart.sh BSLr`，建立 `charts/BSLr.ini`、`charts/BSLr.php`
+3. 編輯 `charts/BSLr.ini`：`[plot.xxx]` 設定哪些參數畫在同一張圖、各區塊開關、Y 軸上下限與 spec 線（`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可留空）；`[page]` 設定機型規則、預設天數。參數名稱必須與 `BSLr.php` 回傳的名稱完全一致
+4. 編輯 `charts/BSLr.php`：在 `tools()`、`series()` 寫 SQL，用 `pivot()` / `wide()` 轉換、不同 table 用 `merge()` 合併（檔案內附三種寫法），寫好後把 ini 的 `source` 改成 `php`
+5. 把腳本印出的 `[page.bslr]` 區段貼進 `config/config.ini`，並把 `bslr` 加到 `[access]` 要看得到的身份
+6. `python scripts/python/check_config.py` 檢查，再以 EE 或 PE 帳號登入開啟頁面；`debug = 1` 時 SQL 錯誤會直接顯示在圖表中
+
+由使用 `config/app.ini` `[charts_db]` 的版本升級時：把連線設定搬到每張圖表 ini 的 `[db]`（`host` 改名為 `ip`），`[charts_db]` 可以刪除。
+
+由舊版圖表 Demo 升級時：`config/app.ini` 的 `[chart_demo]` 區段可以刪除；舊網址 `index.php?m=chart_demo` 改為 `index.php?m=m1bf`。
+
+## 18. 不能 git pull 時的更新方式（單檔更新）
+
+公司內只能開 GitHub 網頁複製文字時使用。每次更新會在 repo 的 `updates/` 放一個純文字更新檔，裡面包含這次新增、修改、刪除的所有檔案；在主機上貼成一個檔案，執行一次 `apply_update.py` 就全部更新完。
+
+### 18-1. 第一次：把 apply_update.py 放到主機上
+
+在 GitHub 打開 `scripts/python/apply_update.py`，按 **Raw**，全選複製，然後在主機上：
+
+```bash
+cd /var/www/html/aisle
+cat > scripts/python/apply_update.py     # 貼上內容，最後按 Enter 再按 Ctrl-D
+chmod +x scripts/python/apply_update.py
+python scripts/python/apply_update.py -h # 出現用法說明即可
+```
+
+之後的更新檔若包含新版的 `apply_update.py`，會自動一起更新，不需要再手動複製。
+
+### 18-2. 每次更新
+
+1. 在 GitHub 打開 `updates/` 底下這次的更新檔（例 `update_20261104_7d8729a_xxxxxxx.txt`），按 **Raw**，`Ctrl-A` 全選、`Ctrl-C` 複製
+2. 貼到主機上，放在網站目錄以外（例 `~/`）：
+   ```bash
+   cat > ~/update.txt     # 貼上，最後按 Enter 再按 Ctrl-D
+   ```
+   用 `vi` 貼上時，先輸入 `:set paste` 再進入插入模式，否則 vi 會自動加縮排，內容會對不上
+3. 先預覽（不會改任何檔案）：
+   ```bash
+   cd /var/www/html/aisle
+   python scripts/python/apply_update.py ~/update.txt
+   ```
+   會列出每個檔案是 `[新增]`、`[覆蓋]`、`[刪除]` 還是 `[相同]`，以及備份檔名
+4. 確認後實際套用：
+   ```bash
+   python scripts/python/apply_update.py ~/update.txt --apply
+   ```
+5. 新增了 config.ini 的頁面時，照第 8 步執行 `check_config.py`
+
+### 腳本會做的檢查
+
+| 狀況 | 結果 |
+|---|---|
+| 複製時漏了一段、貼了兩次、更新檔被截斷 | 每個檔案都有 sha1，結尾有項目數；任何一個對不上就整批不寫入 |
+| vi 自動縮排、Windows 換行（CRLF）、UTF-8 BOM | 換行與 BOM 會自動處理；縮排被改會被 sha1 擋下 |
+| 主機上的檔案被直接改過（和更新前的版本不同） | 列為「衝突」並停止。確認可以覆蓋後加 `--force`（仍會先備份） |
+| 寫入到一半失敗（權限不足等） | 自動把已經改過的檔案還原 |
+| 同一個更新檔執行兩次 | 第二次全部顯示 `[相同]`，不會再改 |
+
+### 備份與還原
+
+- 被覆蓋的檔案先複製一份在原位置，檔名後面加上 `_<日期>_<時間>`，例 `core/Auth.php_20261104_204500`；被刪除的檔案改名成同樣格式，不會真的刪掉
+- 同一次執行共用同一個時間，紀錄寫在 `storage/logs/update_<時間>.json`
+- 根目錄與 `public/` 的 `.htaccess` 會擋掉這種備份檔名（403），避免舊版程式碼被當純文字下載
+- 查看紀錄與主機目前的版本：
+  ```bash
+  python scripts/python/apply_update.py --list
+  ```
+- 還原某次更新（先預覽，再加 `--apply`；`last` 代表最近一次）：
+  ```bash
+  python scripts/python/apply_update.py --rollback 20261104_204500
+  python scripts/python/apply_update.py --rollback 20261104_204500 --apply
+  ```
+  還原會把備份檔改回原檔名，並移除那次新增的檔案
+- 備份檔確認不需要後可以手動刪除，例 `find . -name '*_20261104_204500' -delete`
+
+### 產生更新檔（開發端）
+
+在有 git 的電腦上，指定主機目前的版本（`--list` 最後一筆的「版本 → 」右邊，或部署時的 commit）：
+
+```bash
+python scripts/python/make_update.py 7d8729a HEAD --note "這次更新的說明"
+```
+
+輸出到 `updates/update_<日期>_<舊>_<新>.txt`，commit 後即可在 GitHub 打開。預設不打包 `updates/` 與 `docs/screenshots/`；圖片等非文字檔會用 base64 存放。主機版本不明時可用 `--all` 打包全部檔案（不檢查衝突）。`config/app.ini` 不在 git 裡，不會被更新檔覆蓋。
+#@@@ FILE modules/charts/ChartConfig.php sha1=23df6522ba2d9e3bbce47f9a42ffb7d67ea02b18 base=5bf46eb9b47f33da2dd9502606e1f9893d94b5d8 mode=644 enc=text nl=1
+<?php
+/**
+ * 讀取一張 chart 的設定檔 charts/<名稱>.ini
+ *
+ * 每張 chart（BSLr、M1BF、CDM…）在 charts/ 底下有兩個同名檔案：
+ *   charts/<名稱>.ini   畫什麼、怎麼畫（本類別讀取）
+ *   charts/<名稱>.php   部署者寫 SQL、整理成資料格式（見 ChartSource.php）
+ *
+ * config/config.ini 的頁面代號 = chart 名稱轉小寫：[page.bslr] → charts/BSLr.ini
+ * 以 _ 開頭的檔案（_template.ini）是範本，不會被當成 chart。
+ *
+ * ini 格式：
+ *   [page]          整頁設定：source、default_days、max_days、quick_days、model.<機型> = "<機台名稱包含的字>"
+ *   [db]            這張 chart 查資料用的資料庫連線：ip、port、name、user、password、charset
+ *                   ip 沒填（或沒有 [db]）時沿用 AISLE 自己的資料庫（config/app.ini 的 [database]）
+ *   [plot.<代號>]   一組圖：title、params、unit、single / newest / tbt、connect、ymin / ymax、<區塊>_ymin / <區塊>_ymax、
+ *                   spec 線 upper_oos / upper_ooc / lower_ooc / lower_oos（可留空）
+ *
+ * $cfg->plots() 回傳（依檔案順序）：
+ *   array(
+ *     array('id' => 'm1bf_z', 'title' => 'M1BF_Z', 'params' => array('M1BF_Z_C1', 'M1BF_Z_C2'),
+ *           'unit' => 'Data', 'single' => true, 'newest' => true, 'tbt' => true, 'connect' => false,
+ *           'limits' => array('single' => array('min' => 0, 'max' => 5), 'newest' => array(...), 'tbt' => array(...)),
+ *           'spec'   => array('upper_oos' => 6, 'upper_ooc' => 5, 'lower_ooc' => null, 'lower_oos' => null)),
+ *     ...
+ *   )
+ *   min / max 為 null 表示自動；spec 為 null 表示不畫線
+ *
+ * [db] 只給伺服器端的 ChartSource 使用，不會出現在 plots()，不會送到瀏覽器。
+ */
+class ChartConfig
+{
+    const NAME_PATTERN = '/^[A-Za-z][A-Za-z0-9_]{0,31}$/';
+
+    /** chart 名稱，例 BSLr */
+    public $name;
+    /** charts/<名稱>.ini 的完整路徑 */
+    public $file;
+
+    private $page = array();
+    private $db = array();
+    private $plots = array();
+    private $models = array();
+
+    public static function dir()
+    {
+        return AISLE_ROOT . '/charts';
+    }
+
+    /** charts/ 底下所有 chart 名稱（不含 _ 開頭的範本） */
+    public static function names()
+    {
+        $names = array();
+        $files = glob(self::dir() . '/*.ini');
+        foreach ($files ? $files : array() as $f) {
+            $name = basename($f, '.ini');
+            if (preg_match(self::NAME_PATTERN, $name)) {
+                $names[] = $name;
+            }
+        }
+        sort($names);
+        return $names;
+    }
+
+    /** 頁面代號 → chart 名稱（不分大小寫比對檔名），找不到回傳 null */
+    public static function nameForPage($pageKey)
+    {
+        foreach (self::names() as $name) {
+            if (strtolower($name) === strtolower($pageKey)) {
+                return $name;
+            }
+        }
+        return null;
+    }
+
+    public function __construct($name)
+    {
+        if (!preg_match(self::NAME_PATTERN, $name)) {
+            throw new RuntimeException('chart 名稱格式錯誤：' . $name);
+        }
+        $this->name = $name;
+        $this->file = self::dir() . '/' . $name . '.ini';
+        $label = 'charts/' . $name . '.ini';
+        if (!is_file($this->file)) {
+            throw new RuntimeException('找不到 ' . $label);
+        }
+        $ini = parse_ini_file($this->file, true);
+        if ($ini === false) {
+            throw new RuntimeException($label . ' 解析失敗，請檢查引號與語法');
+        }
+
+        foreach ($ini as $section => $conf) {
+            if ($section === 'page') {
+                $this->page = $conf;
+                continue;
+            }
+            if ($section === 'db') {
+                $this->db = $conf;
+                continue;
+            }
+            if (!preg_match('/^plot\.([a-z][a-z0-9_]{0,63})$/', $section, $m)) {
+                throw new RuntimeException($label . ' 區段名稱錯誤：[' . $section . ']，應為 [page]、[db] 或 [plot.<小寫代號>]');
+            }
+            $this->plots[] = $this->plot($m[1], $conf, $label, $section);
+        }
+        if (!$this->plots) {
+            throw new RuntimeException($label . ' 沒有任何 [plot.xxx] 圖');
+        }
+
+        foreach ($this->page as $k => $v) {
+            if (strpos($k, 'model.') === 0 && substr($k, 6) !== '' && trim((string) $v) !== '') {
+                $this->models[substr($k, 6)] = trim((string) $v);
+            }
+        }
+
+        $this->checkPage($label);
+        $this->checkDb($label);
+    }
+
+    // ------------------------------------------------------------------
+    // [page]
+
+    /** php = 用 charts/<名稱>.php 查資料庫；sample = 內建範例資料 */
+    public function source()
+    {
+        $v = strtolower(trim((string) array_get($this->page, 'source', 'php')));
+        return $v === 'sample' ? 'sample' : 'php';
+    }
+
+    public function defaultDays()
+    {
+        return (int) array_get($this->page, 'default_days', 60);
+    }
+
+    public function maxDays()
+    {
+        return (int) array_get($this->page, 'max_days', 366);
+    }
+
+    /** 快速區間按鈕的天數 */
+    public function quickDays()
+    {
+        $out = array();
+        foreach (explode(',', (string) array_get($this->page, 'quick_days', '7, 30, 90')) as $d) {
+            $d = (int) trim($d);
+            if ($d > 0) {
+                $out[] = $d;
+            }
+        }
+        return $out;
+    }
+
+    /** 機型 => 機台名稱包含的字，例 array('1980' => 'PAN', '2000' => 'PAP')；沒設定時為空陣列 */
+    public function models()
+    {
+        return $this->models;
+    }
+
+    /** 機台屬於哪個機型：依 [page] 的順序，名稱包含該字（不分大小寫）的第一個機型；都不符合回傳 '' */
+    public function modelOf($tool)
+    {
+        foreach ($this->models as $model => $needle) {
+            if (stripos($tool, $needle) !== false) {
+                return (string) $model;
+            }
+        }
+        return '';
+    }
+
+    // ------------------------------------------------------------------
+    // [db]
+
+    /**
+     * 這張 chart 的資料庫連線設定；ip 沒填時回傳 null（沿用 AISLE 自己的資料庫）
+     * 回傳 array('ip', 'port', 'name', 'user', 'password', 'charset')
+     */
+    public function db()
+    {
+        $ip = trim((string) array_get($this->db, 'ip', ''));
+        if ($ip === '') {
+            return null;
+        }
+        $port = trim((string) array_get($this->db, 'port', ''));
+        $charset = trim((string) array_get($this->db, 'charset', ''));
+        return array(
+            'ip'       => $ip,
+            'port'     => $port === '' ? 3306 : (int) $port,
+            'name'     => trim((string) array_get($this->db, 'name', '')),
+            'user'     => (string) array_get($this->db, 'user', ''),
+            'password' => (string) array_get($this->db, 'password', ''),
+            'charset'  => $charset === '' ? 'utf8mb4' : $charset,
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // [plot.xxx]
+
+    public function plots()
+    {
+        return $this->plots;
+    }
+
+    /** 所有圖用到的參數（不重複，依出現順序） */
+    public function params()
+    {
+        $out = array();
+        foreach ($this->plots as $g) {
+            foreach ($g['params'] as $p) {
+                if (!in_array($p, $out, true)) {
+                    $out[] = $p;
+                }
+            }
+        }
+        return $out;
+    }
+
+    // ------------------------------------------------------------------
+
+    private function checkPage($label)
+    {
+        $source = strtolower(trim((string) array_get($this->page, 'source', 'php')));
+        if (!in_array($source, array('php', 'sample'), true)) {
+            throw new RuntimeException($label . ' [page] source 只能是 php 或 sample');
+        }
+        foreach (array('default_days', 'max_days') as $k) {
+            if (array_key_exists($k, $this->page) && (!ctype_digit(trim((string) $this->page[$k])) || (int) $this->page[$k] < 1)) {
+                throw new RuntimeException($label . ' [page] ' . $k . ' 必須是正整數');
+            }
+        }
+        if ($this->defaultDays() > $this->maxDays()) {
+            throw new RuntimeException($label . ' [page] default_days 不可大於 max_days');
+        }
+    }
+
+    private function checkDb($label)
+    {
+        $allowed = array('ip', 'port', 'name', 'user', 'password', 'charset');
+        foreach ($this->db as $k => $v) {
+            if (!in_array($k, $allowed, true)) {
+                throw new RuntimeException($label . ' [db] 不認得的欄位：' . $k . '（可用：' . implode('、', $allowed) . '）');
+            }
+        }
+        $ip = trim((string) array_get($this->db, 'ip', ''));
+        if ($ip !== '' && !preg_match('/^[A-Za-z0-9._:-]+$/', $ip)) {
+            throw new RuntimeException($label . ' [db] ip 格式錯誤（只能是 IP 或主機名稱）');
+        }
+        $port = trim((string) array_get($this->db, 'port', ''));
+        if ($port !== '' && (!ctype_digit($port) || (int) $port < 1 || (int) $port > 65535)) {
+            throw new RuntimeException($label . ' [db] port 必須是 1 ~ 65535 的整數');
+        }
+        foreach (array('name', 'charset') as $k) {
+            $v = trim((string) array_get($this->db, $k, ''));
+            if ($v !== '' && !preg_match('/^[A-Za-z0-9_$-]+$/', $v)) {
+                throw new RuntimeException($label . ' [db] ' . $k . ' 只能有英文、數字、底線、$、-');
+            }
+        }
+        if (trim((string) array_get($this->db, 'ip', '')) === '') {
+            foreach (array('name', 'user', 'password') as $k) {
+                if (trim((string) array_get($this->db, $k, '')) !== '') {
+                    throw new RuntimeException($label . ' [db] 有填 ' . $k . ' 但沒有填 ip（ip 留空 = 使用 AISLE 自己的資料庫）');
+                }
+            }
+        }
+    }
+
+    private function plot($id, $conf, $label, $section)
+    {
+        $params = array();
+        foreach (explode(',', (string) array_get($conf, 'params', '')) as $p) {
+            $p = trim($p);
+            if ($p !== '' && !in_array($p, $params, true)) {
+                $params[] = $p;
+            }
+        }
+        if (!$params) {
+            throw new RuntimeException($label . ' [' . $section . '] 沒有設定 params');
+        }
+        return array(
+            'id'     => $id,
+            'title'  => (string) array_get($conf, 'title', $id),
+            'params' => $params,
+            'unit'   => (string) array_get($conf, 'unit', 'Data'),
+            'single' => self::flag($conf, 'single'),
+            'newest' => self::flag($conf, 'newest'),
+            'tbt'    => self::flag($conf, 'tbt'),
+            'connect' => self::flag($conf, 'connect', false),
+            'limits' => array(
+                'single' => self::limits($conf, 'single', $label, $section),
+                'newest' => self::limits($conf, 'newest', $label, $section),
+                'tbt'    => self::limits($conf, 'tbt', $label, $section),
+            ),
+            'spec'   => self::spec($conf, $label, $section),
+        );
+    }
+
+    /**
+     * spec 線：upper_oos / upper_ooc / lower_ooc / lower_oos，沒設定或空字串為 null（不畫線）
+     * 有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+     */
+    private static function spec($conf, $label, $section)
+    {
+        $keys = array('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos');
+        $out = array();
+        foreach ($keys as $k) {
+            $out[$k] = null;
+            if (array_key_exists($k, $conf) && trim((string) $conf[$k]) !== '') {
+                $raw = trim((string) $conf[$k]);
+                if (!is_numeric($raw)) {
+                    throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 必須是數字或留空：' . $raw);
+                }
+                $out[$k] = (float) $raw;
+            }
+        }
+        // 由上到下：upper_oos >= upper_ooc > lower_ooc >= lower_oos（同一側的 OOC 與 OOS 可以相等）
+        for ($i = 0; $i < count($keys); $i++) {
+            for ($j = $i + 1; $j < count($keys); $j++) {
+                $a = $out[$keys[$i]];
+                $b = $out[$keys[$j]];
+                if ($a === null || $b === null) {
+                    continue;
+                }
+                $sameSide = substr($keys[$i], 0, 5) === substr($keys[$j], 0, 5);
+                if ($sameSide ? $a < $b : $a <= $b) {
+                    throw new RuntimeException($label . ' [' . $section . '] ' . $keys[$i] . '（' . $a . '）必須' .
+                        ($sameSide ? '大於等於 ' : '大於 ') . $keys[$j] . '（' . $b . '）');
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Y 軸上下限：<區塊>_ymin / <區塊>_ymax 優先，沒有時用整組的 ymin / ymax，都沒有（或空字串）為自動
+     */
+    private static function limits($conf, $kind, $label, $section)
+    {
+        $out = array();
+        foreach (array('min', 'max') as $k) {
+            $v = null;
+            foreach (array($kind . '_y' . $k, 'y' . $k) as $key) {
+                if (array_key_exists($key, $conf) && trim((string) $conf[$key]) !== '') {
+                    $raw = trim((string) $conf[$key]);
+                    if (!is_numeric($raw)) {
+                        throw new RuntimeException($label . ' [' . $section . '] ' . $key . ' 必須是數字：' . $raw);
+                    }
+                    $v = (float) $raw;
+                    break;
+                }
+            }
+            $out[$k] = $v;
+        }
+        if ($out['min'] !== null && $out['max'] !== null && $out['min'] >= $out['max']) {
+            throw new RuntimeException($label . ' [' . $section . '] ' . $kind . ' 的 Y 軸下限必須小於上限');
+        }
+        return $out;
+    }
+
+    /** On / Off；未設定時為 $default。parse_ini_file 會把 On 轉成 "1"、Off 轉成 "" */
+    private static function flag($conf, $key, $default = true)
+    {
+        if (!array_key_exists($key, $conf)) {
+            return $default;
+        }
+        $v = strtolower(trim((string) $conf[$key]));
+        return !($v === '' || $v === '0' || $v === 'off' || $v === 'false' || $v === 'no');
+    }
+}
+#@@@ FILE modules/charts/ChartSource.php sha1=f6454f2cb9721db84e042200844477907fd9df54 base=e6d0d76e8c218e234d6172acd4886e69748161ba mode=644 enc=text nl=1
+<?php
+/**
+ * 每張 chart 的資料來源基底類別
+ *
+ * 部署者在 charts/<名稱>.php 寫一個類別 <名稱>Chart extends ChartSource，實作兩個方法：
+ *
+ *   tools()
+ *       這張 chart 的全部機台代號：array('APAN01', 'APAN02', ...)
+ *
+ *   series($tools, $params, $start, $end)
+ *       $tools、$params（charts/<名稱>.ini 用到的全部參數）在 [$start, $end]（含兩端，Y-m-d）內的資料：
+ *       array(
+ *         'APAN01' => array(
+ *           'Date' => array('2026-01-01', '2026-01-02', ...),
+ *           'Data' => array('M1BF_Z_C1' => array(1.0, 2.0, ...), 'M1BF_Z_C2' => array(1.1, null, ...), ...)
+ *         ),
+ *         ...
+ *       )
+ *       Data 裡每個參數的陣列與 Date 一一對應（同樣長度），該時間沒有值的放 null；沒有的參數可以不回傳。
+ *       選用 'Url' => array(url1, url2, ...)：與 Date 等長，單台趨勢圖點擊該時間點的數據點會在新分頁開啟；
+ *       只接受 http://、https:// 或 / 開頭的網址，沒有網址的位置放 null。沒有 Url 時與原本一樣。
+ *
+ * 排序、型別轉換、空值處理、只留 ini 用到的參數，都由 ChartsController 統一做，這裡回傳順序不拘。
+ *
+ * 選用：machines()
+ *   有些 table 用 machine_id 而不是 tool_id（例 table M1BF_HP23，HP23 是 APAN01 的 machine_id）。
+ *   實作 machines() 回傳 tool_id => machine_id 對照，例 array('APAN01' => 'HP23', ...)，就可以：
+ *     - 不寫 tools()：預設用 machines() 的 tool_id
+ *     - $this->machineOf('APAN01') → 'HP23'；$this->toolOf('HP23') → 'APAN01'
+ *     - $this->machinesOf($tools) → 這些機台的 machine_id（給 IN (...) 用）
+ *     - series() 回傳的 key 可以直接是 machine_id，controller 會自動換成 tool_id
+ *   網頁上顯示的機台名稱一律是 tool_id。
+ * 錯誤時 throw RuntimeException。
+ *
+ * 可用的工具：
+ *   $this->fetchAll($sql, $bind)   prepared statement 查詢（連線見 db()）
+ *   $this->in($list)               產生 IN (...) 用的 ?,?,?
+ *   self::pivot(...)               長表（一列一個參數值）→ 資料格式
+ *   self::wide(...)                寬表（每個參數一個欄位）→ 資料格式
+ *   self::merge($a, $b, ...)       多個 table 的結果依機台 + 時間合併
+ *   self::table($name)             把組出來的 table 名稱（例 'M1BF_' . $machineId）檢查後加上 `反引號`
+ */
+abstract class ChartSource
+{
+    /** 已開啟的連線，key = 連線設定（同一個 request 內相同設定共用一條） */
+    private static $pdos = array();
+
+    /** @var ChartConfig 這張 chart 的設定（create() 設定） */
+    private $cfg = null;
+
+    /** @var array|null tool_id => machine_id（machines() 的結果，第一次使用時讀取） */
+    private $machineMap = null;
+
+    /**
+     * 這張 chart 的全部機台代號（tool_id）。
+     * 有實作 machines() 時預設回傳它的 tool_id，否則必須自己實作
+     */
+    public function tools()
+    {
+        $map = $this->machineMap();
+        if (!$map) {
+            throw new RuntimeException('charts/<名稱>.php 必須實作 tools() 或 machines()');
+        }
+        return array_keys($map);
+    }
+
+    /**
+     * 選用：tool_id => machine_id 對照，例 array('APAN01' => 'HP23', 'APAN02' => 'HP24')
+     * 可以直接寫死，也可以用 $this->fetchAll() 從對照表查出來。沒有 machine_id 的 table 不用實作
+     */
+    public function machines()
+    {
+        return array();
+    }
+
+    abstract public function series($tools, $params, $start, $end);
+
+    /**
+     * 依 charts/<名稱>.ini 的 [page] source 建立資料來源
+     *   php     載入 charts/<名稱>.php 的 <名稱>Chart
+     *   sample  內建範例資料
+     */
+    public static function create(ChartConfig $cfg)
+    {
+        if ($cfg->source() === 'sample') {
+            return new SampleChartSource();
+        }
+        $file = ChartConfig::dir() . '/' . $cfg->name . '.php';
+        $label = 'charts/' . $cfg->name . '.php';
+        if (!is_file($file)) {
+            throw new RuntimeException('找不到 ' . $label . '（尚未寫好時可先把 ini 的 [page] source 設為 sample）');
+        }
+        require_once $file;
+        $class = $cfg->name . 'Chart';
+        if (!class_exists($class, false)) {
+            throw new RuntimeException($label . ' 裡沒有類別 ' . $class);
+        }
+        $obj = new $class();
+        if (!($obj instanceof ChartSource)) {
+            throw new RuntimeException($label . ' 的 ' . $class . ' 必須 extends ChartSource');
+        }
+        $obj->cfg = $cfg;
+        return $obj;
+    }
+
+    // =====================================================================
+    // 資料庫
+    // ---------------------------------------------------------------------
+    // 連線設定在各 chart 自己的 charts/<名稱>.ini 的 [db]：
+    //   ip / port / name / user / password / charset
+    // [db] 沒有填 ip（或沒有 [db]）時，直接用 AISLE 自己的 [database] 連線。
+    // =====================================================================
+
+    /** @return PDO */
+    protected function db()
+    {
+        $c = $this->cfg === null ? null : $this->cfg->db();
+        if ($c === null) {
+            return Database::pdo();
+        }
+        $dsn = sprintf('mysql:host=%s;port=%d;charset=%s', $c['ip'], $c['port'], $c['charset']);
+        if ($c['name'] !== '') {
+            $dsn .= ';dbname=' . $c['name'];
+        }
+        $key = $dsn . "\n" . $c['user'];
+        if (!isset(self::$pdos[$key])) {
+            self::$pdos[$key] = new PDO($dsn, $c['user'], $c['password'], array(
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+            ));
+        }
+        return self::$pdos[$key];
+    }
+
+    /** 查詢並回傳所有資料列（關聯陣列）。參數一律用 ? 綁定，不要把值串進 SQL 字串 */
+    protected function fetchAll($sql, $bind = array())
+    {
+        $stmt = $this->db()->prepare($sql);
+        $stmt->execute(array_values($bind));
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** IN (...) 用的佔位符：in(array('a', 'b')) → "?,?"；空陣列回傳 "NULL"（查不到任何資料） */
+    protected function in($list)
+    {
+        $n = count($list);
+        return $n > 0 ? implode(',', array_fill(0, $n, '?')) : 'NULL';
+    }
+
+    // =====================================================================
+    // tool_id / machine_id 對照
+    // =====================================================================
+
+    /** machines() 的結果（只讀一次）；key、value 都轉成字串並去掉空白 */
+    protected function machineMap()
+    {
+        if ($this->machineMap === null) {
+            $map = array();
+            $raw = $this->machines();
+            foreach (is_array($raw) ? $raw : array() as $tool => $machine) {
+                $tool = trim((string) $tool);
+                $machine = trim((string) $machine);
+                if ($tool !== '' && $machine !== '') {
+                    $map[$tool] = $machine;
+                }
+            }
+            $this->machineMap = $map;
+        }
+        return $this->machineMap;
+    }
+
+    /** tool_id → machine_id；沒有對照時拋出錯誤（避免查錯機台） */
+    protected function machineOf($tool)
+    {
+        $map = $this->machineMap();
+        if (!isset($map[$tool])) {
+            throw new RuntimeException('machines() 裡沒有機台 ' . $tool . ' 的 machine_id');
+        }
+        return $map[$tool];
+    }
+
+    /** machine_id → tool_id；找不到回傳 null */
+    protected function toolOf($machine)
+    {
+        $tool = array_search((string) $machine, $this->machineMap(), true);
+        return $tool === false ? null : $tool;
+    }
+
+    /** 多台 tool_id → machine_id 陣列（順序相同） */
+    protected function machinesOf($tools)
+    {
+        $out = array();
+        foreach ($tools as $t) {
+            $out[] = $this->machineOf($t);
+        }
+        return $out;
+    }
+
+    /**
+     * series() 結果的 key 是 machine_id 時換成 tool_id（controller 呼叫，部署者不用管）
+     * 已經是 tool_id 或對照不到的 key 原樣保留；換完後同一台有兩份時依時間合併
+     */
+    public function toToolKeys($data)
+    {
+        if (!is_array($data) || !$this->machineMap()) {
+            return $data;
+        }
+        $map = $this->machineMap();
+        $out = array();
+        foreach ($data as $key => $series) {
+            $key = (string) $key;
+            $tool = isset($map[$key]) ? $key : $this->toolOf($key);
+            if ($tool === null) {
+                $tool = $key;
+            }
+            if (isset($out[$tool])) {
+                $merged = self::merge(array($tool => $out[$tool]), array($tool => $series));
+                $out[$tool] = $merged[$tool];
+            } else {
+                $out[$tool] = $series;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * 組出來的 table 名稱（例 'M1BF_' . $this->machineOf($tool)）檢查後加上反引號。
+     * table 名稱不能用 ? 綁定，所以一定要經過這裡，只允許英文、數字、底線（可含一個 . 指定資料庫）
+     */
+    public static function table($name)
+    {
+        $name = (string) $name;
+        if (!preg_match('/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$/', $name)) {
+            throw new RuntimeException('table 名稱格式錯誤：' . $name);
+        }
+        return '`' . str_replace('.', '`.`', $name) . '`';
+    }
+
+    // =====================================================================
+    // 轉換工具
+    // =====================================================================
+
+    /**
+     * 長表（一列一個參數值）→ 資料格式
+     *   pivot($rows, 'tool_id', 'd', 'param', 'value')
+     *   pivot($rows, 'tool_id', 'd', 'param', 'value', 'url')   第 6 個參數（選用）：網址欄位 → 回傳多一個 Url
+     * 同一台同一時間的不同參數合併成同一個 Date，缺少的參數補 null
+     */
+    public static function pivot($rows, $toolCol, $dateCol, $paramCol, $valueCol, $urlCol = null)
+    {
+        $tmp = array();     // tool => date => param => value
+        $params = array();  // tool => param => true
+        $urls = array();    // tool => date => url（同一時間取第一個非空的）
+        foreach ($rows as $r) {
+            $tool = (string) $r[$toolCol];
+            $date = (string) $r[$dateCol];
+            $tmp[$tool][$date][(string) $r[$paramCol]] = $r[$valueCol];
+            $params[$tool][(string) $r[$paramCol]] = true;
+            if ($urlCol !== null && !isset($urls[$tool][$date]) && isset($r[$urlCol]) && $r[$urlCol] !== '') {
+                $urls[$tool][$date] = (string) $r[$urlCol];
+            }
+        }
+        $out = array();
+        foreach ($tmp as $tool => $byDate) {
+            ksort($byDate);
+            $series = array('Date' => array_map('strval', array_keys($byDate)), 'Data' => array());
+            foreach (array_keys($params[$tool]) as $p) {
+                $series['Data'][$p] = array();
+                foreach ($byDate as $values) {
+                    $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            if ($urlCol !== null) {
+                $series['Url'] = array();
+                foreach (array_keys($byDate) as $date) {
+                    $series['Url'][] = isset($urls[$tool][(string) $date]) ? $urls[$tool][(string) $date] : null;
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+
+    /**
+     * 寬表（一列一個時間點、每個參數一個欄位）→ 資料格式
+     *   $map 欄位名稱就是參數名稱時：array('M1BF_Z_C1', 'M1BF_Z_C2')
+     *   欄位名稱不同時給對照表：     array('M1BF_Z_C1' => 'c1', 'M1BF_Z_C2' => 'c2')（參數 => 欄位）
+     *   第 5 個參數（選用）：網址欄位，例 wide($rows, 'tool_id', 'd', $map, 'url') → 回傳多一個 Url
+     */
+    public static function wide($rows, $toolCol, $dateCol, $map, $urlCol = null)
+    {
+        $cols = array();  // param => column
+        foreach ($map as $k => $v) {
+            $cols[is_int($k) ? (string) $v : (string) $k] = (string) $v;
+        }
+        $out = array();
+        foreach ($rows as $r) {
+            $tool = (string) $r[$toolCol];
+            if (!isset($out[$tool])) {
+                $out[$tool] = array('Date' => array(), 'Data' => array());
+                foreach ($cols as $p => $c) {
+                    $out[$tool]['Data'][$p] = array();
+                }
+                if ($urlCol !== null) {
+                    $out[$tool]['Url'] = array();
+                }
+            }
+            $out[$tool]['Date'][] = (string) $r[$dateCol];
+            foreach ($cols as $p => $c) {
+                $out[$tool]['Data'][$p][] = array_key_exists($c, $r) ? $r[$c] : null;
+            }
+            if ($urlCol !== null) {
+                $out[$tool]['Url'][] = isset($r[$urlCol]) && $r[$urlCol] !== '' ? (string) $r[$urlCol] : null;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * 合併多份資料格式（例如同一張 chart 的參數來自不同 table）：
+     *   merge($a, $b, $c ...)
+     * 依機台 + 時間對齊，對不到的位置補 null；同一機台同一時間同一參數重複時，後面的覆蓋前面的。
+     * 時間字串要用相同格式（例如都用 DATE_FORMAT(..., '%Y-%m-%d %H:%i:%s')）才對得起來。
+     */
+    public static function merge()
+    {
+        $tmp = array();     // tool => date => param => value
+        $params = array();  // tool => param => true
+        $urls = array();    // tool => date => url（先出現的優先）
+        $withUrl = array(); // tool => true：有任何一份結果帶 Url
+        foreach (func_get_args() as $data) {
+            if (!is_array($data)) {
+                continue;
+            }
+            foreach ($data as $tool => $s) {
+                if (!isset($s['Date'], $s['Data']) || !is_array($s['Date']) || !is_array($s['Data'])) {
+                    continue;
+                }
+                $tool = (string) $tool;
+                $dates = array_values($s['Date']);
+                foreach ($dates as $date) {
+                    if (!isset($tmp[$tool][(string) $date])) {
+                        $tmp[$tool][(string) $date] = array();
+                    }
+                }
+                if (isset($s['Url']) && is_array($s['Url'])) {
+                    $withUrl[$tool] = true;
+                    $col = array_values($s['Url']);
+                    foreach ($dates as $i => $date) {
+                        if (!isset($urls[$tool][(string) $date]) && isset($col[$i]) && $col[$i] !== '') {
+                            $urls[$tool][(string) $date] = (string) $col[$i];
+                        }
+                    }
+                }
+                foreach ($s['Data'] as $p => $col) {
+                    $params[$tool][(string) $p] = true;
+                    $col = is_array($col) ? array_values($col) : array();
+                    foreach ($dates as $i => $date) {
+                        if (array_key_exists($i, $col) && $col[$i] !== null) {
+                            $tmp[$tool][(string) $date][(string) $p] = $col[$i];
+                        }
+                    }
+                }
+            }
+        }
+        $out = array();
+        foreach ($tmp as $tool => $byDate) {
+            ksort($byDate);
+            $series = array('Date' => array_map('strval', array_keys($byDate)), 'Data' => array());
+            $list = isset($params[$tool]) ? array_keys($params[$tool]) : array();
+            foreach ($list as $p) {
+                $series['Data'][$p] = array();
+                foreach ($byDate as $values) {
+                    $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            if (isset($withUrl[$tool])) {
+                $series['Url'] = array();
+                foreach (array_keys($byDate) as $date) {
+                    $series['Url'][] = isset($urls[$tool][(string) $date]) ? $urls[$tool][(string) $date] : null;
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+}
+
+/**
+ * 範例資料（[page] source = sample）：不需資料庫，SQL 還沒寫好時先看畫面
+ * 固定演算法，同一天同一台每次都得到相同數值
+ */
+class SampleChartSource extends ChartSource
+{
+    public function tools()
+    {
+        return array(
+            'APAN01', 'APAN02', 'APAN03', 'APAN04', 'APAN05', 'APAN06',
+            'APAP01', 'APAP02', 'APAP03', 'APAP04', 'APAP05', 'APAP06',
+        );
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $out = array();
+        $from = strtotime($start);
+        $to = strtotime($end);
+        foreach ($tools as $tool) {
+            $series = array('Date' => array(), 'Data' => array());
+            foreach ($params as $p) {
+                $series['Data'][$p] = array();
+            }
+            for ($t = $from; $t <= $to; $t += 86400) {
+                $day = date('Y-m-d', $t);
+                if (self::value($tool, '', $day) === null) {
+                    continue; // 這天停機
+                }
+                $series['Date'][] = $day;
+                foreach ($params as $p) {
+                    $series['Data'][$p][] = self::value($tool, $p, $day);
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+
+    /**
+     * 每台、每個參數有自己的基準值與週期；約 1/9 的日子整台沒有資料（模擬停機）
+     * $param = '' 時只用來判斷這天是否停機
+     */
+    private static function value($tool, $param, $day)
+    {
+        if ($param === '') {
+            return abs(crc32($tool . '|' . $day)) % 9 === 0 ? null : 0;
+        }
+        $h = abs(crc32($tool . '|' . $param . '|' . $day));
+        $seed = abs(crc32($tool));
+        // 同一台的參數走勢相近，各參數再加一點固定偏移
+        $base = 1.2 + ($seed % 300) / 100 + (abs(crc32($param)) % 60) / 100 - 0.3;
+        $n = floor(strtotime($day) / 86400);               // 絕對天數
+        $wave = 0.6 * sin($n / (5 + $seed % 7) + $seed % 10);
+        $noise = (($h % 1000) / 1000 - 0.5) * 0.5;
+        return round(max(0, $base + $wave + $noise), 3);
+    }
+}
+#@@@ FILE modules/charts/controller.php sha1=ec30e6f69428ee021d11f60246363f6241228e55 base=0c5ca68fdd206eeecdba840ed0b201adb3dff31c mode=644 enc=text nl=1
+<?php
+/**
+ * charts 模組：多張圖表共用的 Controller
+ *
+ * 每張 chart 是 config/config.ini 裡的一個頁面，route 都指向 module:charts，
+ * 頁面代號 = chart 名稱轉小寫，例：
+ *   [page.bslr]  route = "module:charts"   →  charts/BSLr.ini + charts/BSLr.php
+ *
+ *   index.php?m=bslr                                      頁面
+ *   index.php?m=bslr&a=tbt&start=&end=                    區間內全部機台的資料
+ *
+ * 頁面只呼叫 tbt 一次，三個區塊都從這份資料取得：
+ *   TBT 直接畫；single 取出單台；Newest_TBT 取每台在區間內的最後一筆
+ * 切換機台 / 機型只在瀏覽器端篩選，不再發 request；改日期區間才重新呼叫 tbt
+ *
+ * 回傳格式：
+ *   { "APAN01": { "Date": ["2026-01-01", ...],
+ *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... },
+ *                 "Url":  ["http://...", null, ...] }, ... }      ← 選用：series() 有回傳 Url 才有
+ * 機台依名稱自然排序，每台內部依時間排序；Data 只含 ini 用到的參數，
+ * 每個參數陣列與 Date 一樣長，沒有值的位置是 null。錯誤時回 HTTP 400 / 500 + {"ok":false,"error":"..."}
+ *
+ * 新增 chart 不需要修改這個檔案：見 charts/_template.ini、charts/_template.php
+ */
+require_once dirname(__FILE__) . '/ChartConfig.php';
+require_once dirname(__FILE__) . '/ChartSource.php';
+
+class ChartsController extends Controller
+{
+    /** @var ChartConfig */
+    private $cfg = null;
+    /** @var ChartSource */
+    private $source = null;
+
+    public function indexAction()
+    {
+        try {
+            $cfg = $this->cfg();
+            $tools = $this->sortTools($this->source()->tools());
+        } catch (Exception $e) {
+            $this->render('error', array('message' => $this->errorMessage($e)));
+            return;
+        }
+        $models = array();
+        foreach ($tools as $t) {
+            $models[$t] = $cfg->modelOf($t);
+        }
+        $this->render('index', array(
+            'chart'      => $cfg->name,
+            'plots'      => $cfg->plots(),
+            'tools'      => $tools,
+            'models'     => $models,
+            'modelRules' => $cfg->models(),
+            'quickDays'  => $cfg->quickDays(),
+            'start'      => date('Y-m-d', strtotime('-' . ($cfg->defaultDays() - 1) . ' day')),
+            'end'        => date('Y-m-d'),
+            'source'     => $cfg->source(),
+        ));
+    }
+
+    /** 所有機台在期間內的資料（三個區塊共用） */
+    public function tbtAction()
+    {
+        try {
+            $cfg = $this->cfg();
+            $range = $this->range($cfg->maxDays());
+            if ($range === null) {
+                return;
+            }
+            $tools = $this->sortTools($this->source()->tools());
+            $params = $cfg->params();
+            $data = $tools ? $this->source()->series($tools, $params, $range[0], $range[1]) : array();
+            $data = $this->source()->toToolKeys($data);   // machine_id → tool_id
+            $this->output($this->normalize($data, $tools, $params));
+        } catch (Exception $e) {
+            $this->json(array('ok' => false, 'error' => $this->errorMessage($e)), 500);
+        }
+    }
+
+    /** 這個頁面對應的 chart 設定 */
+    private function cfg()
+    {
+        if ($this->cfg === null) {
+            $name = ChartConfig::nameForPage($this->module);
+            if ($name === null) {
+                throw new RuntimeException('charts/ 裡找不到與頁面代號 ' . $this->module . ' 同名（不分大小寫）的 ini');
+            }
+            $this->cfg = new ChartConfig($name);
+        }
+        return $this->cfg;
+    }
+
+    private function source()
+    {
+        if ($this->source === null) {
+            $this->source = ChartSource::create($this->cfg());
+        }
+        return $this->source;
+    }
+
+    /**
+     * 設定錯誤（RuntimeException）直接顯示訊息，方便部署者修正；
+     * 其他錯誤（例如資料庫連線、SQL 錯誤）可能含主機資訊，只在 app.ini debug = 1 時顯示，否則寫到 log
+     */
+    private function errorMessage(Exception $e)
+    {
+        error_log('[AISLE charts:' . $this->module . '] ' . get_class($e) . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+        if (get_class($e) === 'RuntimeException' || Config::get('app', 'debug', 0)) {
+            return $e->getMessage();
+        }
+        return '資料查詢失敗（' . get_class($e) . '），詳細內容請看 PHP error log';
+    }
+
+    // ------------------------------------------------------------------
+
+    /** 讀取並檢查 start / end，失敗時已輸出錯誤並回傳 null */
+    private function range($maxDays)
+    {
+        $start = $this->query('start');
+        $end = $this->query('end');
+        if (!self::isDate($start) || !self::isDate($end)) {
+            $this->fail('日期格式需為 YYYY-MM-DD');
+            return null;
+        }
+        if ($start > $end) {
+            $this->fail('起始日期不可晚於結束日期');
+            return null;
+        }
+        $days = (strtotime($end) - strtotime($start)) / 86400 + 1;
+        if ($days > $maxDays) {
+            $this->fail('查詢區間最多 ' . $maxDays . ' 天');
+            return null;
+        }
+        return array($start, $end);
+    }
+
+    private static function isDate($s)
+    {
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m)) {
+            return false;
+        }
+        return checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+    }
+
+    private function sortTools($tools)
+    {
+        $tools = array_values(array_unique(array_map('strval', $tools)));
+        sort($tools, SORT_NATURAL | SORT_FLAG_CASE);
+        return $tools;
+    }
+
+    /**
+     * 統一整理資料來源的結果：
+     *   - 只保留 $tools 中的機台，並依 $tools 的順序輸出
+     *   - 每台依 Date 排序；Data 只保留 $params，依 $params 的順序輸出，缺少的參數整列補 null
+     *   - 數值轉成數字，不是數字的轉成 null；所有參數都是 null 的時間點丟掉
+     *   - 有 Url（與 Date 等長）時跟著 Date 一起排序保留；只接受 http(s):// 或 / 開頭的網址，其他轉成 null
+     */
+    private function normalize($data, $tools, $params)
+    {
+        $out = array();
+        foreach ($tools as $tool) {
+            if (!isset($data[$tool]['Date'], $data[$tool]['Data'])
+                || !is_array($data[$tool]['Date']) || !is_array($data[$tool]['Data'])) {
+                continue;
+            }
+            $dates = array_values($data[$tool]['Date']);
+            $hasUrl = isset($data[$tool]['Url']) && is_array($data[$tool]['Url']);
+            $urls = $hasUrl ? array_values($data[$tool]['Url']) : array();
+            $cols = array();
+            foreach ($params as $p) {
+                $cols[$p] = isset($data[$tool]['Data'][$p]) && is_array($data[$tool]['Data'][$p])
+                    ? array_values($data[$tool]['Data'][$p]) : array();
+            }
+            $rows = array();  // array(date, array(param => value))
+            foreach ($dates as $i => $date) {
+                $values = array();
+                $any = false;
+                foreach ($params as $p) {
+                    $v = null;
+                    if (isset($cols[$p][$i]) && is_numeric($cols[$p][$i])) {
+                        $v = (float) $cols[$p][$i];
+                        $any = true;
+                    }
+                    $values[$p] = $v;
+                }
+                if ($any) {
+                    $rows[] = array((string) $date, $values, $hasUrl ? self::safeUrl(isset($urls[$i]) ? $urls[$i] : null) : null);
+                }
+            }
+            if (!$rows) {
+                continue;
+            }
+            usort($rows, array('ChartsController', 'cmpRow'));
+            $series = array('Date' => array(), 'Data' => array());
+            foreach ($params as $p) {
+                $series['Data'][$p] = array();
+            }
+            if ($hasUrl) {
+                $series['Url'] = array();
+            }
+            foreach ($rows as $r) {
+                $series['Date'][] = $r[0];
+                foreach ($params as $p) {
+                    $series['Data'][$p][] = $r[1][$p];
+                }
+                if ($hasUrl) {
+                    $series['Url'][] = $r[2];
+                }
+            }
+            $out[$tool] = $series;
+        }
+        return $out;
+    }
+
+    /** 點擊數據點要開的網址：只接受 http://、https:// 或 / 開頭的站內路徑（不含 //），其他（javascript: 等）回傳 null */
+    private static function safeUrl($url)
+    {
+        if (!is_string($url)) {
+            return null;
+        }
+        $url = trim($url);
+        if (preg_match('#^https?://[^\s]+$#i', $url) || preg_match('#^/(?!/)[^\s]*$#', $url)) {
+            return $url;
+        }
+        return null;
+    }
+
+    public static function cmpRow($a, $b)
+    {
+        return strcmp($a[0], $b[0]);
+    }
+
+    /** 輸出 JSON；沒有資料時輸出 {} 而不是 [] */
+    private function output($data)
+    {
+        $this->json($data ? $data : new stdClass());
+    }
+
+    private function fail($message)
+    {
+        $this->json(array('ok' => false, 'error' => $message), 400);
+    }
+}
+#@@@ FILE public/assets/js/charts.js sha1=b8e3afe7844c3eb8cc6c8617b3e03aa01151a14a base=99947997d525aa30e5459b654b6e4818d9de1044 mode=644 enc=text nl=1
+/*
+ * charts 頁面 (jQuery 1.12 + ECharts 5)，所有 chart（BSLr、M1BF…）共用
+ *
+ * 三個區塊：single 單台趨勢 / newest 最新值排排站 / tbt 歷史趨勢排排站
+ * 每個區塊依 charts/<名稱>.ini 的 [plot.xxx] 各畫一張圖（CFG.groups），
+ * 同一組的參數（例 M1BF_Z_C1、M1BF_Z_C2）畫在同一張圖上。
+ *
+ * 後端回傳格式：
+ *   { "APAN01": { "Date": [...], "Data": { "M1BF_Z_C1": [...], "M1BF_Z_C2": [...] } }, ... }
+ *   每個參數陣列與 Date 等長，沒有值的位置是 null
+ *   選用 "Url": [...]（與 Date 等長）：單台趨勢圖點擊數據點時在新分頁開啟該網址
+ *
+ * 資料載入方式：
+ *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台、全部參數」的資料存在 cache，所有圖都從這份資料取得：
+ *     TBT 直接畫；single 取出所選機台；Newest_TBT 取每台每個參數在區間內的最後一個值（再依機型篩選）
+ *   之後切換機台、切換機型只用 cache 重畫，不再發 request；
+ *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt。
+ *
+ * 編碼方式：顏色 = 機台，線型 / 長條紋理 = 參數（同組第 1 個參數實線無紋理，第 2 個虛線斜紋…）
+ * 只用 ES5 語法，避免舊瀏覽器出錯
+ */
+(function ($, window) {
+    'use strict';
+
+    var CFG = window.AISLE_CHARTS;
+    if (!$ || !CFG) {
+        return;
+    }
+
+    // ---------- 主題 ----------
+    // 機台顏色：8 色類別色盤（已用 dataviz validate_palette.js 檢查深色底 #001406：
+    // 亮度、彩度、色盲區分、對比全部通過）。同機型內依序取色，APAN01 與 APAP01 同色，
+    // 以 X 軸機台名稱區分。顏色跟著機台走，篩選後不會變色。
+    var PALETTE = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+    // 參數：線型與長條紋理，依參數在組內的順序取用
+    var LINE_TYPES = ['solid', 'dashed', 'dotted', [10, 4, 2, 4], [2, 6]];
+    var LINE_NAMES = ['實線', '虛線', '點線', '點劃線', '稀點線'];
+    var DECALS = [
+        null,
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'circle', symbolSize: 0.6, dashArrayX: [[4, 4]], dashArrayY: [4, 0], color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [1, 3], rotation: 0, color: 'rgba(0,0,0,0.5)' }
+    ];
+    var INK = '#00ff41';       // 主要文字
+    var INK_DIM = '#00b82e';   // 次要文字
+    var GRID = '#0a2a12';      // 格線
+    var AXIS = '#00661a';      // 軸線
+    var NEUTRAL = '#7dffb0';   // 圖例中代表「參數」的中性色
+    var BAND = 'rgba(0, 255, 65, 0.05)';  // TBT 交錯底色
+    var OOS_COLOR = '#ff3b3b';  // spec 線：OOS（規格界限）
+    var OOC_COLOR = '#ffb000';  // spec 線：OOC（管制界限）
+    var SPEC_KEYS = [
+        { key: 'upper_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' },
+        { key: 'upper_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
+        { key: 'lower_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
+        { key: 'lower_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' }
+    ];
+    var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
+
+    var COLOR = {};
+    (function assignColors() {
+        var counter = {};
+        $.each(CFG.tools, function (i, tool) {
+            var model = CFG.models[tool] || '';
+            counter[model] = counter[model] || 0;
+            COLOR[tool] = PALETTE[counter[model] % PALETTE.length];
+            counter[model]++;
+        });
+    })();
+
+    var GROUPS = {};
+    $.each(CFG.groups, function (i, g) { GROUPS[g.id] = g; });
+
+    function colorOf(tool) { return COLOR[tool] || NEUTRAL; }
+    function lineTypeOf(i) { return LINE_TYPES[i % LINE_TYPES.length]; }
+    function decalOf(i) { return DECALS[i % DECALS.length]; }
+    function shortName(param, group) {
+        // 圖例只顯示參數名稱與組標題不同的部分，例 M1BF_Z 組內的 M1BF_Z_C1 → C1
+        var prefix = group.title + '_';
+        return param.indexOf(prefix) === 0 && param.length > prefix.length ? param.substring(prefix.length) : param;
+    }
+
+    function baseOption() {
+        return {
+            backgroundColor: 'transparent',
+            textStyle: { color: INK, fontFamily: FONT },
+            animationDuration: 400,
+            tooltip: {
+                backgroundColor: 'rgba(0, 10, 3, 0.95)',
+                borderColor: INK_DIM,
+                borderWidth: 1,
+                textStyle: { color: INK, fontFamily: FONT, fontSize: 13 },
+                extraCssText: 'box-shadow: 0 0 12px rgba(0,255,65,0.3);'
+            },
+            grid: { left: 50, right: 24, top: 40, bottom: 40, containLabel: false }
+        };
+    }
+
+    /** Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt */
+    function valueAxis(group, kind) {
+        var lim = (group.limits && group.limits[kind]) || {};
+        var axis = {
+            type: 'value',
+            name: group.unit || 'Data',
+            nameTextStyle: { color: INK_DIM },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            axisLabel: { color: INK_DIM },
+            splitLine: { lineStyle: { color: GRID } },
+            scale: kind !== 'newest'
+        };
+        var spec = specValues(group);
+        if (lim.min !== null && lim.min !== undefined) {
+            axis.min = lim.min;
+        } else if (spec.length) {
+            axis.min = function (v) { return specBounds(v, spec, kind).min; };
+        }
+        if (lim.max !== null && lim.max !== undefined) {
+            axis.max = lim.max;
+        } else if (spec.length) {
+            axis.max = function (v) { return specBounds(v, spec, kind).max; };
+        }
+        return axis;
+    }
+
+    /** 這組圖有設定的 spec 值（數字陣列） */
+    function specValues(group) {
+        var out = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v !== null && v !== undefined) {
+                out.push(v);
+            }
+        });
+        return out;
+    }
+
+    /** 資料範圍 v（{min, max}）加上 spec 線後的 Y 軸上下限，取整到刻度間距 */
+    function specBounds(v, spec, kind) {
+        var lo = Math.min.apply(null, spec);
+        var hi = Math.max.apply(null, spec);
+        if (isFinite(v.min)) {
+            lo = Math.min(lo, v.min);
+        }
+        if (isFinite(v.max)) {
+            hi = Math.max(hi, v.max);
+        }
+        if (kind === 'newest') {   // 長條圖從 0 開始
+            lo = Math.min(lo, 0);
+            hi = Math.max(hi, 0);
+        }
+        var span = hi - lo;
+        if (span <= 0) {
+            span = Math.abs(hi) || 1;
+        }
+        var step = niceStep(span / 5);
+        var min = Math.floor(lo / step) * step;
+        var max = Math.ceil(hi / step) * step;
+        return { min: +min.toFixed(10), max: +max.toFixed(10) };
+    }
+
+    function niceStep(x) {
+        var p = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
+        var f = x / p;
+        return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+    }
+
+    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒設定 spec 時回傳 null */
+    function specSeries(group) {
+        var lines = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v === null || v === undefined) {
+                return;
+            }
+            lines.push({
+                name: k.key,
+                yAxis: v,
+                lineStyle: { color: k.color, type: k.type, width: 1.5 },
+                label: {
+                    show: true,
+                    position: k.key.indexOf('upper') === 0 ? 'insideEndTop' : 'insideEndBottom',
+                    color: k.color,
+                    fontFamily: FONT,
+                    formatter: k.label + ' ' + fmt(v)
+                }
+            });
+        });
+        if (!lines.length) {
+            return null;
+        }
+        return {
+            name: '_spec',
+            type: 'line',
+            data: [],
+            silent: true,
+            markLine: { silent: true, symbol: 'none', animation: false, data: lines }
+        };
+    }
+
+    /** 有 spec 時把輔助 series 加到 series 陣列最後 */
+    function pushSpec(series, group) {
+        var s = specSeries(group);
+        if (s) {
+            series.push(s);
+        }
+    }
+
+    function axisLine() {
+        return { lineStyle: { color: AXIS } };
+    }
+
+    function legendBase(data) {
+        return {
+            type: 'scroll',
+            top: 0,
+            data: data,
+            textStyle: { color: INK, fontFamily: FONT },
+            pageTextStyle: { color: INK },
+            pageIconColor: INK,
+            pageIconInactiveColor: AXIS,
+            inactiveColor: '#1f4a2a',
+            itemWidth: 26,
+            itemHeight: 10
+        };
+    }
+
+    function fmt(v) {
+        return v === null || v === undefined ? '-' : AISLE.escape(v);
+    }
+
+    // ---------- 圖表盒 ----------
+    // boxes['tbt:m1bf_z'] = { kind, group, $el, chart, shown }
+    var boxes = {};
+    var cache = { tbt: null };
+    var request = null;
+
+    function eachBox(kind, fn) {
+        $.each(boxes, function (key, box) {
+            if (!kind || box.kind === kind) {
+                fn(box);
+            }
+        });
+    }
+
+    function showMessage(chart, text) {
+        chart.clear();
+        chart.setOption({
+            title: {
+                text: text,
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: INK_DIM, fontSize: 14, fontWeight: 'normal', fontFamily: FONT }
+            }
+        });
+    }
+
+    function loadingOpts() {
+        return { text: 'LOADING...', color: INK, textColor: INK, maskColor: 'rgba(0, 0, 0, 0.6)', fontFamily: FONT };
+    }
+
+    /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
+    function show(box, data, draw) {
+        box.shown = data;
+        box.urlInfo = null;
+        if ($.isEmptyObject(data)) {
+            showMessage(box.chart, '> 查無資料 // NO DATA');
+        } else {
+            draw(box, data);
+        }
+        renderTable(box);
+    }
+
+    /** 資料表檢視：機台 / 時間 / 該組每個參數一欄 */
+    function renderTable(box) {
+        var params = box.group.params;
+        var head = '<tr><th>TOOL</th><th>DATE</th>';
+        $.each(params, function (i, p) { head += '<th>' + AISLE.escape(p) + '</th>'; });
+        head += '</tr>';
+        var rows = [];
+        var withUrl = false;
+        $.each(box.shown, function (tool, s) {
+            if ($.isArray(s.Url)) {
+                withUrl = true;
+            }
+        });
+        if (withUrl) {
+            head = head.replace(/<\/tr>$/, '<th>URL</th></tr>');
+        }
+        $.each(box.shown, function (tool, s) {
+            if (!$.isArray(s.Date)) {
+                // newest：各參數的日期分開存，值後面附上日期
+                var tr0 = '<tr><td>' + AISLE.escape(tool) + '</td><td>LATEST</td>';
+                $.each(params, function (j, p) {
+                    tr0 += '<td>' + fmt(s.Data[p][0]) + (s.Date[p][0] ? ' <span class="dim">(' + AISLE.escape(s.Date[p][0]) + ')</span>' : '') + '</td>';
+                });
+                rows.push(tr0 + '</tr>');
+                return;
+            }
+            for (var i = 0; i < s.Date.length; i++) {
+                var tr = '<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) + '</td>';
+                for (var j = 0; j < params.length; j++) {
+                    tr += '<td>' + fmt(s.Data[params[j]] ? s.Data[params[j]][i] : null) + '</td>';
+                }
+                if (withUrl) {
+                    var u = $.isArray(s.Url) ? safeUrl(s.Url[i]) : null;
+                    tr += '<td>' + (u ? '<a href="' + AISLE.escape(u) + '" target="_blank" rel="noopener noreferrer">開啟</a>' : '-') + '</td>';
+                }
+                rows.push(tr + '</tr>');
+            }
+        });
+        box.$el.find('.cd-table').html(rows.length
+            ? '<table class="table"><thead>' + head + '</thead><tbody>' + rows.join('') + '</tbody></table>'
+            : '<p class="dim">&gt; 查無資料</p>');
+    }
+
+    // ---------- 1. single：所選機台，組內每個參數一條線 ----------
+    function drawSingle(box, data) {
+        var group = box.group;
+        var tool;
+        for (tool in data) {
+            if (data.hasOwnProperty(tool)) {
+                break;
+            }
+        }
+        var s = data[tool];
+        var urls = $.isArray(s.Url) ? s.Url : null;
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var points = [];
+            var col = s.Data[param] || [];
+            for (var i = 0; i < s.Date.length; i++) {
+                points.push([s.Date[i], col[i] === undefined ? null : col[i]]);
+            }
+            series.push({
+                name: param,
+                type: 'line',
+                data: points,
+                connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
+                showSymbol: points.length <= 45,
+                symbolSize: 8,
+                color: colorOf(tool),
+                lineStyle: { width: 2, type: lineTypeOf(pi) },
+                emphasis: { focus: 'series' }
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        if (urls) {
+            // 有 Url：tooltip 多一行提示，點數據點開新分頁（見 bindUrlClick）
+            opt.tooltip.formatter = function (params) {
+                var html = '';
+                var idx = null;
+                $.each(params, function (i, p) {
+                    if (p.seriesName === '_spec') {
+                        return;
+                    }
+                    if (!html) {
+                        html = AISLE.escape(s.Date[p.dataIndex]);
+                        idx = p.dataIndex;
+                    }
+                    html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
+                });
+                if (idx !== null && safeUrl(urls[idx])) {
+                    html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+                }
+                return html;
+            };
+            box.urlInfo = { dates: s.Date, urls: urls, cols: $.map(group.params, function (p) { return [s.Data[p] || []]; }) };
+        }
+        opt.xAxis = {
+            type: 'time',
+            axisLine: axisLine(),
+            axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{MM}-{dd}' },
+            splitLine: { show: false }
+        };
+        opt.yAxis = valueAxis(group, 'single');
+        opt.dataZoom = [{ type: 'inside' }];
+        pushSpec(series, group);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 2. newest：X 軸機台，組內每個參數一根長條 ----------
+    function drawNewest(box, data) {
+        var group = box.group;
+        var tools = [];
+        $.each(data, function (tool) { tools.push(tool); });
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var bars = [];
+            $.each(tools, function (ti, tool) {
+                var s = data[tool];
+                var style = { color: colorOf(tool), borderRadius: [4, 4, 0, 0] };
+                if (decalOf(pi)) {
+                    style.decal = decalOf(pi);
+                }
+                bars.push({ value: s.Data[param][0], date: s.Date[param][0], itemStyle: style });
+            });
+            // series 的 itemStyle 只決定圖例的樣子（中性色 + 該參數的紋理），每根長條另用機台色
+            var legendStyle = { color: NEUTRAL };
+            if (decalOf(pi)) {
+                legendStyle.decal = decalOf(pi);
+            }
+            series.push({
+                name: param,
+                type: 'bar',
+                data: bars,
+                barMaxWidth: 28,
+                barGap: '15%',
+                itemStyle: legendStyle,
+                emphasis: { focus: 'series', itemStyle: { shadowBlur: 12, shadowColor: INK } },
+                cursor: 'pointer'
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'shadow', shadowStyle: { color: 'rgba(0,255,65,0.06)' } };
+        opt.tooltip.formatter = function (params) {
+            if (!params.length) {
+                return '';
+            }
+            var html = '<b>' + AISLE.escape(params[0].name) + '</b>';
+            $.each(params, function (i, p) {
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value) + '</b>' +
+                    ' <span style="color:' + INK_DIM + '">(' + fmt(p.data.date) + ')</span>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: tools,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
+        };
+        opt.yAxis = valueAxis(group, 'newest');
+        pushSpec(series, group);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 3. TBT ----------
+    // X 軸為類別軸：每台機台佔一段，段內依時間排列。每台每個參數一條 series，
+    // 同一台的 series 用同一個名稱，所以圖例以機台為單位開關；其他段落填 null，
+    // 所以每台只畫在自己的區段，相鄰機台以交錯底色分隔。
+    function drawTbt(box, data) {
+        var group = box.group;
+        var keys = [];      // 類別值（唯一）："APAN01|2026-01-01"
+        var segments = [];  // { tool, from, to }
+        $.each(data, function (tool, s) {
+            var from = keys.length;
+            for (var i = 0; i < s.Date.length; i++) {
+                keys.push(tool + '|' + s.Date[i]);
+            }
+            segments.push({ tool: tool, from: from, to: keys.length - 1 });
+        });
+
+        var centers = {};
+        var bands = [];
+        $.each(segments, function (i, seg) {
+            centers[Math.floor((seg.from + seg.to) / 2)] = seg.tool;
+            if (i % 2 === 1) {
+                bands.push([{ xAxis: keys[seg.from] }, { xAxis: keys[seg.to] }]);
+            }
+        });
+
+        var series = [];
+        var legend = [];
+        var paramOf = [];   // seriesIndex → 參數名稱（tooltip 用）
+        $.each(segments, function (i, seg) {
+            var s = data[seg.tool];
+            legend.push(seg.tool);
+            $.each(group.params, function (pi, param) {
+                var col = s.Data[param] || [];
+                var arr = new Array(keys.length);
+                for (var k = 0; k < keys.length; k++) {
+                    arr[k] = null;
+                }
+                for (var j = 0; j < s.Date.length; j++) {
+                    arr[seg.from + j] = col[j] === undefined ? null : col[j];
+                }
+                paramOf.push(param);
+                series.push({
+                    name: seg.tool,
+                    type: 'line',
+                    data: arr,
+                    connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
+                    showSymbol: false,
+                    symbolSize: 8,
+                    color: colorOf(seg.tool),
+                    lineStyle: { width: 2, type: lineTypeOf(pi) },
+                    emphasis: { focus: 'series' }
+                });
+            });
+        });
+        // 交錯底色放在一條不顯示的輔助 series 上
+        series.push({
+            name: '_bands',
+            type: 'line',
+            data: [],
+            silent: true,
+            markArea: { silent: true, itemStyle: { color: BAND }, data: bands }
+        });
+
+        var opt = baseOption();
+        opt.grid.top = 64;
+        opt.grid.bottom = 70;
+        opt.legend = legendBase(legend);
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        opt.tooltip.formatter = function (params) {
+            var html = '';
+            $.each(params, function (i, p) {
+                if (p.seriesName === '_bands' || p.seriesName === '_spec' || p.value === null || p.value === undefined) {
+                    return;
+                }
+                if (!html) {
+                    html = p.marker + AISLE.escape(p.seriesName) + '<br>' + AISLE.escape(String(p.name).split('|')[1]);
+                }
+                html += '<br>' + AISLE.escape(paramOf[p.seriesIndex]) + '：<b>' + fmt(p.value) + '</b>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: keys,
+            boundaryGap: false,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: {
+                color: INK,
+                interval: function (idx) { return centers.hasOwnProperty(idx); },
+                formatter: function (v) { return String(v).split('|')[0]; }
+            },
+            splitLine: { show: false }
+        };
+        opt.yAxis = valueAxis(group, 'tbt');
+        opt.dataZoom = [
+            { type: 'inside' },
+            {
+                type: 'slider', height: 18, bottom: 12,
+                borderColor: AXIS, fillerColor: 'rgba(0,255,65,0.12)',
+                handleStyle: { color: INK_DIM }, moveHandleStyle: { color: INK_DIM },
+                dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: 'rgba(0,255,65,0.08)' } },
+                textStyle: { color: INK_DIM },
+                labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
+            }
+        ];
+        pushSpec(series, group);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+
+        var styles = $.map(group.params, function (p, i) {
+            return shortName(p, group) + ' ' + LINE_NAMES[i % LINE_NAMES.length];
+        });
+        box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
+    }
+
+    // ---------- single 點擊數據點開啟 Url ----------
+    /** 只接受 http://、https:// 或 / 開頭（不含 //）的網址，其他回傳 null（後端已過濾，這裡再擋一次） */
+    function safeUrl(u) {
+        if (typeof u !== 'string') {
+            return null;
+        }
+        u = $.trim(u);
+        return /^https?:\/\/\S+$/i.test(u) || /^\/(?!\/)\S*$/.test(u) ? u : null;
+    }
+
+    /** 滑鼠位置最近、且有網址的數據點（距離 14px 內），回傳網址或 null */
+    function urlAt(box, x, y) {
+        var info = box.urlInfo;
+        if (!info || !box.chart.containPixel('grid', [x, y])) {
+            return null;
+        }
+        var best = null;
+        var bestDist = 14 * 14;
+        for (var i = 0; i < info.dates.length; i++) {
+            var u = safeUrl(info.urls[i]);
+            if (!u) {
+                continue;
+            }
+            for (var c = 0; c < info.cols.length; c++) {
+                var v = info.cols[c][i];
+                if (v === null || v === undefined) {
+                    continue;
+                }
+                var pt = box.chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [info.dates[i], v]);
+                if (!pt) {
+                    continue;
+                }
+                var d = (pt[0] - x) * (pt[0] - x) + (pt[1] - y) * (pt[1] - y);
+                if (d <= bestDist) {
+                    bestDist = d;
+                    best = u;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** single 圖：點擊數據點在新分頁開啟網址；滑過有網址的點顯示手指游標。沒有 Url 時不做任何事 */
+    function bindUrlClick(box) {
+        var zr = box.chart.getZr();
+        zr.on('mousemove', function (e) {
+            if (box.urlInfo && urlAt(box, e.offsetX, e.offsetY)) {
+                zr.setCursorStyle('pointer');
+            }
+        });
+        zr.on('click', function (e) {
+            var u = urlAt(box, e.offsetX, e.offsetY);
+            if (u) {
+                var w = window.open(u, '_blank');
+                if (w) {
+                    w.opener = null;
+                }
+            }
+        });
+    }
+
+    // ---------- 從 cache 取出各圖要的資料 ----------
+    /** 只保留某組的參數（有 Url 時一併帶上） */
+    function pick(s, params) {
+        var out = { Date: s.Date, Data: {} };
+        $.each(params, function (i, p) { out.Data[p] = s.Data[p] || []; });
+        if ($.isArray(s.Url)) {
+            out.Url = s.Url;
+        }
+        return out;
+    }
+
+    function showTbt() {
+        eachBox('tbt', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) { data[tool] = pick(s, box.group.params); });
+            show(box, data, drawTbt);
+        });
+    }
+
+    /** 單台機台：從 cache.tbt 取出，不發 request */
+    function showSingle() {
+        var tool = $('#cd-tool').val();
+        $('.cd-single-title').text(tool ? '· ' + tool : '');
+        if (!cache.tbt || !tool) {
+            return;
+        }
+        eachBox('single', function (box) {
+            var data = {};
+            if (cache.tbt[tool]) {
+                data[tool] = pick(cache.tbt[tool], box.group.params);
+            }
+            show(box, data, drawSingle);
+        });
+    }
+
+    /**
+     * 最新值：每台每個參數在區間內最後一個非 null 的值，再依機型篩選，不發 request
+     * 各參數最後一筆的日期可能不同，所以 Date 也依參數分開存：
+     *   { Date: { param: [日期] }, Data: { param: [值] } }
+     */
+    function showNewest() {
+        if (!cache.tbt) {
+            return;
+        }
+        var model = $('#cd-model').val() || 'All';  // ini 沒設定機型時沒有下拉選單
+        eachBox('newest', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) {
+                if (model !== 'All' && CFG.models[tool] !== model) {
+                    return;
+                }
+                var latest = { Date: {}, Data: {} };
+                var any = false;
+                $.each(box.group.params, function (pi, p) {
+                    var col = s.Data[p] || [];
+                    latest.Date[p] = [null];
+                    latest.Data[p] = [null];
+                    for (var i = col.length - 1; i >= 0; i--) {
+                        if (col[i] !== null && col[i] !== undefined) {
+                            latest.Date[p] = [s.Date[i]];
+                            latest.Data[p] = [col[i]];
+                            any = true;
+                            break;
+                        }
+                    }
+                });
+                if (any) {
+                    data[tool] = latest;
+                }
+            });
+            show(box, data, drawNewest);
+        });
+    }
+
+    // ---------- 選擇器 ----------
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function isDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s); }
+
+    function range() {
+        var start = $.trim($('#cd-start').val());
+        var end = $.trim($('#cd-end').val());
+        var $msg = $('#cd-msg').text('');
+        if (!isDate(start) || !isDate(end)) {
+            $msg.text('> 日期格式需為 YYYY-MM-DD');
+            return null;
+        }
+        if (start > end) {
+            $msg.text('> 起始日期不可晚於結束日期');
+            return null;
+        }
+        return { start: start, end: end };
+    }
+
+    /** 取日期區間內全部機台、全部參數的資料（所有圖共用），進頁面與改日期時呼叫 */
+    function loadRange() {
+        var r = range();
+        if (!r) {
+            return;
+        }
+        if (request) {
+            request.abort();
+        }
+        eachBox(null, function (box) { box.chart.showLoading('default', loadingOpts()); });
+        request = $.ajax({ url: CFG.urls.tbt, data: { start: r.start, end: r.end }, dataType: 'json', cache: false })
+            .done(function (res) {
+                cache.tbt = res || {};
+                eachBox(null, function (box) { box.chart.hideLoading(); });
+                showTbt();
+                showSingle();
+                showNewest();
+            })
+            .fail(function (xhr, status) {
+                if (status === 'abort') {
+                    return;
+                }
+                var msg = (xhr.responseJSON && xhr.responseJSON.error) || ('HTTP ' + xhr.status);
+                eachBox(null, function (box) {
+                    box.chart.hideLoading();
+                    showMessage(box.chart, '> ERROR: ' + msg);
+                });
+            });
+    }
+
+    $(function () {
+        if (!window.echarts) {
+            $('.cd-chart').html('<p class="text-red">&gt; ECharts 載入失敗：請確認可連到 CDN，或執行 scripts/shell/fetch_vendor.sh 放到 public/assets/vendor/</p>');
+            return;
+        }
+        $('.cd-box').each(function () {
+            var $el = $(this);
+            var kind = $el.data('kind');
+            var group = GROUPS[$el.data('group')];
+            boxes[kind + ':' + group.id] = {
+                kind: kind,
+                group: group,
+                $el: $el,
+                chart: window.echarts.init($el.find('.cd-chart')[0]),
+                shown: {},
+                urlInfo: null
+            };
+            if (kind === 'single') {
+                bindUrlClick(boxes[kind + ':' + group.id]);
+            }
+        });
+
+        if (!CFG.tools.length) {
+            eachBox(null, function (box) { showMessage(box.chart, '> 沒有任何機台 // NO TOOLS'); });
+            return;
+        }
+
+        $('#cd-filters').on('submit', function () {
+            loadRange();
+            return false;
+        });
+        $('#cd-tool').on('change', showSingle);
+        $('#cd-model').on('change', showNewest);
+        $('.cd-quick').on('click', 'button', function () {
+            var days = parseInt($(this).data('days'), 10);
+            var end = new Date();
+            var start = new Date(end.getTime() - (days - 1) * 86400000);
+            $('#cd-start').val(ymd(start));
+            $('#cd-end').val(ymd(end));
+            loadRange();
+        });
+
+        // 點最新值長條 → 切換單台機台
+        eachBox('newest', function (box) {
+            box.chart.on('click', function (p) {
+                if (p.componentType === 'series' && p.name) {
+                    $('#cd-tool').val(p.name);
+                    showSingle();
+                    var $first = $('.cd-box[data-kind="single"]').first();
+                    if ($first.length) {
+                        $('html, body').animate({ scrollTop: $first.offset().top - 80 }, 200);
+                    }
+                }
+            });
+        });
+
+        function boxOf(el) {
+            var $el = $(el).closest('.cd-box');
+            return boxes[$el.data('kind') + ':' + $el.data('group')];
+        }
+        $('.cd-legend-all').on('click', function () {
+            boxOf(this).chart.dispatchAction({ type: 'legendAllSelect' });
+        });
+        $('.cd-legend-none').on('click', function () {
+            var box = boxOf(this);
+            $.each(box.shown, function (tool) {
+                box.chart.dispatchAction({ type: 'legendUnSelect', name: tool });
+            });
+        });
+        $('.cd-table-btn').on('click', function () {
+            boxOf(this).$el.find('.cd-table').toggle();
+        });
+
+        var resizeTimer = null;
+        $(window).on('resize', function () {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                eachBox(null, function (box) { box.chart.resize(); });
+            }, 150);
+        });
+
+        loadRange();
+    });
+})(window.jQuery, window);
+#@@@ FILE scripts/python/check_config.py sha1=cbb267081080c75375821ab7b054586370a551d7 base=806201906ae6879ee2a7d60642c2ed85e7102c13 mode=755 enc=text nl=1
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+檢查 config/config.ini 是否正確（Python 2.7）
+
+檢查項目：
+  - [access] 的每個身份都定義在 [roles]，列出的頁面都有 [page.xxx]
+  - 每個 [page.xxx] 的 route 指向的檔案存在
+      module:<資料夾>  → modules/<資料夾>/controller.php
+      pages/xxx.php    → 檔案存在
+      public/xxx.php   → 檔案存在，且第一段程式有 require auth_check.php
+  - action.<動作> 的身份都有效
+  - 頁面的 group 有對應的 [group.xxx]，[group.xxx] 有被頁面使用（警告）
+  - [register] 的 listed_role / unlisted_role 有效且不是超級身份 ("*")
+  - [ee_accounts] 名單帳號格式正確、沒有重複
+  - 沒有任何身份能使用的頁面、modules/ 下沒登記的資料夾（警告）
+  - 圖表（route = module:charts 的頁面）：charts/<名稱>.ini 存在且格式正確、
+    source = php 時 charts/<名稱>.php 存在且有 <名稱>Chart 類別、
+    charts/ 底下沒有頁面使用的 chart（警告）
+  - 列出每個身份可用的頁面
+
+用法：python scripts/python/check_config.py
+回傳碼：0 = 正常，1 = 有錯誤
+"""
+from __future__ import print_function
+
+import os
+import re
+import sys
+from ConfigParser import RawConfigParser  # Python 2.7；RawConfigParser 不會把 % 當成變數
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+INI = os.path.join(ROOT, 'config', 'config.ini')
+MODULES = os.path.join(ROOT, 'modules')
+CHARTS = os.path.join(ROOT, 'charts')
+RE_CHART = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')
+RE_PLOT = re.compile(r'^plot\.[a-z][a-z0-9_]{0,63}$')
+RE_KEY = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
+RE_ACCOUNT = re.compile(r'^[A-Za-z0-9_.-]{3,64}$')
+
+GREEN = '\033[32m'
+RED = '\033[31m'
+YELLOW = '\033[33m'
+RESET = '\033[0m'
+
+
+def unquote(value):
+    value = value.strip()
+    if not value.startswith('"'):
+        value = value.split(';', 1)[0].strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+    return value
+
+
+def split_list(value):
+    return [v.strip() for v in unquote(value).split(',') if v.strip()]
+
+
+def read_array(section_name, key):
+    """account[] 是 PHP 陣列語法，ConfigParser 遇到重複 key 只留最後一個，所以逐行讀"""
+    values = []
+    section = None
+    pattern = re.compile(r'^' + re.escape(key) + r'\[\]\s*=')
+    with open(INI) as fp:
+        for line in fp:
+            line = line.strip()
+            if line.startswith('['):
+                section = line.strip('[]')
+            elif section == section_name and pattern.match(line):
+                values.append(unquote(line.split('=', 1)[1]))
+    return values
+
+
+def chart_names():
+    """charts/ 底下的 chart 名稱（不含 _ 開頭的範本）"""
+    if not os.path.isdir(CHARTS):
+        return []
+    return sorted(f[:-4] for f in os.listdir(CHARTS) if f.endswith('.ini') and RE_CHART.match(f[:-4]))
+
+
+DB_KEYS = ('ip', 'port', 'name', 'user', 'password', 'charset')
+SPEC_KEYS = ('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos')
+
+
+def check_chart_db(label, parser, get, errors):
+    """[db]：只能有 DB_KEYS；port 為整數；ip 留空時 name / user / password 也要留空"""
+    for opt in parser.options('db'):
+        if opt not in DB_KEYS:
+            errors.append('%s [db] 不認得的欄位：%s（可用：%s）' % (label, opt, '、'.join(DB_KEYS)))
+    ip = get('db', 'ip')
+    if ip and not re.match(r'^[A-Za-z0-9._:-]+$', ip):
+        errors.append('%s [db] ip 格式錯誤（只能是 IP 或主機名稱）' % label)
+    port = get('db', 'port')
+    if port and (not port.isdigit() or not 1 <= int(port) <= 65535):
+        errors.append('%s [db] port 必須是 1 ~ 65535 的整數' % label)
+    for key in ('name', 'charset'):
+        v = get('db', key)
+        if v and not re.match(r'^[A-Za-z0-9_$-]+$', v):
+            errors.append('%s [db] %s 只能有英文、數字、底線、$、-' % (label, key))
+    if not ip:
+        for key in ('name', 'user', 'password'):
+            if get('db', key):
+                errors.append('%s [db] 有填 %s 但沒有填 ip（ip 留空 = 使用 AISLE 自己的資料庫）' % (label, key))
+
+
+def check_spec(label, section, get, errors):
+    """spec 線：數字或留空；lower_oos <= lower_ooc < upper_ooc <= upper_oos"""
+    vals = {}
+    for key in SPEC_KEYS:
+        v = get(section, key)
+        if not v:
+            continue
+        try:
+            vals[key] = float(v)
+        except ValueError:
+            errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, key, v))
+    for i, a in enumerate(SPEC_KEYS):
+        for b in SPEC_KEYS[i + 1:]:
+            if a not in vals or b not in vals:
+                continue
+            same_side = a[:5] == b[:5]
+            if (vals[a] < vals[b]) if same_side else (vals[a] <= vals[b]):
+                errors.append('%s [%s] %s（%s）必須%s %s（%s）' % (
+                    label, section, a, vals[a], '大於等於' if same_side else '大於', b, vals[b]))
+
+
+def check_chart(name, errors, warnings):
+    """檢查一張 chart 的 ini 與 php"""
+    label = 'charts/%s.ini' % name
+    parser = RawConfigParser()
+    parser.optionxform = str
+    try:
+        with open(os.path.join(CHARTS, name + '.ini')) as fp:
+            parser.readfp(fp)
+    except Exception as e:  # 語法錯誤
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def get(section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    source = (get('page', 'source') or 'php').lower() if parser.has_section('page') else 'php'
+    if source not in ('php', 'sample'):
+        errors.append('%s [page] source 只能是 php 或 sample' % label)
+    for key in ('default_days', 'max_days'):
+        v = get('page', key) if parser.has_section('page') else ''
+        if v and (not v.isdigit() or int(v) < 1):
+            errors.append('%s [page] %s 必須是正整數' % (label, key))
+
+    if parser.has_section('db'):
+        check_chart_db(label, parser, get, errors)
+
+    plots = 0
+    for section in parser.sections():
+        if section in ('page', 'db'):
+            continue
+        if not RE_PLOT.match(section):
+            errors.append('%s 區段名稱錯誤：[%s]，應為 [page]、[db] 或 [plot.<小寫代號>]' % (label, section))
+            continue
+        plots += 1
+        if not split_list(get(section, 'params')):
+            errors.append('%s [%s] 沒有設定 params' % (label, section))
+        for opt in parser.options(section):
+            if opt.endswith('ymin') or opt.endswith('ymax'):
+                v = get(section, opt)
+                if v:
+                    try:
+                        float(v)
+                    except ValueError:
+                        errors.append('%s [%s] %s 必須是數字：%s' % (label, section, opt, v))
+        check_spec(label, section, get, errors)
+    if plots == 0:
+        errors.append('%s 沒有任何 [plot.xxx] 圖' % label)
+
+    php = os.path.join(CHARTS, name + '.php')
+    if source == 'php':
+        if not os.path.isfile(php):
+            errors.append('charts/%s.php 不存在（尚未寫好時可先把 ini 的 source 設為 sample）' % name)
+        else:
+            with open(php) as fp:
+                code = fp.read()
+            if not re.search(r'class\s+' + re.escape(name) + r'Chart\s+extends\s+ChartSource\b', code):
+                errors.append('charts/%s.php 裡找不到 class %sChart extends ChartSource' % (name, name))
+            if '尚未實作' in code:
+                warnings.append('charts/%s.php 似乎還沒寫好 SQL（仍有「尚未實作」），但 ini 的 source = php' % name)
+
+
+def main():
+    errors = []
+    warnings = []
+
+    parser = RawConfigParser()
+    parser.optionxform = str  # 保留 key 大小寫（EE / PE）
+    with open(INI) as fp:
+        parser.readfp(fp)
+
+    def get(section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    roles = parser.options('roles') if parser.has_section('roles') else []
+
+    # 選單分類
+    groups = set()
+    for section in parser.sections():
+        if section.startswith('group.'):
+            key = section[len('group.'):]
+            if not RE_KEY.match(key):
+                errors.append('[%s] 分類代號格式錯誤' % section)
+            groups.add(key)
+    used_groups = set()
+
+    # 頁面
+    pages = {}
+    for section in parser.sections():
+        if not section.startswith('page.'):
+            continue
+        key = section[len('page.'):]
+        if not RE_KEY.match(key):
+            errors.append('[%s] 頁面代號格式錯誤' % section)
+            continue
+        route = get(section, 'route') or ('module:' + key)
+        pages[key] = route
+        if route.startswith('module:'):
+            target = os.path.join(MODULES, route[len('module:'):].strip(), 'controller.php')
+            if not os.path.isfile(target):
+                errors.append('[%s] 找不到 %s' % (section, os.path.relpath(target, ROOT)))
+        else:
+            target = os.path.join(ROOT, route.lstrip('/'))
+            if not os.path.isfile(target):
+                errors.append('[%s] route 檔案不存在：%s' % (section, route))
+            elif route.lstrip('/').startswith('public/'):
+                with open(target) as fp:
+                    head = fp.read(4000)
+                if 'auth_check.php' not in head:
+                    errors.append('[%s] 獨立頁面 %s 沒有 require core/auth_check.php，任何人都能直接開啟' % (section, route))
+        group = get(section, 'group')
+        if group:
+            used_groups.add(group)
+            if group not in groups:
+                warnings.append('[%s] group "%s" 沒有對應的 [group.%s]，將以代號當分類標題' % (section, group, group))
+        for opt in parser.options(section):
+            if opt.startswith('action.'):
+                for r in split_list(parser.get(section, opt)):
+                    if r not in roles:
+                        errors.append('[%s] %s 的身份 %s 未定義' % (section, opt, r))
+
+    for g in sorted(groups - used_groups):
+        warnings.append('[group.%s] 沒有任何頁面使用' % g)
+
+    # 身份 → 頁面
+    access = {}
+    superusers = []
+    if not parser.has_section('access'):
+        errors.append('缺少 [access] 區段')
+    else:
+        for role in parser.options('access'):
+            if role not in roles:
+                errors.append('[access] 身份 %s 未定義於 [roles]' % role)
+            items = split_list(parser.get('access', role))
+            if '*' in items:
+                superusers.append(role)
+                access[role] = sorted(pages.keys())
+                continue
+            for p in items:
+                if p not in pages:
+                    errors.append('[access] %s 的頁面 %s 沒有對應的 [page.%s]' % (role, p, p))
+            access[role] = [p for p in items if p in pages]
+    for role in roles:
+        if role not in access:
+            warnings.append('身份 %s 沒有寫在 [access]，登入後看不到任何頁面' % role)
+
+    for key in sorted(pages):
+        if not any(key in access[r] for r in access if r not in superusers):
+            warnings.append('頁面 %s 只有 * 身份能使用（若是刻意的可忽略）' % key)
+
+    module_dirs = set(r[len('module:'):].strip() for r in pages.values() if r.startswith('module:'))
+    for name in sorted(os.listdir(MODULES)):
+        if os.path.isdir(os.path.join(MODULES, name)) and not name.startswith('_') and name not in module_dirs:
+            warnings.append('modules/%s 沒有登記在 config.ini，目前無法存取' % name)
+
+    # 圖表
+    names = chart_names()
+    lower = {}
+    for n in names:
+        if n.lower() in lower:
+            errors.append('charts/%s.ini 與 charts/%s.ini 只差大小寫，頁面代號會衝突' % (lower[n.lower()], n))
+        lower[n.lower()] = n
+    chart_pages = [k for k, r in pages.items() if r == 'module:charts']
+    for key in sorted(chart_pages):
+        if key not in lower:
+            errors.append('[page.%s] route = module:charts，但 charts/ 裡沒有同名（不分大小寫）的 ini' % key)
+        else:
+            check_chart(lower[key], errors, warnings)
+    for n in names:
+        if n.lower() not in chart_pages:
+            warnings.append('charts/%s.ini 沒有對應的 [page.%s]（route = "module:charts"），目前無法存取' % (n, n.lower()))
+
+    # 註冊
+    if parser.has_section('register'):
+        for key in ('listed_role', 'unlisted_role'):
+            role = get('register', key)
+            if key == 'unlisted_role' and role == '':
+                continue
+            if role not in roles:
+                errors.append('[register] %s "%s" 未定義於 [roles]' % (key, role))
+            elif role in superusers:
+                errors.append('[register] %s 不可設為超級身份 %s' % (key, role))
+    seen = set()
+    for account in read_array('ee_accounts', 'account'):
+        if not RE_ACCOUNT.match(account):
+            errors.append('[ee_accounts] 帳號格式錯誤：%s' % account)
+        if account.lower() in seen:
+            warnings.append('[ee_accounts] 帳號重複：%s' % account)
+        seen.add(account.lower())
+
+    print('== 身份可用頁面 ==')
+    for role in roles:
+        note = ' (*)' if role in superusers else ''
+        print('  %-6s%s: %s' % (role, note, ', '.join(access.get(role, [])) or '-'))
+    print('== EE 名單 (%d) ==' % len(seen))
+    print('  ' + (', '.join(sorted(seen)) or '-'))
+    print()
+    for w in warnings:
+        print(YELLOW + '[WARN]  ' + w + RESET)
+    for e in errors:
+        print(RED + '[ERROR] ' + e + RESET)
+    if not errors:
+        print(GREEN + '[OK] config.ini 檢查通過' + RESET)
+    return 1 if errors else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+#@@@ END count=12

@@ -176,6 +176,7 @@ body.is-guest #matrix-rain { opacity: 0.55; }
     letter-spacing: 2px;
 }
 .panel-body { padding: 14px; }
+.panel-head-aside { float: right; font-weight: normal; }
 .terminal .panel-body { font-size: 14px; }
 .terminal .line { white-space: pre-wrap; margin: 0; }
 
@@ -260,6 +261,7 @@ input:focus, select:focus, textarea:focus {
 .alert-error { border-color: #ff3b3b; color: #ff3b3b; background: rgba(40, 0, 0, 0.85); }
 .text-red { color: #ff3b3b; }
 .dim { color: #008f11; }
+label.label-bright { color: #00ff41; }
 
 /* ---------- 角色徽章 ---------- */
 .role-badge {
@@ -307,7 +309,11 @@ input.is-valid { border-color: #00ff41; }
 .form-foot { margin: 14px 0 0; text-align: center; }
 .register-box { width: 440px; }
 
-/* ---------- 手機版 ---------- */
+/* ---------- 風格切換按鈕（沒有 JavaScript 時隱藏） ---------- */
+.theme-toggle { display: none; }
+.js .theme-toggle { display: inline-block; }
+.theme-toggle-float { position: fixed; top: 12px; right: 16px; z-index: 3; background: rgba(0, 10, 3, 0.85); }
+
 /* ---------- charts 圖表頁（modules/charts） ---------- */
 input[type=date] {
     padding: 7px 10px;
@@ -341,6 +347,7 @@ input[type=date] {
 .cd-chart-tall { height: 440px; }
 .cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
 
+/* ---------- 手機版 ---------- */
 @media (max-width: 760px) {
     .shell { display: block; }
     .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }

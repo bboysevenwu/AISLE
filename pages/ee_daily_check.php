@@ -19,7 +19,7 @@ $items = array(
         <p class="dim">&gt; operator: <?php echo e($user['display_name']); ?></p>
         <?php foreach ($items as $item): ?>
             <p class="line">
-                <label class="inline" style="color:#00ff41">
+                <label class="inline label-bright">
                     <input type="checkbox" class="daily-item" id="<?php echo e($item['id']); ?>">
                     <?php echo e($item['label']); ?>
                 </label>

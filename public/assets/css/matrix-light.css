@@ -1,0 +1,134 @@
+/* =====================================================================
+   AISLE :: Matrix Theme（淺色版）
+   body 加上 theme-light 時才生效，只覆寫 matrix.css 的顏色，不動版面。
+   一樣不用 CSS 變數，以相容較舊的瀏覽器。
+   底色   #f2fbf4   淡綠白
+   主文字 #00591a   深綠（淺底上亮綠看不清楚，改用深綠）
+   強調   #008f11   綠（邊框、按鈕）
+   輔助   #2e6b3c   暗綠灰（次要文字）
+   線條   #b9e3c3   淡綠（分隔線）
+   警示   #c62828   紅
+   ===================================================================== */
+
+html.theme-light { background: #f2fbf4; }
+body.theme-light { background: #f2fbf4; color: #00591a; }
+
+body.theme-light a { color: #00801a; }
+body.theme-light a:hover { color: #003d12; text-shadow: none; text-decoration: underline; }
+body.theme-light ::selection { background: #008f11; color: #fff; }
+
+/* ---------- 背景 ---------- */
+body.theme-light #matrix-rain { opacity: 0.22; }
+body.theme-light.is-guest #matrix-rain { opacity: 0.45; }
+body.theme-light .crt-overlay {
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 80, 20, 0) 0px,
+        rgba(0, 80, 20, 0) 2px,
+        rgba(0, 80, 20, 0.04) 3px
+    );
+}
+
+/* ---------- 頂部列 / 選單 ---------- */
+body.theme-light .topbar {
+    border-bottom-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 10px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .brand { text-shadow: none; }
+body.theme-light #clock { color: #2e6b3c; }
+
+body.theme-light .sidebar { border-right-color: #b9e3c3; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .nav-title,
+body.theme-light .nav-icon,
+body.theme-light .nav-caret { color: #2e6b3c; }
+body.theme-light .sidebar li a:hover { background: #e3f6e8; border-left-color: #7fbf8e; }
+body.theme-light .sidebar li.active a { background: #c9ebd2; border-left-color: #008f11; text-shadow: none; font-weight: bold; }
+body.theme-light .sidebar .nav-group-toggle { color: #00591a; }
+body.theme-light .nav-group.has-active > .nav-group-toggle { color: #00591a; text-shadow: none; font-weight: bold; }
+
+/* ---------- 標題 ---------- */
+body.theme-light .page-title { text-shadow: none; }
+body.theme-light .glitch:hover::before { color: #00a832; }
+body.theme-light .glitch:hover::after  { color: #7fbf8e; }
+
+/* ---------- 面板 ---------- */
+body.theme-light .panel {
+    border-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 1px 6px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .panel-head { border-bottom-color: #00801a; color: #fff; background: #00801a; }
+body.theme-light .card-link { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .card-link:hover { border-color: #008f11; box-shadow: 0 2px 12px rgba(0, 143, 17, 0.25); }
+
+/* ---------- 表格 ---------- */
+body.theme-light .table th,
+body.theme-light .table td { border-bottom-color: #cfe9d6; }
+body.theme-light .table th { color: #2e6b3c; }
+body.theme-light .table tbody tr:hover { background: #e3f6e8; }
+
+/* ---------- 表單 ---------- */
+body.theme-light label { color: #2e6b3c; }
+body.theme-light label.label-bright { color: #00591a; }
+body.theme-light input[type=text],
+body.theme-light input[type=password],
+body.theme-light input[type=email],
+body.theme-light input[type=date],
+body.theme-light select,
+body.theme-light textarea {
+    border-color: #7fbf8e;
+    background: #fff;
+    color: #00591a;
+    color-scheme: light;
+}
+body.theme-light input:focus,
+body.theme-light select:focus,
+body.theme-light textarea:focus { border-color: #008f11; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+
+body.theme-light .btn { border-color: #008f11; color: #00591a; }
+body.theme-light .btn:hover { background: #008f11; color: #fff; box-shadow: 0 0 8px rgba(0, 143, 17, 0.4); }
+body.theme-light .btn-ghost { border-color: transparent; }
+body.theme-light .btn-ghost:hover { border-color: #008f11; }
+body.theme-light .btn-red { border-color: #c62828; color: #c62828; }
+body.theme-light .btn-red:hover { background: #c62828; color: #fff; box-shadow: 0 0 8px rgba(198, 40, 40, 0.4); }
+body.theme-light .theme-toggle-float { background: rgba(255, 255, 255, 0.9); }
+
+/* ---------- 訊息 ---------- */
+body.theme-light .alert { border-color: #008f11; background: #e3f6e8; }
+body.theme-light .alert-error { border-color: #c62828; color: #c62828; background: #fdecec; }
+body.theme-light .text-red { color: #c62828; }
+body.theme-light .dim { color: #2e6b3c; }
+
+/* ---------- 角色徽章 / 狀態燈 ---------- */
+body.theme-light .role-badge { border-color: #00801a; }
+body.theme-light .role-EE    { color: #00801a; border-color: #00801a; }
+body.theme-light .role-PE    { color: #00796b; border-color: #00796b; }
+body.theme-light .role-ADMIN { color: #c62828; border-color: #c62828; }
+body.theme-light .led-run  { background: #00b82e; box-shadow: 0 0 6px rgba(0, 184, 46, 0.6); }
+body.theme-light .led-idle { background: #8fbf9a; }
+body.theme-light .led-down { background: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.6); }
+
+/* ---------- 登入 / 註冊頁 ---------- */
+body.theme-light .login-box .logo { text-shadow: 0 0 6px rgba(0, 143, 17, 0.35); }
+body.theme-light .login-box .tagline { color: #2e6b3c; }
+
+/* ---------- 表單驗證 ---------- */
+body.theme-light .field-error { color: #c62828; }
+body.theme-light input.is-invalid,
+body.theme-light select.is-invalid { border-color: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.3); }
+body.theme-light input.is-valid { border-color: #008f11; }
+body.theme-light .hint { color: #00801a; }
+body.theme-light .hint.text-red { color: #c62828; }
+body.theme-light .meter { background: #d6eedc; }
+body.theme-light .meter span { background: #00a832; box-shadow: none; }
+body.theme-light .meter span.weak { background: #c62828; box-shadow: none; }
+
+/* ---------- charts 圖表頁 ---------- */
+body.theme-light .cd-box-head { border-bottom-color: #b9e3c3; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    body.theme-light .sidebar { border-bottom-color: #b9e3c3; }
+    body.theme-light .sidebar li.active a { border-bottom-color: #008f11; }
+}

@@ -67,6 +67,7 @@ AISLE/
 │   ├── .htaccess
 │   └── assets/
 │       ├── css/matrix.css     # 駭客任務主題
+│       ├── css/matrix-light.css # 淺色版（body.theme-light 時覆寫顏色）
 │       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
 │       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
 │       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
@@ -388,6 +389,21 @@ Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作
 色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
 
 截圖見 `docs/screenshots/`。
+
+### 風格切換（深色 / 淺色）
+
+上方列（登入、註冊頁在右上角）有 `[ ☀ 淺色 ]` / `[ ☾ 深色 ]` 按鈕，可在「駭客任務」與「淺色底的駭客任務」之間切換，不用重新整理。
+
+| 項目 | 說明 |
+|---|---|
+| 預設 | 深色（駭客任務） |
+| 記憶方式 | cookie `aisle_theme`（`light` / 沒有＝深色），path 為 `base_url` + `/`，一年；每台電腦各自記憶，不寫資料庫 |
+| 套用 | PHP 的 `current_theme()` 讀 cookie，`templates/layout.php` 輸出時就在 `<html>`、`<body>` 加上 `theme-light`，換頁不會閃爍 |
+| 樣式 | `css/matrix-light.css` 全部是 `body.theme-light ...` 覆寫規則，`matrix.css` 本身不變 |
+| 數位雨 / 圖表 | `matrix-rain.js` 依 body class 換色；`charts.js` 收到 `aisle:theme` 事件後換配色並用快取重畫 |
+
+淺色版色票：`#f2fbf4` 底色、`#00591a` 主文字、`#008f11` 強調、`#2e6b3c` 次要文字、`#c62828` 警示紅。
+新頁面請不要在 HTML 寫死顏色（`style="color:..."`），改用 class，淺色版才會跟著變。
 
 ---
 

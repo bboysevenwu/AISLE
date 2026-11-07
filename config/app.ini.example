@@ -36,13 +36,6 @@ session_idle     = 1800
 ; HTTPS 環境請設為 1
 cookie_secure    = 0
 
-[charts_db]
-; 圖表（charts/<名稱>.php）查詢資料用的資料庫連線，所有 chart 共用
-; host 留空 = 直接使用上面 [database] 的 AISLE 資料庫
-; 建議使用只有 SELECT 權限的帳號
-host     = ""
-port     = 3306
-name     = ""
-user     = ""
-password = ""
-charset  = "utf8mb4"
+
+; 圖表（charts/<名稱>.php）的資料庫連線不在這裡設定，改在各 chart 自己的 charts/<名稱>.ini 的 [db]
+; （舊版的 [charts_db] 區段已不再使用，可以刪除）

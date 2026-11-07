@@ -17,8 +17,19 @@
  *         ...
  *       )
  *       Data 裡每個參數的陣列與 Date 一一對應（同樣長度），該時間沒有值的放 null；沒有的參數可以不回傳。
+ *       選用 'Url' => array(url1, url2, ...)：與 Date 等長，單台趨勢圖點擊該時間點的數據點會在新分頁開啟；
+ *       只接受 http://、https:// 或 / 開頭的網址，沒有網址的位置放 null。沒有 Url 時與原本一樣。
  *
  * 排序、型別轉換、空值處理、只留 ini 用到的參數，都由 ChartsController 統一做，這裡回傳順序不拘。
+ *
+ * 選用：machines()
+ *   有些 table 用 machine_id 而不是 tool_id（例 table M1BF_HP23，HP23 是 APAN01 的 machine_id）。
+ *   實作 machines() 回傳 tool_id => machine_id 對照，例 array('APAN01' => 'HP23', ...)，就可以：
+ *     - 不寫 tools()：預設用 machines() 的 tool_id
+ *     - $this->machineOf('APAN01') → 'HP23'；$this->toolOf('HP23') → 'APAN01'
+ *     - $this->machinesOf($tools) → 這些機台的 machine_id（給 IN (...) 用）
+ *     - series() 回傳的 key 可以直接是 machine_id，controller 會自動換成 tool_id
+ *   網頁上顯示的機台名稱一律是 tool_id。
  * 錯誤時 throw RuntimeException。
  *
  * 可用的工具：
@@ -27,12 +38,40 @@
  *   self::pivot(...)               長表（一列一個參數值）→ 資料格式
  *   self::wide(...)                寬表（每個參數一個欄位）→ 資料格式
  *   self::merge($a, $b, ...)       多個 table 的結果依機台 + 時間合併
+ *   self::table($name)             把組出來的 table 名稱（例 'M1BF_' . $machineId）檢查後加上 `反引號`
  */
 abstract class ChartSource
 {
-    private static $pdo = null;
+    /** 已開啟的連線，key = 連線設定（同一個 request 內相同設定共用一條） */
+    private static $pdos = array();
 
-    abstract public function tools();
+    /** @var ChartConfig 這張 chart 的設定（create() 設定） */
+    private $cfg = null;
+
+    /** @var array|null tool_id => machine_id（machines() 的結果，第一次使用時讀取） */
+    private $machineMap = null;
+
+    /**
+     * 這張 chart 的全部機台代號（tool_id）。
+     * 有實作 machines() 時預設回傳它的 tool_id，否則必須自己實作
+     */
+    public function tools()
+    {
+        $map = $this->machineMap();
+        if (!$map) {
+            throw new RuntimeException('charts/<名稱>.php 必須實作 tools() 或 machines()');
+        }
+        return array_keys($map);
+    }
+
+    /**
+     * 選用：tool_id => machine_id 對照，例 array('APAN01' => 'HP23', 'APAN02' => 'HP24')
+     * 可以直接寫死，也可以用 $this->fetchAll() 從對照表查出來。沒有 machine_id 的 table 不用實作
+     */
+    public function machines()
+    {
+        return array();
+    }
 
     abstract public function series($tools, $params, $start, $end);
 
@@ -60,40 +99,38 @@ abstract class ChartSource
         if (!($obj instanceof ChartSource)) {
             throw new RuntimeException($label . ' 的 ' . $class . ' 必須 extends ChartSource');
         }
+        $obj->cfg = $cfg;
         return $obj;
     }
 
     // =====================================================================
     // 資料庫
     // ---------------------------------------------------------------------
-    // 連線設定在 config/app.ini 的 [charts_db]（所有 chart 共用）：
-    //   host / port / name / user / password / charset
-    // [charts_db] 沒有填 host 時，直接用 AISLE 自己的 [database] 連線。
+    // 連線設定在各 chart 自己的 charts/<名稱>.ini 的 [db]：
+    //   ip / port / name / user / password / charset
+    // [db] 沒有填 ip（或沒有 [db]）時，直接用 AISLE 自己的 [database] 連線。
     // =====================================================================
 
     /** @return PDO */
     protected function db()
     {
-        if (self::$pdo === null) {
-            $c = Config::section('charts_db');
-            if (trim((string) array_get($c, 'host', '')) === '') {
-                self::$pdo = Database::pdo();
-            } else {
-                $dsn = sprintf(
-                    'mysql:host=%s;port=%d;dbname=%s;charset=%s',
-                    trim((string) $c['host']),
-                    (int) array_get($c, 'port', 3306),
-                    array_get($c, 'name', ''),
-                    array_get($c, 'charset', 'utf8mb4')
-                );
-                self::$pdo = new PDO($dsn, array_get($c, 'user', ''), array_get($c, 'password', ''), array(
-                    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES   => false,
-                ));
-            }
+        $c = $this->cfg === null ? null : $this->cfg->db();
+        if ($c === null) {
+            return Database::pdo();
         }
-        return self::$pdo;
+        $dsn = sprintf('mysql:host=%s;port=%d;charset=%s', $c['ip'], $c['port'], $c['charset']);
+        if ($c['name'] !== '') {
+            $dsn .= ';dbname=' . $c['name'];
+        }
+        $key = $dsn . "\n" . $c['user'];
+        if (!isset(self::$pdos[$key])) {
+            self::$pdos[$key] = new PDO($dsn, $c['user'], $c['password'], array(
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+            ));
+        }
+        return self::$pdos[$key];
     }
 
     /** 查詢並回傳所有資料列（關聯陣列）。參數一律用 ? 綁定，不要把值串進 SQL 字串 */
@@ -112,31 +149,132 @@ abstract class ChartSource
     }
 
     // =====================================================================
+    // tool_id / machine_id 對照
+    // =====================================================================
+
+    /** machines() 的結果（只讀一次）；key、value 都轉成字串並去掉空白 */
+    protected function machineMap()
+    {
+        if ($this->machineMap === null) {
+            $map = array();
+            $raw = $this->machines();
+            foreach (is_array($raw) ? $raw : array() as $tool => $machine) {
+                $tool = trim((string) $tool);
+                $machine = trim((string) $machine);
+                if ($tool !== '' && $machine !== '') {
+                    $map[$tool] = $machine;
+                }
+            }
+            $this->machineMap = $map;
+        }
+        return $this->machineMap;
+    }
+
+    /** tool_id → machine_id；沒有對照時拋出錯誤（避免查錯機台） */
+    protected function machineOf($tool)
+    {
+        $map = $this->machineMap();
+        if (!isset($map[$tool])) {
+            throw new RuntimeException('machines() 裡沒有機台 ' . $tool . ' 的 machine_id');
+        }
+        return $map[$tool];
+    }
+
+    /** machine_id → tool_id；找不到回傳 null */
+    protected function toolOf($machine)
+    {
+        $tool = array_search((string) $machine, $this->machineMap(), true);
+        return $tool === false ? null : $tool;
+    }
+
+    /** 多台 tool_id → machine_id 陣列（順序相同） */
+    protected function machinesOf($tools)
+    {
+        $out = array();
+        foreach ($tools as $t) {
+            $out[] = $this->machineOf($t);
+        }
+        return $out;
+    }
+
+    /**
+     * series() 結果的 key 是 machine_id 時換成 tool_id（controller 呼叫，部署者不用管）
+     * 已經是 tool_id 或對照不到的 key 原樣保留；換完後同一台有兩份時依時間合併
+     */
+    public function toToolKeys($data)
+    {
+        if (!is_array($data) || !$this->machineMap()) {
+            return $data;
+        }
+        $map = $this->machineMap();
+        $out = array();
+        foreach ($data as $key => $series) {
+            $key = (string) $key;
+            $tool = isset($map[$key]) ? $key : $this->toolOf($key);
+            if ($tool === null) {
+                $tool = $key;
+            }
+            if (isset($out[$tool])) {
+                $merged = self::merge(array($tool => $out[$tool]), array($tool => $series));
+                $out[$tool] = $merged[$tool];
+            } else {
+                $out[$tool] = $series;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * 組出來的 table 名稱（例 'M1BF_' . $this->machineOf($tool)）檢查後加上反引號。
+     * table 名稱不能用 ? 綁定，所以一定要經過這裡，只允許英文、數字、底線（可含一個 . 指定資料庫）
+     */
+    public static function table($name)
+    {
+        $name = (string) $name;
+        if (!preg_match('/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$/', $name)) {
+            throw new RuntimeException('table 名稱格式錯誤：' . $name);
+        }
+        return '`' . str_replace('.', '`.`', $name) . '`';
+    }
+
+    // =====================================================================
     // 轉換工具
     // =====================================================================
 
     /**
      * 長表（一列一個參數值）→ 資料格式
      *   pivot($rows, 'tool_id', 'd', 'param', 'value')
+     *   pivot($rows, 'tool_id', 'd', 'param', 'value', 'url')   第 6 個參數（選用）：網址欄位 → 回傳多一個 Url
      * 同一台同一時間的不同參數合併成同一個 Date，缺少的參數補 null
      */
-    public static function pivot($rows, $toolCol, $dateCol, $paramCol, $valueCol)
+    public static function pivot($rows, $toolCol, $dateCol, $paramCol, $valueCol, $urlCol = null)
     {
         $tmp = array();     // tool => date => param => value
         $params = array();  // tool => param => true
+        $urls = array();    // tool => date => url（同一時間取第一個非空的）
         foreach ($rows as $r) {
             $tool = (string) $r[$toolCol];
-            $tmp[$tool][(string) $r[$dateCol]][(string) $r[$paramCol]] = $r[$valueCol];
+            $date = (string) $r[$dateCol];
+            $tmp[$tool][$date][(string) $r[$paramCol]] = $r[$valueCol];
             $params[$tool][(string) $r[$paramCol]] = true;
+            if ($urlCol !== null && !isset($urls[$tool][$date]) && isset($r[$urlCol]) && $r[$urlCol] !== '') {
+                $urls[$tool][$date] = (string) $r[$urlCol];
+            }
         }
         $out = array();
         foreach ($tmp as $tool => $byDate) {
             ksort($byDate);
-            $series = array('Date' => array_keys($byDate), 'Data' => array());
+            $series = array('Date' => array_map('strval', array_keys($byDate)), 'Data' => array());
             foreach (array_keys($params[$tool]) as $p) {
                 $series['Data'][$p] = array();
                 foreach ($byDate as $values) {
                     $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            if ($urlCol !== null) {
+                $series['Url'] = array();
+                foreach (array_keys($byDate) as $date) {
+                    $series['Url'][] = isset($urls[$tool][(string) $date]) ? $urls[$tool][(string) $date] : null;
                 }
             }
             $out[$tool] = $series;
@@ -148,8 +286,9 @@ abstract class ChartSource
      * 寬表（一列一個時間點、每個參數一個欄位）→ 資料格式
      *   $map 欄位名稱就是參數名稱時：array('M1BF_Z_C1', 'M1BF_Z_C2')
      *   欄位名稱不同時給對照表：     array('M1BF_Z_C1' => 'c1', 'M1BF_Z_C2' => 'c2')（參數 => 欄位）
+     *   第 5 個參數（選用）：網址欄位，例 wide($rows, 'tool_id', 'd', $map, 'url') → 回傳多一個 Url
      */
-    public static function wide($rows, $toolCol, $dateCol, $map)
+    public static function wide($rows, $toolCol, $dateCol, $map, $urlCol = null)
     {
         $cols = array();  // param => column
         foreach ($map as $k => $v) {
@@ -163,10 +302,16 @@ abstract class ChartSource
                 foreach ($cols as $p => $c) {
                     $out[$tool]['Data'][$p] = array();
                 }
+                if ($urlCol !== null) {
+                    $out[$tool]['Url'] = array();
+                }
             }
             $out[$tool]['Date'][] = (string) $r[$dateCol];
             foreach ($cols as $p => $c) {
                 $out[$tool]['Data'][$p][] = array_key_exists($c, $r) ? $r[$c] : null;
+            }
+            if ($urlCol !== null) {
+                $out[$tool]['Url'][] = isset($r[$urlCol]) && $r[$urlCol] !== '' ? (string) $r[$urlCol] : null;
             }
         }
         return $out;
@@ -182,6 +327,8 @@ abstract class ChartSource
     {
         $tmp = array();     // tool => date => param => value
         $params = array();  // tool => param => true
+        $urls = array();    // tool => date => url（先出現的優先）
+        $withUrl = array(); // tool => true：有任何一份結果帶 Url
         foreach (func_get_args() as $data) {
             if (!is_array($data)) {
                 continue;
@@ -195,6 +342,15 @@ abstract class ChartSource
                 foreach ($dates as $date) {
                     if (!isset($tmp[$tool][(string) $date])) {
                         $tmp[$tool][(string) $date] = array();
+                    }
+                }
+                if (isset($s['Url']) && is_array($s['Url'])) {
+                    $withUrl[$tool] = true;
+                    $col = array_values($s['Url']);
+                    foreach ($dates as $i => $date) {
+                        if (!isset($urls[$tool][(string) $date]) && isset($col[$i]) && $col[$i] !== '') {
+                            $urls[$tool][(string) $date] = (string) $col[$i];
+                        }
                     }
                 }
                 foreach ($s['Data'] as $p => $col) {
@@ -217,6 +373,12 @@ abstract class ChartSource
                 $series['Data'][$p] = array();
                 foreach ($byDate as $values) {
                     $series['Data'][$p][] = array_key_exists($p, $values) ? $values[$p] : null;
+                }
+            }
+            if (isset($withUrl[$tool])) {
+                $series['Url'] = array();
+                foreach (array_keys($byDate) as $date) {
+                    $series['Url'][] = isset($urls[$tool][(string) $date]) ? $urls[$tool][(string) $date] : null;
                 }
             }
             $out[$tool] = $series;

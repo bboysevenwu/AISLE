@@ -244,25 +244,28 @@ crontab -e
 
 每張圖表（BSLr、M1BF…）是選單「圖表」底下的一頁，由 `charts/<名稱>.ini` 與 `charts/<名稱>.php` 定義（說明見 README 第 10 節）。內附的 M1BF 預設使用範例資料（`source = sample`），部署後即可看到畫面。
 
-1. 在主機的 `config/app.ini` 加上圖表用的資料庫連線（範本見 `app.ini.example` 的 `[charts_db]`；`host` 留空則使用 AISLE 自己的資料庫）：
+1. 每張圖表的資料庫連線寫在主機上的 `charts/<名稱>.ini` 的 `[db]`（`ip` 留空則使用 AISLE 自己的資料庫）：
    ```ini
-   [charts_db]
-   host     = "10.x.x.x"
+   [db]
+   ip       = "10.x.x.x"
    port     = 3306
    name     = "資料庫名稱"
    user     = "唯讀帳號"
    password = "密碼"
    charset  = "utf8mb4"
    ```
-   建議用只有 SELECT 權限的帳號：
+   帳號密碼只填在主機上，**不要 commit 到 GitHub**；之後的單檔更新若包含這個 ini，套用前先記下 `[db]`，套用後再填回（`apply_update.py` 會先備份原檔）。
+   建議 `chmod 640 charts/*.ini`，並用只有 SELECT 權限的帳號：
    ```sql
    GRANT SELECT ON `資料庫`.* TO '唯讀帳號'@'AISLE 主機 IP' IDENTIFIED BY '密碼';
    ```
 2. 新增圖表：`bash scripts/shell/new_chart.sh BSLr`，建立 `charts/BSLr.ini`、`charts/BSLr.php`
-3. 編輯 `charts/BSLr.ini`：`[plot.xxx]` 設定哪些參數畫在同一張圖、各區塊開關與 Y 軸上下限；`[page]` 設定機型規則、預設天數。參數名稱必須與 `BSLr.php` 回傳的名稱完全一致
+3. 編輯 `charts/BSLr.ini`：`[plot.xxx]` 設定哪些參數畫在同一張圖、各區塊開關、Y 軸上下限與 spec 線（`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可留空）；`[page]` 設定機型規則、預設天數。參數名稱必須與 `BSLr.php` 回傳的名稱完全一致
 4. 編輯 `charts/BSLr.php`：在 `tools()`、`series()` 寫 SQL，用 `pivot()` / `wide()` 轉換、不同 table 用 `merge()` 合併（檔案內附三種寫法），寫好後把 ini 的 `source` 改成 `php`
 5. 把腳本印出的 `[page.bslr]` 區段貼進 `config/config.ini`，並把 `bslr` 加到 `[access]` 要看得到的身份
 6. `python scripts/python/check_config.py` 檢查，再以 EE 或 PE 帳號登入開啟頁面；`debug = 1` 時 SQL 錯誤會直接顯示在圖表中
+
+由使用 `config/app.ini` `[charts_db]` 的版本升級時：把連線設定搬到每張圖表 ini 的 `[db]`（`host` 改名為 `ip`），`[charts_db]` 可以刪除。
 
 由舊版圖表 Demo 升級時：`config/app.ini` 的 `[chart_demo]` 區段可以刪除；舊網址 `index.php?m=chart_demo` 改為 `index.php?m=m1bf`。
 

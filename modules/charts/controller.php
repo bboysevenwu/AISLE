@@ -15,7 +15,8 @@
  *
  * 回傳格式：
  *   { "APAN01": { "Date": ["2026-01-01", ...],
- *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... } }, ... }
+ *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... },
+ *                 "Url":  ["http://...", null, ...] }, ... }      ← 選用：series() 有回傳 Url 才有
  * 機台依名稱自然排序，每台內部依時間排序；Data 只含 ini 用到的參數，
  * 每個參數陣列與 Date 一樣長，沒有值的位置是 null。錯誤時回 HTTP 400 / 500 + {"ok":false,"error":"..."}
  *
@@ -69,6 +70,7 @@ class ChartsController extends Controller
             $tools = $this->sortTools($this->source()->tools());
             $params = $cfg->params();
             $data = $tools ? $this->source()->series($tools, $params, $range[0], $range[1]) : array();
+            $data = $this->source()->toToolKeys($data);   // machine_id → tool_id
             $this->output($this->normalize($data, $tools, $params));
         } catch (Exception $e) {
             $this->json(array('ok' => false, 'error' => $this->errorMessage($e)), 500);
@@ -152,6 +154,7 @@ class ChartsController extends Controller
      *   - 只保留 $tools 中的機台，並依 $tools 的順序輸出
      *   - 每台依 Date 排序；Data 只保留 $params，依 $params 的順序輸出，缺少的參數整列補 null
      *   - 數值轉成數字，不是數字的轉成 null；所有參數都是 null 的時間點丟掉
+     *   - 有 Url（與 Date 等長）時跟著 Date 一起排序保留；只接受 http(s):// 或 / 開頭的網址，其他轉成 null
      */
     private function normalize($data, $tools, $params)
     {
@@ -162,6 +165,8 @@ class ChartsController extends Controller
                 continue;
             }
             $dates = array_values($data[$tool]['Date']);
+            $hasUrl = isset($data[$tool]['Url']) && is_array($data[$tool]['Url']);
+            $urls = $hasUrl ? array_values($data[$tool]['Url']) : array();
             $cols = array();
             foreach ($params as $p) {
                 $cols[$p] = isset($data[$tool]['Data'][$p]) && is_array($data[$tool]['Data'][$p])
@@ -180,7 +185,7 @@ class ChartsController extends Controller
                     $values[$p] = $v;
                 }
                 if ($any) {
-                    $rows[] = array((string) $date, $values);
+                    $rows[] = array((string) $date, $values, $hasUrl ? self::safeUrl(isset($urls[$i]) ? $urls[$i] : null) : null);
                 }
             }
             if (!$rows) {
@@ -191,15 +196,34 @@ class ChartsController extends Controller
             foreach ($params as $p) {
                 $series['Data'][$p] = array();
             }
+            if ($hasUrl) {
+                $series['Url'] = array();
+            }
             foreach ($rows as $r) {
                 $series['Date'][] = $r[0];
                 foreach ($params as $p) {
                     $series['Data'][$p][] = $r[1][$p];
                 }
+                if ($hasUrl) {
+                    $series['Url'][] = $r[2];
+                }
             }
             $out[$tool] = $series;
         }
         return $out;
+    }
+
+    /** 點擊數據點要開的網址：只接受 http://、https:// 或 / 開頭的站內路徑（不含 //），其他（javascript: 等）回傳 null */
+    private static function safeUrl($url)
+    {
+        if (!is_string($url)) {
+            return null;
+        }
+        $url = trim($url);
+        if (preg_match('#^https?://[^\s]+$#i', $url) || preg_match('#^/(?!/)[^\s]*$#', $url)) {
+            return $url;
+        }
+        return null;
     }
 
     public static function cmpRow($a, $b)

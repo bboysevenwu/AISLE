@@ -434,6 +434,14 @@ quick_days   = "7, 30, 90"  ; 快速區間按鈕
 model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
 model.2000   = "PAP"
 
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
 [plot.m1bf_z]
 title  = "M1BF_Z"
 params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
@@ -443,6 +451,10 @@ tbt    = On                        ; 是否畫歷史趨勢排排站
 ymin   = 0                         ; Y 軸下限（三張圖共用）
 ymax   = 6                         ; Y 軸上限（三張圖共用）
 newest_ymax = 5                    ; 只改最新值排排站的上限
+upper_oos = 5                      ; spec 線（可留空 = 不畫）
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
 
 [plot.m1bf_ry]
 title  = "M1BF_Ry"
@@ -456,6 +468,7 @@ tbt_ymax = 6
 - 某區塊沒有任何一組開啟時，整個區塊不顯示
 - 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
 - Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
 - 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
 
 ### 資料來源：`charts/<名稱>.php`
@@ -503,8 +516,12 @@ class BSLrChart extends ChartSource
 | `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
 | `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
 | `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+| `$this->machineOf($tool)` / `$this->machinesOf($tools)` / `$this->toolOf($machine)` | tool_id 與 machine_id 互換（要先實作 `machines()`） |
+| `self::table($name)` | 組出來的 table 名稱（例 `'M1BF_' . $machineId`）檢查後加反引號；table 名稱不能用 `?` 綁定，一定要經過它 |
 
-資料庫連線在 `config/app.ini` 的 `[charts_db]`（host / port / name / user / password，所有圖表共用）；`host` 留空時使用 AISLE 自己的 `[database]`。
+**table 用 machine_id 時**（例 table `M1BF_HP23`，`HP23` 是 `APAN01` 的 machine_id）：在 `<名稱>.php` 實作 `machines()`，回傳 `array('APAN01' => 'HP23', ...)`（可寫死或從對照表查）。實作後 `tools()` 可以省略（預設用 `machines()` 的 tool_id），`series()` 回傳的 key 也可以直接是 machine_id，controller 會自動換成 tool_id；網頁上的機台名稱一律是 tool_id。範例見 `charts/_template.php` 的寫法 4（每台一個 table）、寫法 5（machine_id 欄位）。
+
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
 
 ### 資料格式與載入
 
@@ -517,6 +534,7 @@ class BSLrChart extends ChartSource
 }
 ```
 
+- 選用 `"Url": [...]`（與 `Date` 等長）：單台機台趨勢圖點擊數據點會在瀏覽器新分頁開啟該時間點的網址，tooltip 會提示「點擊數據點開啟連結」，資料表多一欄 URL。只接受 `http://`、`https://` 或 `/` 開頭的網址（其他如 `javascript:` 一律忽略）；`pivot()` / `wide()` 最後多給網址欄位名稱即可產生，`merge()` 會保留。沒有 `Url` 時與原本相同
 - 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
 - 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
 - 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）

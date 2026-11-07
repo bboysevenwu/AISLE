@@ -8,6 +8,7 @@
  * 後端回傳格式：
  *   { "APAN01": { "Date": [...], "Data": { "M1BF_Z_C1": [...], "M1BF_Z_C2": [...] } }, ... }
  *   每個參數陣列與 Date 等長，沒有值的位置是 null
+ *   選用 "Url": [...]（與 Date 等長）：單台趨勢圖點擊數據點時在新分頁開啟該網址
  *
  * 資料載入方式：
  *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台、全部參數」的資料存在 cache，所有圖都從這份資料取得：
@@ -47,6 +48,14 @@
     var AXIS = '#00661a';      // 軸線
     var NEUTRAL = '#7dffb0';   // 圖例中代表「參數」的中性色
     var BAND = 'rgba(0, 255, 65, 0.05)';  // TBT 交錯底色
+    var OOS_COLOR = '#ff3b3b';  // spec 線：OOS（規格界限）
+    var OOC_COLOR = '#ffb000';  // spec 線：OOC（管制界限）
+    var SPEC_KEYS = [
+        { key: 'upper_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' },
+        { key: 'upper_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
+        { key: 'lower_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
+        { key: 'lower_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' }
+    ];
     var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
 
     var COLOR = {};
@@ -88,7 +97,7 @@
         };
     }
 
-    /** Y 軸；config 有設上下限就固定，否則自動。kind = single / newest / tbt */
+    /** Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt */
     function valueAxis(group, kind) {
         var lim = (group.limits && group.limits[kind]) || {};
         var axis = {
@@ -101,13 +110,101 @@
             splitLine: { lineStyle: { color: GRID } },
             scale: kind !== 'newest'
         };
+        var spec = specValues(group);
         if (lim.min !== null && lim.min !== undefined) {
             axis.min = lim.min;
+        } else if (spec.length) {
+            axis.min = function (v) { return specBounds(v, spec, kind).min; };
         }
         if (lim.max !== null && lim.max !== undefined) {
             axis.max = lim.max;
+        } else if (spec.length) {
+            axis.max = function (v) { return specBounds(v, spec, kind).max; };
         }
         return axis;
+    }
+
+    /** 這組圖有設定的 spec 值（數字陣列） */
+    function specValues(group) {
+        var out = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v !== null && v !== undefined) {
+                out.push(v);
+            }
+        });
+        return out;
+    }
+
+    /** 資料範圍 v（{min, max}）加上 spec 線後的 Y 軸上下限，取整到刻度間距 */
+    function specBounds(v, spec, kind) {
+        var lo = Math.min.apply(null, spec);
+        var hi = Math.max.apply(null, spec);
+        if (isFinite(v.min)) {
+            lo = Math.min(lo, v.min);
+        }
+        if (isFinite(v.max)) {
+            hi = Math.max(hi, v.max);
+        }
+        if (kind === 'newest') {   // 長條圖從 0 開始
+            lo = Math.min(lo, 0);
+            hi = Math.max(hi, 0);
+        }
+        var span = hi - lo;
+        if (span <= 0) {
+            span = Math.abs(hi) || 1;
+        }
+        var step = niceStep(span / 5);
+        var min = Math.floor(lo / step) * step;
+        var max = Math.ceil(hi / step) * step;
+        return { min: +min.toFixed(10), max: +max.toFixed(10) };
+    }
+
+    function niceStep(x) {
+        var p = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
+        var f = x / p;
+        return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+    }
+
+    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒設定 spec 時回傳 null */
+    function specSeries(group) {
+        var lines = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v === null || v === undefined) {
+                return;
+            }
+            lines.push({
+                name: k.key,
+                yAxis: v,
+                lineStyle: { color: k.color, type: k.type, width: 1.5 },
+                label: {
+                    show: true,
+                    position: k.key.indexOf('upper') === 0 ? 'insideEndTop' : 'insideEndBottom',
+                    color: k.color,
+                    fontFamily: FONT,
+                    formatter: k.label + ' ' + fmt(v)
+                }
+            });
+        });
+        if (!lines.length) {
+            return null;
+        }
+        return {
+            name: '_spec',
+            type: 'line',
+            data: [],
+            silent: true,
+            markLine: { silent: true, symbol: 'none', animation: false, data: lines }
+        };
+    }
+
+    /** 有 spec 時把輔助 series 加到 series 陣列最後 */
+    function pushSpec(series, group) {
+        var s = specSeries(group);
+        if (s) {
+            series.push(s);
+        }
     }
 
     function axisLine() {
@@ -166,6 +263,7 @@
     /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
     function show(box, data, draw) {
         box.shown = data;
+        box.urlInfo = null;
         if ($.isEmptyObject(data)) {
             showMessage(box.chart, '> 查無資料 // NO DATA');
         } else {
@@ -181,6 +279,15 @@
         $.each(params, function (i, p) { head += '<th>' + AISLE.escape(p) + '</th>'; });
         head += '</tr>';
         var rows = [];
+        var withUrl = false;
+        $.each(box.shown, function (tool, s) {
+            if ($.isArray(s.Url)) {
+                withUrl = true;
+            }
+        });
+        if (withUrl) {
+            head = head.replace(/<\/tr>$/, '<th>URL</th></tr>');
+        }
         $.each(box.shown, function (tool, s) {
             if (!$.isArray(s.Date)) {
                 // newest：各參數的日期分開存，值後面附上日期
@@ -195,6 +302,10 @@
                 var tr = '<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) + '</td>';
                 for (var j = 0; j < params.length; j++) {
                     tr += '<td>' + fmt(s.Data[params[j]] ? s.Data[params[j]][i] : null) + '</td>';
+                }
+                if (withUrl) {
+                    var u = $.isArray(s.Url) ? safeUrl(s.Url[i]) : null;
+                    tr += '<td>' + (u ? '<a href="' + AISLE.escape(u) + '" target="_blank" rel="noopener noreferrer">開啟</a>' : '-') + '</td>';
                 }
                 rows.push(tr + '</tr>');
             }
@@ -214,6 +325,7 @@
             }
         }
         var s = data[tool];
+        var urls = $.isArray(s.Url) ? s.Url : null;
         var series = [];
         $.each(group.params, function (pi, param) {
             var points = [];
@@ -238,6 +350,28 @@
         opt.legend.formatter = function (name) { return shortName(name, group); };
         opt.tooltip.trigger = 'axis';
         opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        if (urls) {
+            // 有 Url：tooltip 多一行提示，點數據點開新分頁（見 bindUrlClick）
+            opt.tooltip.formatter = function (params) {
+                var html = '';
+                var idx = null;
+                $.each(params, function (i, p) {
+                    if (p.seriesName === '_spec') {
+                        return;
+                    }
+                    if (!html) {
+                        html = AISLE.escape(s.Date[p.dataIndex]);
+                        idx = p.dataIndex;
+                    }
+                    html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
+                });
+                if (idx !== null && safeUrl(urls[idx])) {
+                    html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+                }
+                return html;
+            };
+            box.urlInfo = { dates: s.Date, urls: urls, cols: $.map(group.params, function (p) { return [s.Data[p] || []]; }) };
+        }
         opt.xAxis = {
             type: 'time',
             axisLine: axisLine(),
@@ -246,6 +380,7 @@
         };
         opt.yAxis = valueAxis(group, 'single');
         opt.dataZoom = [{ type: 'inside' }];
+        pushSpec(series, group);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -307,6 +442,7 @@
             axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
         };
         opt.yAxis = valueAxis(group, 'newest');
+        pushSpec(series, group);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -384,7 +520,7 @@
         opt.tooltip.formatter = function (params) {
             var html = '';
             $.each(params, function (i, p) {
-                if (p.seriesName === '_bands' || p.value === null || p.value === undefined) {
+                if (p.seriesName === '_bands' || p.seriesName === '_spec' || p.value === null || p.value === undefined) {
                     return;
                 }
                 if (!html) {
@@ -419,6 +555,7 @@
                 labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
             }
         ];
+        pushSpec(series, group);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -429,11 +566,75 @@
         box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
     }
 
+    // ---------- single 點擊數據點開啟 Url ----------
+    /** 只接受 http://、https:// 或 / 開頭（不含 //）的網址，其他回傳 null（後端已過濾，這裡再擋一次） */
+    function safeUrl(u) {
+        if (typeof u !== 'string') {
+            return null;
+        }
+        u = $.trim(u);
+        return /^https?:\/\/\S+$/i.test(u) || /^\/(?!\/)\S*$/.test(u) ? u : null;
+    }
+
+    /** 滑鼠位置最近、且有網址的數據點（距離 14px 內），回傳網址或 null */
+    function urlAt(box, x, y) {
+        var info = box.urlInfo;
+        if (!info || !box.chart.containPixel('grid', [x, y])) {
+            return null;
+        }
+        var best = null;
+        var bestDist = 14 * 14;
+        for (var i = 0; i < info.dates.length; i++) {
+            var u = safeUrl(info.urls[i]);
+            if (!u) {
+                continue;
+            }
+            for (var c = 0; c < info.cols.length; c++) {
+                var v = info.cols[c][i];
+                if (v === null || v === undefined) {
+                    continue;
+                }
+                var pt = box.chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [info.dates[i], v]);
+                if (!pt) {
+                    continue;
+                }
+                var d = (pt[0] - x) * (pt[0] - x) + (pt[1] - y) * (pt[1] - y);
+                if (d <= bestDist) {
+                    bestDist = d;
+                    best = u;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** single 圖：點擊數據點在新分頁開啟網址；滑過有網址的點顯示手指游標。沒有 Url 時不做任何事 */
+    function bindUrlClick(box) {
+        var zr = box.chart.getZr();
+        zr.on('mousemove', function (e) {
+            if (box.urlInfo && urlAt(box, e.offsetX, e.offsetY)) {
+                zr.setCursorStyle('pointer');
+            }
+        });
+        zr.on('click', function (e) {
+            var u = urlAt(box, e.offsetX, e.offsetY);
+            if (u) {
+                var w = window.open(u, '_blank');
+                if (w) {
+                    w.opener = null;
+                }
+            }
+        });
+    }
+
     // ---------- 從 cache 取出各圖要的資料 ----------
-    /** 只保留某組的參數 */
+    /** 只保留某組的參數（有 Url 時一併帶上） */
     function pick(s, params) {
         var out = { Date: s.Date, Data: {} };
         $.each(params, function (i, p) { out.Data[p] = s.Data[p] || []; });
+        if ($.isArray(s.Url)) {
+            out.Url = s.Url;
+        }
         return out;
     }
 
@@ -564,8 +765,12 @@
                 group: group,
                 $el: $el,
                 chart: window.echarts.init($el.find('.cd-chart')[0]),
-                shown: {}
+                shown: {},
+                urlInfo: null
             };
+            if (kind === 'single') {
+                bindUrlClick(boxes[kind + ':' + group.id]);
+            }
         });
 
         if (!CFG.tools.length) {

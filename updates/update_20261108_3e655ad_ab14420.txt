@@ -1,0 +1,2474 @@
+#AISLE-UPDATE v1
+# AISLE single-file update. Apply on the server:
+#   python scripts/python/apply_update.py <this file>          (preview)
+#   python scripts/python/apply_update.py <this file> --apply  (apply)
+#@ from=3e655adbdc34eadd90d8813e1eea9f85e0f02ef4
+#@ to=ab144209469f17651376a7e969b0c68859f07ca2
+#@ created=2026-11-08 02:09:02
+#@ note=PR #9 風格切換按鈕：駭客任務（深色）/ 淺色底的駭客任務
+#@@@ FILE README.md sha1=5aa73e1d436c753f8c4309774e90ddb501d4fe7b base=65e4582068f932dce57a0132938e8f961a3ef796 mode=644 enc=text nl=1
+# AISLE 系統架構
+
+多功能、模組化的內部網頁系統。依「身份」(EE / PE) 決定每位使用者能看到哪些功能頁面，介面採用駭客任務 (The Matrix) 綠色終端機風格。
+
+| 層級 | 技術 | 備註 |
+|---|---|---|
+| 後端 | PHP 5.4 | 不使用 5.5+ 語法；資料庫一律 PDO prepared statement |
+| 資料庫 | MariaDB 5.5 / 10.x | InnoDB、utf8mb4 |
+| 輔助腳本 | Python 2.7、Bash | 權限檢查、建帳號、備份、產生模組 |
+| 前端 | HTML5、jQuery 1.12.4、原生 Canvas | 不需要 Node / 建置工具 |
+
+---
+
+## 1. 資料夾結構
+
+```
+AISLE/
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
+├── .gitignore
+├── README.md
+├── config/
+│   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
+│   └── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
+│   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
+│   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
+├── core/                      # 框架核心（一般開發不需修改）
+│   ├── bootstrap.php          # 載入類別、設定、Session
+│   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
+│   ├── App.php                # 路由：index.php?m=<頁面>&a=<動作>，依 config.ini 的 route 載入
+│   ├── Acl.php                # 讀 config.ini，判斷權限、產生選單
+│   ├── Auth.php               # 登入 / 登出 / 失敗鎖定 / 閒置登出
+│   ├── Registration.php       # 註冊驗證、依 EE 名單判定身份
+│   ├── guard.php              # 頁面內細部判斷 require_role() / has_role() / csrf_field() …
+│   ├── password_compat.php    # PHP 5.4 補上 password_hash() / password_verify()
+│   ├── Password.php           # 包裝 password_hash()，成本讀 app.ini
+│   ├── Security.php           # 安全亂數、常數時間比較、CSRF
+│   ├── Database.php           # PDO 單例 + 查詢捷徑
+│   ├── Controller.php         # 模組 Controller 基底類別
+│   ├── View.php               # 純 PHP 樣板
+│   └── helpers.php            # e() js() url() asset() audit() 等
+├── modules/                   # 功能模組（route = "module:<資料夾>"）
+│   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
+│   ├── dashboard/             # EE + PE
+│   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── profile/               # EE + PE（改密碼）
+│   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
+│   ├── pe_recipe/             # 只有 PE
+│   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
+│   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
+│       ├── controller.php     #   class AdminUsersController extends Controller
+│       └── views/index.php    #   該模組的畫面
+├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
+├── templates/
+│   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
+│   ├── error.php
+│   └── auth/                  # 登入、註冊頁面樣板
+├── public/                    # ★ 唯一對外的目錄
+│   ├── index.php              # 功能模組入口
+│   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
+│   ├── register.php           # 註冊（含帳號即時檢查）
+│   ├── logout.php             # 登出（需 CSRF token）
+│   ├── legacy/pe_notice.php   # 獨立頁面範例（route = "public/..."），第一行 require auth_check.php
+│   ├── .htaccess
+│   └── assets/
+│       ├── css/matrix.css     # 駭客任務主題
+│       ├── css/matrix-light.css # 淺色版（body.theme-light 時覆寫顏色）
+│       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
+│       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
+│       ├── js/charts.js       # 圖表頁的 ECharts 繪圖（所有圖表共用）
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
+├── scripts/
+│   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
+│   └── shell/
+│       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
+│       ├── create_user.sh     # 建立使用者（互動輸入密碼）
+│       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── new_chart.sh       # 由範本產生新圖表 charts/<名稱>.ini + .php（見第 10 節）
+│       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
+├── sql/
+│   ├── schema.sql             # 建表
+│   └── seed.sql               # 初始管理員
+├── storage/
+│   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
+│   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
+└── docs/screenshots/          # 介面截圖
+```
+
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
+
+---
+
+## 2. 資料庫
+
+`sql/schema.sql` 建立三張表：
+
+| 資料表 | 用途 |
+|---|---|
+| `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
+| `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
+| `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+
+設計重點：
+
+- **`role` 用 VARCHAR 而非 ENUM**：新增身份只要改 `config.ini`，不必 `ALTER TABLE`。
+- **`password_hash` 留 255 長度**：目前 bcrypt 固定 60 字元，保留未來更換演算法的空間。
+- **`created_at` 用 DATETIME 由程式寫入**：MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 `CURRENT_TIMESTAMP`，這個位置留給 `updated_at`。
+- 有索引的 VARCHAR 欄位長度 ≤ 191，避免舊版 InnoDB 在 utf8mb4 下超過 767 bytes 索引上限。
+
+### 密碼雜湊（PHP 5.4 的做法）
+
+`password_hash()` / `password_verify()` 是 PHP 5.5 才有的函式。`core/password_compat.php` 在函式不存在時補上同名函式：以 `crypt()` 搭配 `$2y$` bcrypt（PHP ≥ 5.3.7 支援），鹽來自 `openssl_random_pseudo_bytes`，驗證時使用常數時間比較。因此程式碼照標準 API 寫 `password_hash($pw, PASSWORD_BCRYPT)`，在 PHP 5.4 與 5.5+ 都能執行，雜湊格式也完全相同；日後升級 PHP 只要刪掉這個檔案，舊密碼不需重設。
+
+---
+
+## 3. 身份 → 頁面權限與路由（`config/config.ini` + `core/auth_check.php`）
+
+### config.ini
+
+```ini
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
+ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
+
+; ★ 頁面與路由
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
+action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
+```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
+
+`route` 有三種寫法：
+
+| route | 程式位置 | 網址 | 適合 |
+|---|---|---|---|
+| `module:<資料夾>` | `modules/<資料夾>/controller.php` | `index.php?m=<代號>&a=<動作>` | 有多個動作、AJAX 的功能 |
+| `pages/xxx.php` | `pages/xxx.php` | `index.php?m=<代號>` | 單純頁面，不用寫 Controller，自動套用版面 |
+| `public/xxx.php` | `public/xxx.php` | 直接開啟該檔案 | 既有網站的舊頁面，只需在第一行加一行 require |
+
+### auth_check.php：所有頁面共用同一套檢查
+
+```
+使用者開啟頁面
+  ├─ index.php?m=xxx  →  App 路由 ──────────┐
+  └─ public/legacy/xxx.php（第一行 require）─┤
+                                             ▼
+                              core/auth_check.php
+                    1. 未登入           → 導向 login.php（AJAX 回 401）
+                    2. 頁面未登記在 config.ini → 403
+                    3. 首次登入未改密碼 → 導向個人設定
+                    4. 身份不在 [access] 清單、或不符 action.* → 403
+                                             ▼
+                          通過 → 依 route 載入頁面程式
+```
+
+既有頁面接上權限只要在第一行加入（依檔案位置調整 `../`）：
+
+```php
+<?php require_once dirname(__FILE__) . '/../../core/auth_check.php';
+// 通過檢查後才會執行到這裡；可用 $AUTH_USER、$AUTH_PAGE
+```
+
+auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出頁面代號，所以頁面本身不用寫自己的代號或身份。檔案若沒登記在 config.ini，即使加了 require 也一律拒絕，避免漏設權限的頁面被看到。獨立頁面送出 POST 時會檢查 CSRF，舊表單請加上 `<?php echo csrf_field(); ?>`；若一時無法修改，可把 `[settings] direct_page_csrf` 設為 `Off`。
+
+權限一律在伺服器端檢查，隱藏選單只是介面效果；直接輸入網址也會得到 403。目前範例的結果：
+
+| 頁面 | EE | PE | ADMIN |
+|---|:-:|:-:|:-:|
+| 主控台 dashboard | ✓ | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
+| 個人設定 profile | ✓ | ✓ | ✓ |
+| 設備狀態 ee_equipment | ✓ | | ✓ |
+| 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
+| 製程配方 pe_recipe | | ✓ | ✓ |
+| 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 › M1BF m1bf（module:charts） | ✓ | ✓ | ✓ |
+| 使用者管理 admin_users | | | ✓ |
+
+修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
+
+---
+
+## 4. 註冊、登入、登出與權限檢查
+
+### 流程
+
+| 檔案 | 方法 | 行為 |
+|---|---|---|
+| `public/register.php` | GET | 註冊頁 |
+| | GET `?check_account=xxx`（AJAX） | 回傳帳號是否可用 |
+| | POST | 驗證 → 依 EE 名單判定身份 → 寫入 `users`，並在 `audit_logs` 記錄身份來源 |
+| `public/login.php` | GET / POST | 驗證帳密，成功後 `session_regenerate_id()` 並把使用者與身份寫入 `$_SESSION['user']` |
+| `public/logout.php` | POST（或 `?_csrf=`） | 清除 Session 與 Cookie，導回 `login.php?bye=1` |
+
+登入與註冊表單由 `js/auth.js` 以 jQuery 做即時驗證，並用 `$.ajax` 非同步送出，伺服器回 JSON。瀏覽器關閉 JavaScript 時表單照常以一般 POST 送出，伺服器端也會做完整驗證。
+
+### 註冊時的身份判定（`config.ini` 的 `[register]` 與 `[ee_accounts]`）
+
+註冊表單只填帳號、顯示名稱與密碼。身份在註冊當下依 INI 名單判定，直接寫入 `users.role`：
+
+```ini
+[register]
+enabled          = On
+require_approval = Off     ; On = 註冊後需管理員啟用
+listed_role      = "EE"    ; 名單上的帳號
+unlisted_role    = "PE"    ; 名單外的帳號；設為 "" 則名單外不能註冊
+
+[ee_accounts]              ; EE 正面表列，一行一個帳號，不分大小寫
+account[] = "neo"
+account[] = "trinity"
+```
+
+- 名單只在註冊時讀取。之後增減名單，不會改變已經註冊的人的身份，要調整請直接改資料庫的 `users.role`。
+- ADMIN 永遠無法經由註冊取得；`listed_role`、`unlisted_role` 若設成 superuser 角色會被忽略。
+- `audit_logs` 會記錄每個帳號的身份來源（`ee_accounts` 或 `unlisted_role`）。
+- 改完名單可以執行 `python scripts/python/check_config.py`，它會列出名單內容，並檢查帳號格式與重複。
+
+### 共用權限檢查函式（`core/guard.php`）
+
+```php
+require_login();                    // 未登入 → 導向 login.php；AJAX 回 401
+require_role('PE');                 // 身份不符 → 403（ADMIN 一律通過）
+require_role('EE,PE');              // 多個身份用逗號
+if (has_role('EE,PE')) { ... }      // 只判斷、不中止
+if (can_access('shared_report', 'export')) { ... }   // 依 [access] 與 [page.xxx] 判斷
+echo csrf_field();                  // 表單的 CSRF 隱藏欄位
+current_user();  current_role();  is_logged_in();
+```
+
+頁面層級的權限由 `auth_check.php` 處理；這些函式用在頁面內更細的判斷，例如只對某身份顯示某個按鈕。
+
+---
+
+## 5. 新增功能頁面
+
+只需要改 config.ini，核心程式（`core/`）不用動：
+
+1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
+2. 在 `[access]` 把頁面代號加進能使用它的身份
+3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
+
+例：新增一個 EE、PE 都能看的聯絡人頁面
+
+```ini
+[access]
+EE = "dashboard, ..., team_contacts"
+PE = "dashboard, ..., team_contacts"
+
+[page.team_contacts]
+title = "聯絡人 // CONTACTS"
+route = "pages/team_contacts.php"
+order = 60
+```
+
+需要多個動作或 AJAX 時用模組，腳本會產生程式骨架並自動完成上面第 2、3 步：
+
+```bash
+# 產生 modules/ee_alarm/，加入 EE、PE 的 [access] 清單並新增 [page.ee_alarm]
+bash scripts/shell/new_module.sh ee_alarm "EE,PE" "警報中心 // ALARMS" 35
+```
+
+產生的骨架：
+
+```php
+<?php
+class EeAlarmController extends Controller
+{
+    public function indexAction()          // index.php?m=ee_alarm
+    {
+        $this->render('index', array('message' => '...'));
+    }
+
+    public function listAction()           // index.php?m=ee_alarm&a=list
+    {
+        $rows = Database::fetchAll('SELECT ... WHERE x = ?', array($x));
+        $this->json(array('ok' => true, 'rows' => $rows));
+    }
+}
+```
+
+Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作')`、`isPost()`、`input()`、`query()`、`flash()`。View 中輸出變數一律用 `e($var)`；要放進 `<script>` 用 `js($var)`。
+
+---
+
+## 6. 安全機制
+
+- bcrypt 密碼雜湊，提高 `bcrypt_cost` 後使用者下次登入自動升級雜湊
+- 連續失敗 5 次鎖定 15 分鐘（`app.ini` 可調），帳號不存在時也執行一次 bcrypt，避免從回應時間猜出帳號
+- 登入成功 `session_regenerate_id()`，閒置 30 分鐘自動登出，Cookie 設 HttpOnly
+- 所有 POST（含 jQuery AJAX，透過 `X-CSRF-Token` 標頭）都檢查 CSRF token；登出也需要 token，避免被外部連結強制登出
+- 註冊無法取得 ADMIN 身份；可開啟 `require_approval` 讓新帳號需管理員啟用，或把 `unlisted_role` 設為空字串只開放名單內帳號註冊
+- 首次登入或被管理員重設密碼後強制改密碼
+- 所有 SQL 使用 PDO prepared statement，`ATTR_EMULATE_PREPARES = false`
+
+---
+
+## 7. PHP 5.4 相容規範
+
+可以用：`array()` 與 `[]` 短陣列、closure、`http_response_code()`、`JSON_UNESCAPED_UNICODE`、`session_status()`。
+
+不能用：
+
+| 不能用 | 版本 | 替代寫法 |
+|---|---|---|
+| `password_hash()` / `password_verify()` | 5.5 | 已由 `core/password_compat.php` 補上，可直接使用 |
+| `finally`、`yield`、`::class`、`array_column()`、`empty(函式())` | 5.5 | try/catch、迴圈、字串類別名稱、先存變數 |
+| `hash_equals()`、`...$args`、`const` 運算式 | 5.6 | `Security::equals()` |
+| `??`、`<=>`、純量 type hint、回傳型別、`random_bytes()` | 7.0 | `array_get()`、`Security::randomBytes()` |
+| `?->`、`match`、`fn() =>` | 8.0 | 一般寫法 |
+
+---
+
+## 8. 部署步驟
+
+完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
+
+1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
+2. `git clone -b main` 到 `/var/www/html/aisle/`
+3. `mysql -u root -p < sql/schema.sql`
+4. 建立 `aisle_app` 資料庫帳號
+5. `mysql -u root -p < sql/seed.sql`
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
+7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
+8. `python scripts/python/check_config.py`
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
+10. 目錄權限（storage 可寫）
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
+13. `admin` / `Neo@Zion2026` 首次登入並改密碼
+14. 註冊測試帳號，驗證 EE / PE 權限
+15.（選用）接入既有舊頁面
+16. 設定每日備份 crontab
+
+---
+
+## 9. 駭客任務主題
+
+| 元素 | 檔案 | 說明 |
+|---|---|---|
+| 數位雨背景 | `js/matrix-rain.js` | Canvas 半形片假名雨，約 20fps；系統設定「減少動態」時改為靜態畫面 |
+| CRT 掃描線 | `css/matrix.css` `.crt-overlay` | 全畫面細橫線疊層 |
+| 終端機面板 | `.panel` `.terminal` | 綠框黑底、亮綠標題列 |
+| 打字機效果 | `AISLE.typewriter()` | 登入頁標語、主控台訊息 |
+| 標題故障效果 | `.glitch` | 滑鼠移上時文字抖動 |
+| 狀態燈 | `.led-run/idle/down` | 綠、暗綠、閃爍紅 |
+| 身份徽章 | `.role-EE/PE/ADMIN` | EE 亮綠、PE 薄荷綠、ADMIN 紅藥丸 |
+
+色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
+
+截圖見 `docs/screenshots/`。
+
+### 風格切換（深色 / 淺色）
+
+上方列（登入、註冊頁在右上角）有 `[ ☀ 淺色 ]` / `[ ☾ 深色 ]` 按鈕，可在「駭客任務」與「淺色底的駭客任務」之間切換，不用重新整理。
+
+| 項目 | 說明 |
+|---|---|
+| 預設 | 深色（駭客任務） |
+| 記憶方式 | cookie `aisle_theme`（`light` / 沒有＝深色），path 為 `base_url` + `/`，一年；每台電腦各自記憶，不寫資料庫 |
+| 套用 | PHP 的 `current_theme()` 讀 cookie，`templates/layout.php` 輸出時就在 `<html>`、`<body>` 加上 `theme-light`，換頁不會閃爍 |
+| 樣式 | `css/matrix-light.css` 全部是 `body.theme-light ...` 覆寫規則，`matrix.css` 本身不變 |
+| 數位雨 / 圖表 | `matrix-rain.js` 依 body class 換色；`charts.js` 收到 `aisle:theme` 事件後換配色並用快取重畫 |
+
+淺色版色票：`#f2fbf4` 底色、`#00591a` 主文字、`#008f11` 強調、`#2e6b3c` 次要文字、`#c62828` 警示紅。
+新頁面請不要在 HTML 寫死顏色（`style="color:..."`），改用 class，淺色版才會跟著變。
+
+---
+
+## 10. 圖表（charts）
+
+多張圖表（BSLr、M1BF、CDM、BMMF…）共用同一個模組 `modules/charts`，每張圖表是選單「圖表 // CHARTS」底下的一頁。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+每張圖表只由兩個同名檔案定義，新增圖表不需要改任何程式：
+
+| 檔案 | 內容 |
+|---|---|
+| `charts/<名稱>.ini` | 畫什麼、怎麼畫：`[page]` 整頁設定、`[plot.<代號>]` 每組圖 |
+| `charts/<名稱>.php` | 部署者寫 SQL，整理成資料格式（`class <名稱>Chart extends ChartSource`） |
+| `config/config.ini` | `[page.<小寫名稱>]`，`route = "module:charts"`、`group = "charts"`；哪些身份看得到寫在 `[access]` |
+
+頁面代號 = 圖表名稱轉小寫：`[page.bslr]` → `charts/BSLr.ini`、`charts/BSLr.php`，網址 `index.php?m=bslr`。
+
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（快捷按鈕由 `quick_days` 設定）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選（`model.<機型>`）；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
+
+### 新增一張圖表
+
+```bash
+bash scripts/shell/new_chart.sh CDM      # 建立 charts/CDM.ini、charts/CDM.php，並印出 config.ini 要貼的區段
+```
+
+1. 編輯 `charts/CDM.ini` 的 `[plot.xxx]`；此時 `source = sample`，用範例資料就能看到完整畫面
+2. 編輯 `charts/CDM.php` 寫 `tools()`、`series()` 的 SQL，寫好把 ini 改成 `source = php`
+3. 把腳本印出的 `[page.cdm]` 貼進 `config/config.ini`，並把 `cdm` 加到 `[access]` 要看得到的身份
+4. `python scripts/python/check_config.py` 檢查
+
+### 設定檔：`charts/<名稱>.ini`
+
+```ini
+[page]
+source       = php          ; php = 用 <名稱>.php 查資料庫；sample = 內建範例資料
+default_days = 60           ; 預設顯示最近幾天
+max_days     = 366          ; 一次最多查幾天
+quick_days   = "7, 30, 90"  ; 快速區間按鈕
+model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
+model.2000   = "PAP"
+
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
+[plot.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+ymin   = 0                         ; Y 軸下限（三張圖共用）
+ymax   = 6                         ; Y 軸上限（三張圖共用）
+newest_ymax = 5                    ; 只改最新值排排站的上限
+upper_oos = 5                      ; spec 線（可留空 = 不畫）
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
+
+[plot.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
+```
+
+- 每個 `[plot.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
+
+### 資料來源：`charts/<名稱>.php`
+
+```php
+<?php
+class BSLrChart extends ChartSource
+{
+    public function tools()
+    {
+        $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM bslr_x_data');
+        $tools = array();
+        foreach ($rows as $r) {
+            $tools[] = $r['tool_id'];
+        }
+        return $tools;
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $where = 'tool_id IN (' . $this->in($tools) . ')
+                  AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        $bind  = array_merge($tools, array($start, $end));
+
+        // 長表（tool_id, data_time, param, value）
+        $a = self::pivot($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+               FROM bslr_x_data WHERE ' . $where, $bind), 'tool_id', 'd', 'param', 'value');
+
+        // 寬表，欄位 c1 / c2 對應參數 BSLr_Y_C1 / BSLr_Y_C2
+        $b = self::wide($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+               FROM bslr_y_summary WHERE ' . $where, $bind),
+            'tool_id', 'd', array('BSLr_Y_C1' => 'c1', 'BSLr_Y_C2' => 'c2'));
+
+        return self::merge($a, $b);   // 不同 table 的結果依機台 + 時間合併
+    }
+}
+```
+
+| 工具（`modules/charts/ChartSource.php`） | 用途 |
+|---|---|
+| `$this->fetchAll($sql, $bind)` | prepared statement 查詢，值一律用 `?` 綁定 |
+| `$this->in($list)` | 產生 `IN (...)` 用的 `?,?,?` |
+| `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
+| `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
+| `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+| `$this->machineOf($tool)` / `$this->machinesOf($tools)` / `$this->toolOf($machine)` | tool_id 與 machine_id 互換（要先實作 `machines()`） |
+| `self::table($name)` | 組出來的 table 名稱（例 `'M1BF_' . $machineId`）檢查後加反引號；table 名稱不能用 `?` 綁定，一定要經過它 |
+
+**table 用 machine_id 時**（例 table `M1BF_HP23`，`HP23` 是 `APAN01` 的 machine_id）：在 `<名稱>.php` 實作 `machines()`，回傳 `array('APAN01' => 'HP23', ...)`（可寫死或從對照表查）。實作後 `tools()` 可以省略（預設用 `machines()` 的 tool_id），`series()` 回傳的 key 也可以直接是 machine_id，controller 會自動換成 tool_id；網頁上的機台名稱一律是 tool_id。範例見 `charts/_template.php` 的寫法 4（每台一個 table）、寫法 5（machine_id 欄位）。
+
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
+
+### 資料格式與載入
+
+後端 `index.php?m=<頁面代號>&a=tbt&start=&end=` 回傳區間內全部機台、ini 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 選用 `"Url": [...]`（與 `Date` 等長）：單台機台趨勢圖點擊數據點會在瀏覽器新分頁開啟該時間點的網址，tooltip 會提示「點擊數據點開啟連結」，資料表多一欄 URL。只接受 `http://`、`https://` 或 `/` 開頭的網址（其他如 `javascript:` 一律忽略）；`pivot()` / `wide()` 最後多給網址欄位名稱即可產生，`merge()` 會保留。沒有 `Url` 時與原本相同
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視
+- 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
+
+![charts](docs/screenshots/charts.png)
+#@@@ FILE core/helpers.php sha1=6c9cefc8f5c0e99036de89c3152bf96ecbc66ad5 base=0fcfb2314e926c754a906fc48c75003b30d97444 mode=644 enc=text nl=1
+<?php
+/**
+ * 全域小工具函式
+ */
+
+/** HTML 輸出跳脫，view 中一律用 e() 輸出變數 */
+function e($value)
+{
+    return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+/** 把 PHP 值安全地放進 <script> 內：var name = <?php echo js($name); ?>; */
+function js($value)
+{
+    return json_encode($value, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+}
+
+/**
+ * 網站對外的路徑前綴（app.ini 的 base_url，去掉結尾的 /）
+ * 經過 proxy 時要包含 proxy 的前綴，例如 "/D1C1/aisle"
+ */
+function base_url()
+{
+    return rtrim((string) Config::get('app', 'base_url', ''), '/');
+}
+
+/** 產生站內網址：url('ee_equipment', 'status', array('id' => 3)) */
+function url($module, $action = 'index', $params = array())
+{
+    $query = array('m' => $module);
+    if ($action !== 'index') {
+        $query['a'] = $action;
+    }
+    $query = array_merge($query, $params);
+    return base_url() . '/index.php?' . http_build_query($query);
+}
+
+/** public/ 底下獨立頁面的網址：page_url('login.php') */
+function page_url($file, $params = array())
+{
+    $url = base_url() . '/' . ltrim($file, '/');
+    return $params ? $url . '?' . http_build_query($params) : $url;
+}
+
+/** 靜態資源網址 */
+function asset($path)
+{
+    return base_url() . '/assets/' . ltrim($path, '/');
+}
+
+/** 取得陣列值，取代 PHP 7 的 ?? 運算子 */
+function array_get($array, $key, $default = null)
+{
+    return (is_array($array) && array_key_exists($key, $array)) ? $array[$key] : $default;
+}
+
+/** 取得用戶端 IP（若在反向代理後方，請依環境調整） */
+function client_ip()
+{
+    return isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
+}
+
+/** 目前時間字串，寫入 DATETIME 欄位用 */
+function now()
+{
+    return date('Y-m-d H:i:s');
+}
+
+/** 寫入稽核紀錄 */
+function audit($module, $action, $detail = array())
+{
+    $user = Auth::user();
+    Database::execute(
+        'INSERT INTO audit_logs (user_id, module, action, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        array($user ? $user['id'] : null, $module, $action, json_encode($detail), client_ip(), now())
+    );
+}
+
+/**
+ * 目前的畫面風格：dark（駭客任務，預設）/ light（淺色底的駭客任務）
+ * 使用者的選擇記在 cookie aisle_theme，每台電腦各自記憶；由 app.js 的切換按鈕寫入
+ */
+function current_theme()
+{
+    return (isset($_COOKIE['aisle_theme']) && $_COOKIE['aisle_theme'] === 'light') ? 'light' : 'dark';
+}
+#@@@ FILE modules/ee_equipment/views/index.php sha1=a550aa3c13ab7b4c36f15d2b68123d48faa94c20 base=aa6330f003860742d3ec9e4341cbf4eb5dafdc70 mode=644 enc=text nl=1
+<div class="panel">
+    <div class="panel-head">&gt; EQUIPMENT STATUS <span class="panel-head-aside" id="eq-time"></span></div>
+    <div class="panel-body">
+        <table class="table">
+            <thead>
+                <tr><th>TOOL</th><th>STATE</th><th>TEMP (°C)</th><th>WPH</th></tr>
+            </thead>
+            <tbody id="eq-rows">
+            <?php foreach ($rows as $r): ?>
+                <tr>
+                    <td><?php echo e($r['tool']); ?></td>
+                    <td><span class="led led-<?php echo e(strtolower($r['state'])); ?>"></span><?php echo e($r['state']); ?></td>
+                    <td><?php echo e($r['temp']); ?></td>
+                    <td><?php echo e($r['wph']); ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <p class="dim">&gt; 每 10 秒自動刷新</p>
+    </div>
+</div>
+
+<script>
+$(function () {
+    var statusUrl = <?php echo js(url('ee_equipment', 'status')); ?>;
+    function refresh() {
+        $.get(statusUrl).done(function (res) {
+            var html = '';
+            $.each(res.rows, function (i, r) {
+                html += '<tr><td>' + AISLE.escape(r.tool) + '</td>' +
+                    '<td><span class="led led-' + AISLE.escape(r.state.toLowerCase()) + '"></span>' + AISLE.escape(r.state) + '</td>' +
+                    '<td>' + AISLE.escape(r.temp) + '</td><td>' + AISLE.escape(r.wph) + '</td></tr>';
+            });
+            $('#eq-rows').html(html);
+            $('#eq-time').text(res.time);
+        });
+    }
+    setInterval(refresh, 10000);
+});
+</script>
+#@@@ FILE pages/ee_daily_check.php sha1=86b890f2d0c44a34b98471e1168b5fcbb0cc00ca base=2958a6c2787096e43e50e99a09d7ee695566e69e mode=644 enc=text nl=1
+<?php
+/**
+ * 範例：一般 PHP 頁面（route = "pages/ee_daily_check.php"）
+ *
+ * 由 index.php?m=ee_daily_check 在權限檢查通過後載入，自動套用系統版面。
+ * 這裡不需要寫任何權限程式；可用變數：$user（登入者）、$page（config.ini 的頁面設定）。
+ * 新增這類頁面：放一個 .php 到 pages/，再在 config.ini 加 [page.xxx] 並寫進 [access] 即可。
+ */
+$items = array(
+    array('id' => 'chk_pressure', 'label' => '腔體壓力在規格內'),
+    array('id' => 'chk_gas',      'label' => '氣體管路無洩漏警報'),
+    array('id' => 'chk_pm',       'label' => 'PM 紀錄已更新'),
+    array('id' => 'chk_interlock','label' => '安全連鎖測試通過'),
+);
+?>
+<div class="panel terminal">
+    <div class="panel-head">&gt; DAILY CHECK :: <?php echo e(date('Y-m-d')); ?></div>
+    <div class="panel-body">
+        <p class="dim">&gt; operator: <?php echo e($user['display_name']); ?></p>
+        <?php foreach ($items as $item): ?>
+            <p class="line">
+                <label class="inline label-bright">
+                    <input type="checkbox" class="daily-item" id="<?php echo e($item['id']); ?>">
+                    <?php echo e($item['label']); ?>
+                </label>
+            </p>
+        <?php endforeach; ?>
+        <p class="line" id="daily-status">&gt; 0 / <?php echo count($items); ?> completed</p>
+    </div>
+</div>
+<script>
+$(function () {
+    var total = $('.daily-item').length;
+    $('.daily-item').on('change', function () {
+        var done = $('.daily-item:checked').length;
+        $('#daily-status').text('> ' + done + ' / ' + total + ' completed' + (done === total ? ' :: ALL CLEAR' : ''));
+    });
+});
+</script>
+#@@@ FILE public/assets/css/matrix-light.css sha1=b1a97226e925667f2d793f84bba142709459fb64 base=- mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme（淺色版）
+   body 加上 theme-light 時才生效，只覆寫 matrix.css 的顏色，不動版面。
+   一樣不用 CSS 變數，以相容較舊的瀏覽器。
+   底色   #f2fbf4   淡綠白
+   主文字 #00591a   深綠（淺底上亮綠看不清楚，改用深綠）
+   強調   #008f11   綠（邊框、按鈕）
+   輔助   #2e6b3c   暗綠灰（次要文字）
+   線條   #b9e3c3   淡綠（分隔線）
+   警示   #c62828   紅
+   ===================================================================== */
+
+html.theme-light { background: #f2fbf4; }
+body.theme-light { background: #f2fbf4; color: #00591a; }
+
+body.theme-light a { color: #00801a; }
+body.theme-light a:hover { color: #003d12; text-shadow: none; text-decoration: underline; }
+body.theme-light ::selection { background: #008f11; color: #fff; }
+
+/* ---------- 背景 ---------- */
+body.theme-light #matrix-rain { opacity: 0.22; }
+body.theme-light.is-guest #matrix-rain { opacity: 0.45; }
+body.theme-light .crt-overlay {
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 80, 20, 0) 0px,
+        rgba(0, 80, 20, 0) 2px,
+        rgba(0, 80, 20, 0.04) 3px
+    );
+}
+
+/* ---------- 頂部列 / 選單 ---------- */
+body.theme-light .topbar {
+    border-bottom-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 10px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .brand { text-shadow: none; }
+body.theme-light #clock { color: #2e6b3c; }
+
+body.theme-light .sidebar { border-right-color: #b9e3c3; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .nav-title,
+body.theme-light .nav-icon,
+body.theme-light .nav-caret { color: #2e6b3c; }
+body.theme-light .sidebar li a:hover { background: #e3f6e8; border-left-color: #7fbf8e; }
+body.theme-light .sidebar li.active a { background: #c9ebd2; border-left-color: #008f11; text-shadow: none; font-weight: bold; }
+body.theme-light .sidebar .nav-group-toggle { color: #00591a; }
+body.theme-light .nav-group.has-active > .nav-group-toggle { color: #00591a; text-shadow: none; font-weight: bold; }
+
+/* ---------- 標題 ---------- */
+body.theme-light .page-title { text-shadow: none; }
+body.theme-light .glitch:hover::before { color: #00a832; }
+body.theme-light .glitch:hover::after  { color: #7fbf8e; }
+
+/* ---------- 面板 ---------- */
+body.theme-light .panel {
+    border-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 1px 6px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .panel-head { border-bottom-color: #00801a; color: #fff; background: #00801a; }
+body.theme-light .card-link { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .card-link:hover { border-color: #008f11; box-shadow: 0 2px 12px rgba(0, 143, 17, 0.25); }
+
+/* ---------- 表格 ---------- */
+body.theme-light .table th,
+body.theme-light .table td { border-bottom-color: #cfe9d6; }
+body.theme-light .table th { color: #2e6b3c; }
+body.theme-light .table tbody tr:hover { background: #e3f6e8; }
+
+/* ---------- 表單 ---------- */
+body.theme-light label { color: #2e6b3c; }
+body.theme-light label.label-bright { color: #00591a; }
+body.theme-light input[type=text],
+body.theme-light input[type=password],
+body.theme-light input[type=email],
+body.theme-light input[type=date],
+body.theme-light select,
+body.theme-light textarea {
+    border-color: #7fbf8e;
+    background: #fff;
+    color: #00591a;
+    color-scheme: light;
+}
+body.theme-light input:focus,
+body.theme-light select:focus,
+body.theme-light textarea:focus { border-color: #008f11; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+
+body.theme-light .btn { border-color: #008f11; color: #00591a; }
+body.theme-light .btn:hover { background: #008f11; color: #fff; box-shadow: 0 0 8px rgba(0, 143, 17, 0.4); }
+body.theme-light .btn-ghost { border-color: transparent; }
+body.theme-light .btn-ghost:hover { border-color: #008f11; }
+body.theme-light .btn-red { border-color: #c62828; color: #c62828; }
+body.theme-light .btn-red:hover { background: #c62828; color: #fff; box-shadow: 0 0 8px rgba(198, 40, 40, 0.4); }
+body.theme-light .theme-toggle-float { background: rgba(255, 255, 255, 0.9); }
+
+/* ---------- 訊息 ---------- */
+body.theme-light .alert { border-color: #008f11; background: #e3f6e8; }
+body.theme-light .alert-error { border-color: #c62828; color: #c62828; background: #fdecec; }
+body.theme-light .text-red { color: #c62828; }
+body.theme-light .dim { color: #2e6b3c; }
+
+/* ---------- 角色徽章 / 狀態燈 ---------- */
+body.theme-light .role-badge { border-color: #00801a; }
+body.theme-light .role-EE    { color: #00801a; border-color: #00801a; }
+body.theme-light .role-PE    { color: #00796b; border-color: #00796b; }
+body.theme-light .role-ADMIN { color: #c62828; border-color: #c62828; }
+body.theme-light .led-run  { background: #00b82e; box-shadow: 0 0 6px rgba(0, 184, 46, 0.6); }
+body.theme-light .led-idle { background: #8fbf9a; }
+body.theme-light .led-down { background: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.6); }
+
+/* ---------- 登入 / 註冊頁 ---------- */
+body.theme-light .login-box .logo { text-shadow: 0 0 6px rgba(0, 143, 17, 0.35); }
+body.theme-light .login-box .tagline { color: #2e6b3c; }
+
+/* ---------- 表單驗證 ---------- */
+body.theme-light .field-error { color: #c62828; }
+body.theme-light input.is-invalid,
+body.theme-light select.is-invalid { border-color: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.3); }
+body.theme-light input.is-valid { border-color: #008f11; }
+body.theme-light .hint { color: #00801a; }
+body.theme-light .hint.text-red { color: #c62828; }
+body.theme-light .meter { background: #d6eedc; }
+body.theme-light .meter span { background: #00a832; box-shadow: none; }
+body.theme-light .meter span.weak { background: #c62828; box-shadow: none; }
+
+/* ---------- charts 圖表頁 ---------- */
+body.theme-light .cd-box-head { border-bottom-color: #b9e3c3; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    body.theme-light .sidebar { border-bottom-color: #b9e3c3; }
+    body.theme-light .sidebar li.active a { border-bottom-color: #008f11; }
+}
+#@@@ FILE public/assets/css/matrix.css sha1=c40c403628421d754782da7b7aa1e3fdcace7b16 base=6dc3f419dd28d39d8749ab048e9b7e27f94fe795 mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme
+   綠色磷光終端機風格。刻意不用 CSS 變數，以相容較舊的瀏覽器。
+   主色   #00ff41   亮綠（文字、邊框）
+   次色   #00b82e   中綠
+   暗色   #008f11   暗綠（輔助文字）
+   深底   #001a07   面板底色
+   警示   #ff3b3b   紅藥丸
+   ===================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #000;
+    color: #00ff41;
+    font-family: "Share Tech Mono", "Consolas", "Courier New", "Microsoft JhengHei", monospace;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+a { color: #00ff41; text-decoration: none; }
+a:hover { color: #b6ffc8; text-shadow: 0 0 8px #00ff41; }
+
+::selection { background: #00ff41; color: #000; }
+
+/* ---------- 背景：數位雨與 CRT 掃描線 ---------- */
+#matrix-rain {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+    opacity: 0.18;
+    pointer-events: none;
+}
+body.is-guest #matrix-rain { opacity: 0.55; }
+
+.crt-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.25) 3px
+    );
+}
+
+/* ---------- 頂部列 ---------- */
+.topbar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid #00b82e;
+    background: rgba(0, 10, 3, 0.92);
+    box-shadow: 0 0 18px rgba(0, 255, 65, 0.25);
+}
+.brand {
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    text-shadow: 0 0 10px #00ff41;
+}
+.topbar-status > * { margin-left: 12px; vertical-align: middle; }
+#clock { color: #008f11; }
+
+.cursor { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 主框架 ---------- */
+.shell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    min-height: calc(100vh - 52px);
+}
+.sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid #003b00;
+    background: rgba(0, 10, 3, 0.85);
+    padding: 16px 0;
+}
+.nav-title {
+    padding: 0 20px 10px;
+    color: #008f11;
+    font-size: 12px;
+    letter-spacing: 2px;
+}
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li a {
+    display: block;
+    padding: 9px 20px;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sidebar li a:hover { background: #001a07; border-left-color: #008f11; }
+.sidebar li.active a {
+    background: #002a0b;
+    border-left-color: #00ff41;
+    text-shadow: 0 0 8px #00ff41;
+}
+.nav-icon { display: inline-block; width: 18px; color: #008f11; }
+
+/* 選單分類（config.ini 的 [group.xxx]），可收折；沒有 JS 時一律展開 */
+.sidebar .nav-group-toggle { position: relative; padding-right: 34px; color: #00ff41; }
+.nav-group.has-active > .nav-group-toggle { color: #00ff41; text-shadow: 0 0 6px #00ff41; }
+.nav-caret { position: absolute; right: 6px; top: 9px; color: #008f11; }
+.nav-caret:before { content: "[-]"; }
+.js .nav-group:not(.open) .nav-caret:before { content: "[+]"; }
+.js .nav-group:not(.open) > .nav-children { display: none; }
+.sidebar .nav-children li a { padding-left: 38px; font-size: 0.95em; }
+
+.main {
+    flex: 1;
+    min-width: 0;
+    padding: 24px 32px;
+}
+.guest {
+    position: relative;
+    z-index: 2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+/* ---------- 標題 glitch ---------- */
+.page-title {
+    position: relative;
+    margin: 0 0 20px;
+    font-size: 24px;
+    letter-spacing: 3px;
+    text-shadow: 0 0 12px #00ff41;
+}
+.glitch::before,
+.glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    overflow: hidden;
+    opacity: 0;
+}
+.glitch:hover::before { opacity: 0.8; color: #b6ffc8; animation: glitch 0.3s infinite; }
+.glitch:hover::after  { opacity: 0.6; color: #008f11; animation: glitch 0.3s infinite reverse; }
+@keyframes glitch {
+    0%   { clip: rect(0, 9999px, 6px, 0);   transform: translate(-2px, 0); }
+    50%  { clip: rect(12px, 9999px, 20px, 0); transform: translate(2px, 0); }
+    100% { clip: rect(4px, 9999px, 14px, 0);  transform: translate(-1px, 0); }
+}
+
+/* ---------- 面板 / 終端機 ---------- */
+.panel {
+    border: 1px solid #00b82e;
+    background: rgba(0, 20, 6, 0.88);
+    box-shadow: 0 0 12px rgba(0, 255, 65, 0.15), inset 0 0 20px rgba(0, 255, 65, 0.05);
+    margin-bottom: 20px;
+}
+.panel-head {
+    padding: 8px 14px;
+    border-bottom: 1px solid #003b00;
+    color: #000;
+    background: #00b82e;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+.panel-body { padding: 14px; }
+.panel-head-aside { float: right; font-weight: normal; }
+.terminal .panel-body { font-size: 14px; }
+.terminal .line { white-space: pre-wrap; margin: 0; }
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0 -10px;
+}
+.grid > .col {
+    flex: 1 1 260px;
+    padding: 0 10px;
+}
+
+.card-link {
+    display: block;
+    padding: 18px;
+    border: 1px dashed #008f11;
+    margin-bottom: 20px;
+    background: rgba(0, 20, 6, 0.7);
+    transition: all 0.15s;
+}
+.card-link:hover {
+    border-style: solid;
+    border-color: #00ff41;
+    box-shadow: 0 0 16px rgba(0, 255, 65, 0.4);
+}
+.card-link .big { font-size: 28px; display: block; }
+
+/* ---------- 表格 ---------- */
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #003b00;
+    text-align: left;
+}
+.table th { color: #008f11; font-weight: normal; letter-spacing: 1px; }
+.table tbody tr:hover { background: #002a0b; }
+
+/* ---------- 表單 ---------- */
+label { display: block; margin: 12px 0 4px; color: #008f11; font-size: 13px; letter-spacing: 1px; }
+input[type=text], input[type=password], input[type=email], select, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: #00ff41;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+.inline { display: inline; }
+
+.btn {
+    display: inline-block;
+    padding: 7px 16px;
+    border: 1px solid #00ff41;
+    background: transparent;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 14px;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+.btn:hover { background: #00ff41; color: #000; text-shadow: none; box-shadow: 0 0 14px #00ff41; }
+.btn-ghost { border-color: transparent; }
+.btn-ghost:hover { border-color: #00ff41; }
+.btn-sm { padding: 3px 8px; font-size: 13px; }
+.btn-red { border-color: #ff3b3b; color: #ff3b3b; }
+.btn-red:hover { background: #ff3b3b; color: #000; box-shadow: 0 0 14px #ff3b3b; }
+
+/* ---------- 訊息 ---------- */
+.alert {
+    padding: 10px 14px;
+    margin-bottom: 18px;
+    border: 1px solid #00ff41;
+    background: rgba(0, 40, 10, 0.9);
+}
+.alert-error { border-color: #ff3b3b; color: #ff3b3b; background: rgba(40, 0, 0, 0.85); }
+.text-red { color: #ff3b3b; }
+.dim { color: #008f11; }
+label.label-bright { color: #00ff41; }
+
+/* ---------- 角色徽章 ---------- */
+.role-badge {
+    display: inline-block;
+    padding: 0 8px;
+    border: 1px solid #00ff41;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.role-EE    { color: #00ff41; border-color: #00ff41; }
+.role-PE    { color: #7dffb0; border-color: #7dffb0; }
+.role-ADMIN { color: #ff3b3b; border-color: #ff3b3b; }
+
+/* 狀態燈 */
+.led { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.led-run   { background: #00ff41; box-shadow: 0 0 8px #00ff41; }
+.led-idle  { background: #008f11; }
+.led-down  { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: blink 0.8s steps(1) infinite; }
+
+/* ---------- 登入頁 ---------- */
+.login-box {
+    width: 380px;
+    max-width: 100%;
+}
+.login-box .logo {
+    text-align: center;
+    font-size: 40px;
+    letter-spacing: 14px;
+    margin-bottom: 4px;
+    text-shadow: 0 0 18px #00ff41, 0 0 4px #00ff41;
+}
+.login-box .tagline { text-align: center; color: #008f11; margin-bottom: 20px; min-height: 1.6em; }
+.login-box .btn { width: 100%; margin-top: 18px; padding: 10px; }
+
+/* ---------- 表單驗證 ---------- */
+.field-error { min-height: 1.2em; color: #ff3b3b; font-size: 13px; margin-top: 2px; }
+input.is-invalid, select.is-invalid { border-color: #ff3b3b; box-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+input.is-valid { border-color: #00ff41; }
+.hint { float: right; color: #00ff41; letter-spacing: 1px; }
+.hint.text-red { color: #ff3b3b; }
+.meter { height: 3px; background: #001a07; margin-top: 4px; }
+.meter span { display: block; height: 100%; width: 0; background: #00ff41; box-shadow: 0 0 6px #00ff41; transition: width 0.2s; }
+.meter span.weak { background: #ff3b3b; box-shadow: 0 0 6px #ff3b3b; }
+.btn:disabled { opacity: 0.6; cursor: wait; }
+.form-foot { margin: 14px 0 0; text-align: center; }
+.register-box { width: 440px; }
+
+/* ---------- 風格切換按鈕（沒有 JavaScript 時隱藏） ---------- */
+.theme-toggle { display: none; }
+.js .theme-toggle { display: inline-block; }
+.theme-toggle-float { position: fixed; top: 12px; right: 16px; z-index: 3; background: rgba(0, 10, 3, 0.85); }
+
+/* ---------- charts 圖表頁（modules/charts） ---------- */
+input[type=date] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.cd-filters { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.cd-field { padding: 0 8px; }
+.cd-field select { width: auto; min-width: 140px; }
+.cd-quick .btn { margin-right: 4px; }
+.cd-msg { min-height: 1em; margin: 8px 0 0; }
+.cd-note { margin: 4px 0 0; font-size: 13px; }
+.cd-sub { margin: 0 0 8px; font-size: 13px; }
+.cd-sub select { width: auto; margin: 0 10px 0 6px; padding: 4px 8px; }
+.cd-sub label.inline { margin: 0; }
+.cd-boxes-grid { display: flex; flex-wrap: wrap; padding: 14px 4px; }
+.cd-boxes-grid > .cd-box { flex: 1 1 460px; min-width: 0; padding: 0 10px; }
+.cd-box { margin-bottom: 18px; }
+.cd-box:last-child { margin-bottom: 0; }
+.cd-box-head { border-bottom: 1px dashed #003b00; padding-bottom: 4px; margin-bottom: 6px; }
+.cd-box-head b { letter-spacing: 1px; }
+.cd-box-info { font-size: 13px; margin-left: 8px; }
+.cd-box-tools { float: right; }
+.cd-box-tools .btn { padding: 0 6px; margin-left: 4px; font-size: 12px; }
+.cd-chart { height: 320px; }
+.cd-chart-tall { height: 440px; }
+.cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }
+    .sidebar ul { display: flex; overflow-x: auto; }
+    .sidebar li a { border-left: 0; border-bottom: 2px solid transparent; padding: 6px 12px; }
+    .sidebar li.active a { border-bottom-color: #00ff41; }
+    .nav-title { display: none; }
+    .sidebar .nav-group { display: flex; }
+    .sidebar .nav-children { display: flex; }
+    .sidebar .nav-children li a { padding-left: 12px; }
+    .sidebar .nav-group-toggle { padding-right: 12px; }
+    .nav-caret { position: static; margin-left: 4px; }
+    .main { padding: 16px; }
+    .hide-sm { display: none; }
+    .topbar { padding: 8px 16px; }
+    .topbar-status > * { margin-left: 6px; }
+    .table { font-size: 13px; }
+    .cd-box-tools { float: none; display: block; margin-top: 4px; }
+    .cd-chart-tall { height: 380px; }
+}
+#@@@ FILE public/assets/js/app.js sha1=08b301fb221671e3e765b5bebfe1f9ff442ee909 base=f5397efb689c03902fffc6fcf35bf22cefaa335a mode=644 enc=text nl=1
+/*
+ * AISLE 共用前端 (jQuery 1.12)
+ */
+(function ($) {
+    if (!$) {
+        return;
+    }
+
+    // 所有 jQuery AJAX 自動帶 CSRF token
+    var csrf = $('meta[name="csrf-token"]').attr('content');
+    $.ajaxSetup({
+        headers: { 'X-CSRF-Token': csrf },
+        dataType: 'json'
+    });
+
+    // Session 過期時導回登入頁
+    $(document).ajaxError(function (e, xhr) {
+        if (xhr.status === 401) {
+            // 用版面提供的絕對網址，public/legacy/ 等子資料夾頁面也能正確導回
+            window.location.href = $('meta[name="login-url"]').attr('content') || 'login.php';
+        }
+    });
+
+    // 側邊選單分類收折：狀態記在瀏覽器（localStorage），目前頁面所在的分類一律展開
+    var NAV_KEY = 'aisle.nav.';
+    function navStore(key, value) {
+        try {
+            if (value === undefined) {
+                return window.localStorage.getItem(NAV_KEY + key);
+            }
+            window.localStorage.setItem(NAV_KEY + key, value);
+        } catch (e) {
+            // 瀏覽器停用 localStorage 時只是不記憶狀態
+        }
+        return null;
+    }
+    $(function () {
+        $('.nav-group').each(function () {
+            var $g = $(this), saved = navStore($g.data('group'));
+            if (!$g.hasClass('has-active') && saved !== null) {
+                $g.toggleClass('open', saved === '1');
+            }
+            $g.children('.nav-group-toggle').attr('aria-expanded', $g.hasClass('open') ? 'true' : 'false');
+        });
+        $(document).on('click', '.nav-group-toggle', function (e) {
+            e.preventDefault();
+            var $g = $(this).closest('.nav-group').toggleClass('open'), open = $g.hasClass('open');
+            $(this).attr('aria-expanded', open ? 'true' : 'false');
+            navStore($g.data('group'), open ? '1' : '0');
+        });
+    });
+
+    // 畫面風格切換：dark（駭客任務）/ light（淺色底的駭客任務）
+    // 選擇記在 cookie aisle_theme（每台電腦各自記憶，一年），PHP 輸出頁面時就會套上 body.theme-light，換頁不會閃爍
+    // 切換後觸發 $(document) 的 'aisle:theme' 事件，圖表等元件可以跟著重畫
+    var THEME_COOKIE = 'aisle_theme';
+    var THEME_TEXT = {
+        dark:  { label: '[ ☀ 淺色 ]', tip: '切換為淺色底的駭客任務風格' },
+        light: { label: '[ ☾ 深色 ]', tip: '切換為駭客任務（深色）風格' }
+    };
+    function currentTheme() {
+        return $('body').hasClass('theme-light') ? 'light' : 'dark';
+    }
+    function saveTheme(theme) {
+        // path 用網站的路徑前綴（例 /D1C1/aisle/），經過 proxy 也只作用在 AISLE 底下
+        var path = $('meta[name="base-path"]').attr('content') || '/';
+        var expires = new Date();
+        expires.setFullYear(expires.getFullYear() + 1);
+        document.cookie = THEME_COOKIE + '=' + theme + '; expires=' + expires.toUTCString() + '; path=' + path;
+    }
+    function applyTheme(theme) {
+        $('html, body').toggleClass('theme-light', theme === 'light');
+        $('.theme-toggle').text(THEME_TEXT[theme].label).attr('title', THEME_TEXT[theme].tip);
+        $(document).trigger('aisle:theme', [theme]);
+    }
+    $(function () {
+        $(document).on('click', '.theme-toggle', function () {
+            var next = currentTheme() === 'light' ? 'dark' : 'light';
+            saveTheme(next);
+            applyTheme(next);
+        });
+    });
+
+    // 共用工具，模組 view 中可使用 AISLE.typewriter(...)
+    // 用 extend 合併，保留頁面先載入的擴充（例如 auth.js 的 AISLE.auth）
+    window.AISLE = $.extend(window.AISLE || {}, {
+        /**
+         * 打字機效果：逐字印出多行文字
+         * @param $el   目標容器
+         * @param lines 字串陣列
+         * @param speed 每字毫秒
+         */
+        typewriter: function ($el, lines, speed, done) {
+            speed = speed || 25;
+            var li = 0, ci = 0, $line = null;
+            function tick() {
+                if (li >= lines.length) {
+                    if (done) { done(); }
+                    return;
+                }
+                if (ci === 0) {
+                    $line = $('<p class="line"></p>').appendTo($el);
+                }
+                $line.text(lines[li].substring(0, ci + 1));
+                ci++;
+                if (ci >= lines[li].length) {
+                    li++;
+                    ci = 0;
+                    setTimeout(tick, speed * 8);
+                } else {
+                    setTimeout(tick, speed);
+                }
+            }
+            tick();
+        },
+
+        /** 安全地把文字放進 HTML（避免 XSS） */
+        escape: function (s) {
+            return $('<div>').text(s === null || s === undefined ? '' : String(s)).html();
+        }
+    });
+
+    $(function () {
+        // 右上角時鐘
+        var $clock = $('#clock');
+        function pad(n) { return n < 10 ? '0' + n : n; }
+        function updateClock() {
+            var d = new Date();
+            $clock.text(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+                pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()));
+        }
+        if ($clock.length) {
+            updateClock();
+            setInterval(updateClock, 1000);
+        }
+
+        // 有 data-confirm 的按鈕送出前確認
+        $(document).on('click', '[data-confirm]', function (e) {
+            if (!window.confirm($(this).data('confirm'))) {
+                e.preventDefault();
+            }
+        });
+    });
+})(window.jQuery);
+#@@@ FILE public/assets/js/charts.js sha1=9aa0b8a247f3b5db315b6618a95ba4d494312b7d base=b8e3afe7844c3eb8cc6c8617b3e03aa01151a14a mode=644 enc=text nl=1
+/*
+ * charts 頁面 (jQuery 1.12 + ECharts 5)，所有 chart（BSLr、M1BF…）共用
+ *
+ * 三個區塊：single 單台趨勢 / newest 最新值排排站 / tbt 歷史趨勢排排站
+ * 每個區塊依 charts/<名稱>.ini 的 [plot.xxx] 各畫一張圖（CFG.groups），
+ * 同一組的參數（例 M1BF_Z_C1、M1BF_Z_C2）畫在同一張圖上。
+ *
+ * 後端回傳格式：
+ *   { "APAN01": { "Date": [...], "Data": { "M1BF_Z_C1": [...], "M1BF_Z_C2": [...] } }, ... }
+ *   每個參數陣列與 Date 等長，沒有值的位置是 null
+ *   選用 "Url": [...]（與 Date 等長）：單台趨勢圖點擊數據點時在新分頁開啟該網址
+ *
+ * 資料載入方式：
+ *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台、全部參數」的資料存在 cache，所有圖都從這份資料取得：
+ *     TBT 直接畫；single 取出所選機台；Newest_TBT 取每台每個參數在區間內的最後一個值（再依機型篩選）
+ *   之後切換機台、切換機型只用 cache 重畫，不再發 request；
+ *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt。
+ *
+ * 編碼方式：顏色 = 機台，線型 / 長條紋理 = 參數（同組第 1 個參數實線無紋理，第 2 個虛線斜紋…）
+ * 只用 ES5 語法，避免舊瀏覽器出錯
+ */
+(function ($, window) {
+    'use strict';
+
+    var CFG = window.AISLE_CHARTS;
+    if (!$ || !CFG) {
+        return;
+    }
+
+    // ---------- 主題 ----------
+    // 機台顏色：8 色類別色盤（已用 dataviz validate_palette.js 檢查深色底 #001406：
+    // 亮度、彩度、色盲區分、對比全部通過）。同機型內依序取色，APAN01 與 APAP01 同色，
+    // 以 X 軸機台名稱區分。顏色跟著機台走，篩選後不會變色。
+    var PALETTE = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+    // 參數：線型與長條紋理，依參數在組內的順序取用
+    var LINE_TYPES = ['solid', 'dashed', 'dotted', [10, 4, 2, 4], [2, 6]];
+    var LINE_NAMES = ['實線', '虛線', '點線', '點劃線', '稀點線'];
+    var DECALS = [
+        null,
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'circle', symbolSize: 0.6, dashArrayX: [[4, 4]], dashArrayY: [4, 0], color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [1, 3], rotation: 0, color: 'rgba(0,0,0,0.5)' }
+    ];
+    // 文字、格線、軸線等依畫面風格切換（body.theme-light = 淺色）；機台色盤兩種風格共用
+    // （PALETTE 另以淺色底 #ffffff 檢查過，同樣全部通過）
+    var THEMES = {
+        dark: {
+            INK: '#00ff41',                 // 主要文字
+            INK_DIM: '#00b82e',             // 次要文字
+            GRID: '#0a2a12',                // 格線
+            AXIS: '#00661a',                // 軸線
+            NEUTRAL: '#7dffb0',             // 圖例中代表「參數」的中性色
+            BAND: 'rgba(0, 255, 65, 0.05)', // TBT 交錯底色
+            INACTIVE: '#1f4a2a',            // 圖例關閉的項目
+            TIP_BG: 'rgba(0, 10, 3, 0.95)',
+            TIP_SHADOW: 'box-shadow: 0 0 12px rgba(0,255,65,0.3);',
+            MASK: 'rgba(0, 0, 0, 0.6)',
+            HOVER: 'rgba(0,255,65,0.06)',
+            ZOOM_FILL: 'rgba(0,255,65,0.12)',
+            ZOOM_AREA: 'rgba(0,255,65,0.08)',
+            OOS: '#ff3b3b',                 // spec 線：OOS（規格界限）
+            OOC: '#ffb000'                  // spec 線：OOC（管制界限）
+        },
+        light: {
+            INK: '#00591a',
+            INK_DIM: '#2e6b3c',
+            GRID: '#dcefe1',
+            AXIS: '#8fbf9a',
+            NEUTRAL: '#2e6b3c',
+            BAND: 'rgba(0, 143, 17, 0.06)',
+            INACTIVE: '#b5cdb9',
+            TIP_BG: 'rgba(255, 255, 255, 0.97)',
+            TIP_SHADOW: 'box-shadow: 0 2px 10px rgba(0,80,20,0.18);',
+            MASK: 'rgba(255, 255, 255, 0.7)',
+            HOVER: 'rgba(0,143,17,0.08)',
+            ZOOM_FILL: 'rgba(0,143,17,0.15)',
+            ZOOM_AREA: 'rgba(0,143,17,0.10)',
+            OOS: '#c62828',
+            OOC: '#b26a00'
+        }
+    };
+    var T, INK, INK_DIM, GRID, AXIS, NEUTRAL, BAND;
+    function setTheme(name) {
+        T = THEMES[name] || THEMES.dark;
+        INK = T.INK;
+        INK_DIM = T.INK_DIM;
+        GRID = T.GRID;
+        AXIS = T.AXIS;
+        NEUTRAL = T.NEUTRAL;
+        BAND = T.BAND;
+    }
+    setTheme($('body').hasClass('theme-light') ? 'light' : 'dark');
+    // spec 線的顏色依風格取 T.OOS / T.OOC，畫圖時才查（切換風格後會跟著變）
+    var SPEC_KEYS = [
+        { key: 'upper_oos', label: 'OOS', colorKey: 'OOS', type: 'solid' },
+        { key: 'upper_ooc', label: 'OOC', colorKey: 'OOC', type: 'dashed' },
+        { key: 'lower_ooc', label: 'OOC', colorKey: 'OOC', type: 'dashed' },
+        { key: 'lower_oos', label: 'OOS', colorKey: 'OOS', type: 'solid' }
+    ];
+    var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
+
+    var COLOR = {};
+    (function assignColors() {
+        var counter = {};
+        $.each(CFG.tools, function (i, tool) {
+            var model = CFG.models[tool] || '';
+            counter[model] = counter[model] || 0;
+            COLOR[tool] = PALETTE[counter[model] % PALETTE.length];
+            counter[model]++;
+        });
+    })();
+
+    var GROUPS = {};
+    $.each(CFG.groups, function (i, g) { GROUPS[g.id] = g; });
+
+    function colorOf(tool) { return COLOR[tool] || NEUTRAL; }
+    function lineTypeOf(i) { return LINE_TYPES[i % LINE_TYPES.length]; }
+    function decalOf(i) { return DECALS[i % DECALS.length]; }
+    function shortName(param, group) {
+        // 圖例只顯示參數名稱與組標題不同的部分，例 M1BF_Z 組內的 M1BF_Z_C1 → C1
+        var prefix = group.title + '_';
+        return param.indexOf(prefix) === 0 && param.length > prefix.length ? param.substring(prefix.length) : param;
+    }
+
+    function baseOption() {
+        return {
+            backgroundColor: 'transparent',
+            textStyle: { color: INK, fontFamily: FONT },
+            animationDuration: 400,
+            tooltip: {
+                backgroundColor: T.TIP_BG,
+                borderColor: INK_DIM,
+                borderWidth: 1,
+                textStyle: { color: INK, fontFamily: FONT, fontSize: 13 },
+                extraCssText: T.TIP_SHADOW
+            },
+            grid: { left: 50, right: 24, top: 40, bottom: 40, containLabel: false }
+        };
+    }
+
+    /** Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt */
+    function valueAxis(group, kind) {
+        var lim = (group.limits && group.limits[kind]) || {};
+        var axis = {
+            type: 'value',
+            name: group.unit || 'Data',
+            nameTextStyle: { color: INK_DIM },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            axisLabel: { color: INK_DIM },
+            splitLine: { lineStyle: { color: GRID } },
+            scale: kind !== 'newest'
+        };
+        var spec = specValues(group);
+        if (lim.min !== null && lim.min !== undefined) {
+            axis.min = lim.min;
+        } else if (spec.length) {
+            axis.min = function (v) { return specBounds(v, spec, kind).min; };
+        }
+        if (lim.max !== null && lim.max !== undefined) {
+            axis.max = lim.max;
+        } else if (spec.length) {
+            axis.max = function (v) { return specBounds(v, spec, kind).max; };
+        }
+        return axis;
+    }
+
+    /** 這組圖有設定的 spec 值（數字陣列） */
+    function specValues(group) {
+        var out = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v !== null && v !== undefined) {
+                out.push(v);
+            }
+        });
+        return out;
+    }
+
+    /** 資料範圍 v（{min, max}）加上 spec 線後的 Y 軸上下限，取整到刻度間距 */
+    function specBounds(v, spec, kind) {
+        var lo = Math.min.apply(null, spec);
+        var hi = Math.max.apply(null, spec);
+        if (isFinite(v.min)) {
+            lo = Math.min(lo, v.min);
+        }
+        if (isFinite(v.max)) {
+            hi = Math.max(hi, v.max);
+        }
+        if (kind === 'newest') {   // 長條圖從 0 開始
+            lo = Math.min(lo, 0);
+            hi = Math.max(hi, 0);
+        }
+        var span = hi - lo;
+        if (span <= 0) {
+            span = Math.abs(hi) || 1;
+        }
+        var step = niceStep(span / 5);
+        var min = Math.floor(lo / step) * step;
+        var max = Math.ceil(hi / step) * step;
+        return { min: +min.toFixed(10), max: +max.toFixed(10) };
+    }
+
+    function niceStep(x) {
+        var p = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
+        var f = x / p;
+        return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+    }
+
+    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒設定 spec 時回傳 null */
+    function specSeries(group) {
+        var lines = [];
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (v === null || v === undefined) {
+                return;
+            }
+            lines.push({
+                name: k.key,
+                yAxis: v,
+                lineStyle: { color: T[k.colorKey], type: k.type, width: 1.5 },
+                label: {
+                    show: true,
+                    position: k.key.indexOf('upper') === 0 ? 'insideEndTop' : 'insideEndBottom',
+                    color: T[k.colorKey],
+                    fontFamily: FONT,
+                    formatter: k.label + ' ' + fmt(v)
+                }
+            });
+        });
+        if (!lines.length) {
+            return null;
+        }
+        return {
+            name: '_spec',
+            type: 'line',
+            data: [],
+            silent: true,
+            markLine: { silent: true, symbol: 'none', animation: false, data: lines }
+        };
+    }
+
+    /** 有 spec 時把輔助 series 加到 series 陣列最後 */
+    function pushSpec(series, group) {
+        var s = specSeries(group);
+        if (s) {
+            series.push(s);
+        }
+    }
+
+    function axisLine() {
+        return { lineStyle: { color: AXIS } };
+    }
+
+    function legendBase(data) {
+        return {
+            type: 'scroll',
+            top: 0,
+            data: data,
+            textStyle: { color: INK, fontFamily: FONT },
+            pageTextStyle: { color: INK },
+            pageIconColor: INK,
+            pageIconInactiveColor: AXIS,
+            inactiveColor: T.INACTIVE,
+            itemWidth: 26,
+            itemHeight: 10
+        };
+    }
+
+    function fmt(v) {
+        return v === null || v === undefined ? '-' : AISLE.escape(v);
+    }
+
+    // ---------- 圖表盒 ----------
+    // boxes['tbt:m1bf_z'] = { kind, group, $el, chart, shown }
+    var boxes = {};
+    var cache = { tbt: null };
+    var request = null;
+
+    function eachBox(kind, fn) {
+        $.each(boxes, function (key, box) {
+            if (!kind || box.kind === kind) {
+                fn(box);
+            }
+        });
+    }
+
+    function showMessage(chart, text) {
+        chart.clear();
+        chart.setOption({
+            title: {
+                text: text,
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: INK_DIM, fontSize: 14, fontWeight: 'normal', fontFamily: FONT }
+            }
+        });
+    }
+
+    function loadingOpts() {
+        return { text: 'LOADING...', color: INK, textColor: INK, maskColor: T.MASK, fontFamily: FONT };
+    }
+
+    /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
+    function show(box, data, draw) {
+        box.shown = data;
+        box.urlInfo = null;
+        if ($.isEmptyObject(data)) {
+            showMessage(box.chart, '> 查無資料 // NO DATA');
+        } else {
+            draw(box, data);
+        }
+        renderTable(box);
+    }
+
+    /** 資料表檢視：機台 / 時間 / 該組每個參數一欄 */
+    function renderTable(box) {
+        var params = box.group.params;
+        var head = '<tr><th>TOOL</th><th>DATE</th>';
+        $.each(params, function (i, p) { head += '<th>' + AISLE.escape(p) + '</th>'; });
+        head += '</tr>';
+        var rows = [];
+        var withUrl = false;
+        $.each(box.shown, function (tool, s) {
+            if ($.isArray(s.Url)) {
+                withUrl = true;
+            }
+        });
+        if (withUrl) {
+            head = head.replace(/<\/tr>$/, '<th>URL</th></tr>');
+        }
+        $.each(box.shown, function (tool, s) {
+            if (!$.isArray(s.Date)) {
+                // newest：各參數的日期分開存，值後面附上日期
+                var tr0 = '<tr><td>' + AISLE.escape(tool) + '</td><td>LATEST</td>';
+                $.each(params, function (j, p) {
+                    tr0 += '<td>' + fmt(s.Data[p][0]) + (s.Date[p][0] ? ' <span class="dim">(' + AISLE.escape(s.Date[p][0]) + ')</span>' : '') + '</td>';
+                });
+                rows.push(tr0 + '</tr>');
+                return;
+            }
+            for (var i = 0; i < s.Date.length; i++) {
+                var tr = '<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) + '</td>';
+                for (var j = 0; j < params.length; j++) {
+                    tr += '<td>' + fmt(s.Data[params[j]] ? s.Data[params[j]][i] : null) + '</td>';
+                }
+                if (withUrl) {
+                    var u = $.isArray(s.Url) ? safeUrl(s.Url[i]) : null;
+                    tr += '<td>' + (u ? '<a href="' + AISLE.escape(u) + '" target="_blank" rel="noopener noreferrer">開啟</a>' : '-') + '</td>';
+                }
+                rows.push(tr + '</tr>');
+            }
+        });
+        box.$el.find('.cd-table').html(rows.length
+            ? '<table class="table"><thead>' + head + '</thead><tbody>' + rows.join('') + '</tbody></table>'
+            : '<p class="dim">&gt; 查無資料</p>');
+    }
+
+    // ---------- 1. single：所選機台，組內每個參數一條線 ----------
+    function drawSingle(box, data) {
+        var group = box.group;
+        var tool;
+        for (tool in data) {
+            if (data.hasOwnProperty(tool)) {
+                break;
+            }
+        }
+        var s = data[tool];
+        var urls = $.isArray(s.Url) ? s.Url : null;
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var points = [];
+            var col = s.Data[param] || [];
+            for (var i = 0; i < s.Date.length; i++) {
+                points.push([s.Date[i], col[i] === undefined ? null : col[i]]);
+            }
+            series.push({
+                name: param,
+                type: 'line',
+                data: points,
+                connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
+                showSymbol: points.length <= 45,
+                symbolSize: 8,
+                color: colorOf(tool),
+                lineStyle: { width: 2, type: lineTypeOf(pi) },
+                emphasis: { focus: 'series' }
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        if (urls) {
+            // 有 Url：tooltip 多一行提示，點數據點開新分頁（見 bindUrlClick）
+            opt.tooltip.formatter = function (params) {
+                var html = '';
+                var idx = null;
+                $.each(params, function (i, p) {
+                    if (p.seriesName === '_spec') {
+                        return;
+                    }
+                    if (!html) {
+                        html = AISLE.escape(s.Date[p.dataIndex]);
+                        idx = p.dataIndex;
+                    }
+                    html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
+                });
+                if (idx !== null && safeUrl(urls[idx])) {
+                    html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+                }
+                return html;
+            };
+            box.urlInfo = { dates: s.Date, urls: urls, cols: $.map(group.params, function (p) { return [s.Data[p] || []]; }) };
+        }
+        opt.xAxis = {
+            type: 'time',
+            axisLine: axisLine(),
+            axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{MM}-{dd}' },
+            splitLine: { show: false }
+        };
+        opt.yAxis = valueAxis(group, 'single');
+        opt.dataZoom = [{ type: 'inside' }];
+        pushSpec(series, group);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 2. newest：X 軸機台，組內每個參數一根長條 ----------
+    function drawNewest(box, data) {
+        var group = box.group;
+        var tools = [];
+        $.each(data, function (tool) { tools.push(tool); });
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var bars = [];
+            $.each(tools, function (ti, tool) {
+                var s = data[tool];
+                var style = { color: colorOf(tool), borderRadius: [4, 4, 0, 0] };
+                if (decalOf(pi)) {
+                    style.decal = decalOf(pi);
+                }
+                bars.push({ value: s.Data[param][0], date: s.Date[param][0], itemStyle: style });
+            });
+            // series 的 itemStyle 只決定圖例的樣子（中性色 + 該參數的紋理），每根長條另用機台色
+            var legendStyle = { color: NEUTRAL };
+            if (decalOf(pi)) {
+                legendStyle.decal = decalOf(pi);
+            }
+            series.push({
+                name: param,
+                type: 'bar',
+                data: bars,
+                barMaxWidth: 28,
+                barGap: '15%',
+                itemStyle: legendStyle,
+                emphasis: { focus: 'series', itemStyle: { shadowBlur: 12, shadowColor: INK } },
+                cursor: 'pointer'
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'shadow', shadowStyle: { color: T.HOVER } };
+        opt.tooltip.formatter = function (params) {
+            if (!params.length) {
+                return '';
+            }
+            var html = '<b>' + AISLE.escape(params[0].name) + '</b>';
+            $.each(params, function (i, p) {
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value) + '</b>' +
+                    ' <span style="color:' + INK_DIM + '">(' + fmt(p.data.date) + ')</span>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: tools,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
+        };
+        opt.yAxis = valueAxis(group, 'newest');
+        pushSpec(series, group);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 3. TBT ----------
+    // X 軸為類別軸：每台機台佔一段，段內依時間排列。每台每個參數一條 series，
+    // 同一台的 series 用同一個名稱，所以圖例以機台為單位開關；其他段落填 null，
+    // 所以每台只畫在自己的區段，相鄰機台以交錯底色分隔。
+    function drawTbt(box, data) {
+        var group = box.group;
+        var keys = [];      // 類別值（唯一）："APAN01|2026-01-01"
+        var segments = [];  // { tool, from, to }
+        $.each(data, function (tool, s) {
+            var from = keys.length;
+            for (var i = 0; i < s.Date.length; i++) {
+                keys.push(tool + '|' + s.Date[i]);
+            }
+            segments.push({ tool: tool, from: from, to: keys.length - 1 });
+        });
+
+        var centers = {};
+        var bands = [];
+        $.each(segments, function (i, seg) {
+            centers[Math.floor((seg.from + seg.to) / 2)] = seg.tool;
+            if (i % 2 === 1) {
+                bands.push([{ xAxis: keys[seg.from] }, { xAxis: keys[seg.to] }]);
+            }
+        });
+
+        var series = [];
+        var legend = [];
+        var paramOf = [];   // seriesIndex → 參數名稱（tooltip 用）
+        $.each(segments, function (i, seg) {
+            var s = data[seg.tool];
+            legend.push(seg.tool);
+            $.each(group.params, function (pi, param) {
+                var col = s.Data[param] || [];
+                var arr = new Array(keys.length);
+                for (var k = 0; k < keys.length; k++) {
+                    arr[k] = null;
+                }
+                for (var j = 0; j < s.Date.length; j++) {
+                    arr[seg.from + j] = col[j] === undefined ? null : col[j];
+                }
+                paramOf.push(param);
+                series.push({
+                    name: seg.tool,
+                    type: 'line',
+                    data: arr,
+                    connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
+                    showSymbol: false,
+                    symbolSize: 8,
+                    color: colorOf(seg.tool),
+                    lineStyle: { width: 2, type: lineTypeOf(pi) },
+                    emphasis: { focus: 'series' }
+                });
+            });
+        });
+        // 交錯底色放在一條不顯示的輔助 series 上
+        series.push({
+            name: '_bands',
+            type: 'line',
+            data: [],
+            silent: true,
+            markArea: { silent: true, itemStyle: { color: BAND }, data: bands }
+        });
+
+        var opt = baseOption();
+        opt.grid.top = 64;
+        opt.grid.bottom = 70;
+        opt.legend = legendBase(legend);
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        opt.tooltip.formatter = function (params) {
+            var html = '';
+            $.each(params, function (i, p) {
+                if (p.seriesName === '_bands' || p.seriesName === '_spec' || p.value === null || p.value === undefined) {
+                    return;
+                }
+                if (!html) {
+                    html = p.marker + AISLE.escape(p.seriesName) + '<br>' + AISLE.escape(String(p.name).split('|')[1]);
+                }
+                html += '<br>' + AISLE.escape(paramOf[p.seriesIndex]) + '：<b>' + fmt(p.value) + '</b>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: keys,
+            boundaryGap: false,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: {
+                color: INK,
+                interval: function (idx) { return centers.hasOwnProperty(idx); },
+                formatter: function (v) { return String(v).split('|')[0]; }
+            },
+            splitLine: { show: false }
+        };
+        opt.yAxis = valueAxis(group, 'tbt');
+        opt.dataZoom = [
+            { type: 'inside' },
+            {
+                type: 'slider', height: 18, bottom: 12,
+                borderColor: AXIS, fillerColor: T.ZOOM_FILL,
+                handleStyle: { color: INK_DIM }, moveHandleStyle: { color: INK_DIM },
+                dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: T.ZOOM_AREA } },
+                textStyle: { color: INK_DIM },
+                labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
+            }
+        ];
+        pushSpec(series, group);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+
+        var styles = $.map(group.params, function (p, i) {
+            return shortName(p, group) + ' ' + LINE_NAMES[i % LINE_NAMES.length];
+        });
+        box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
+    }
+
+    // ---------- single 點擊數據點開啟 Url ----------
+    /** 只接受 http://、https:// 或 / 開頭（不含 //）的網址，其他回傳 null（後端已過濾，這裡再擋一次） */
+    function safeUrl(u) {
+        if (typeof u !== 'string') {
+            return null;
+        }
+        u = $.trim(u);
+        return /^https?:\/\/\S+$/i.test(u) || /^\/(?!\/)\S*$/.test(u) ? u : null;
+    }
+
+    /** 滑鼠位置最近、且有網址的數據點（距離 14px 內），回傳網址或 null */
+    function urlAt(box, x, y) {
+        var info = box.urlInfo;
+        if (!info || !box.chart.containPixel('grid', [x, y])) {
+            return null;
+        }
+        var best = null;
+        var bestDist = 14 * 14;
+        for (var i = 0; i < info.dates.length; i++) {
+            var u = safeUrl(info.urls[i]);
+            if (!u) {
+                continue;
+            }
+            for (var c = 0; c < info.cols.length; c++) {
+                var v = info.cols[c][i];
+                if (v === null || v === undefined) {
+                    continue;
+                }
+                var pt = box.chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [info.dates[i], v]);
+                if (!pt) {
+                    continue;
+                }
+                var d = (pt[0] - x) * (pt[0] - x) + (pt[1] - y) * (pt[1] - y);
+                if (d <= bestDist) {
+                    bestDist = d;
+                    best = u;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** single 圖：點擊數據點在新分頁開啟網址；滑過有網址的點顯示手指游標。沒有 Url 時不做任何事 */
+    function bindUrlClick(box) {
+        var zr = box.chart.getZr();
+        zr.on('mousemove', function (e) {
+            if (box.urlInfo && urlAt(box, e.offsetX, e.offsetY)) {
+                zr.setCursorStyle('pointer');
+            }
+        });
+        zr.on('click', function (e) {
+            var u = urlAt(box, e.offsetX, e.offsetY);
+            if (u) {
+                var w = window.open(u, '_blank');
+                if (w) {
+                    w.opener = null;
+                }
+            }
+        });
+    }
+
+    // ---------- 從 cache 取出各圖要的資料 ----------
+    /** 只保留某組的參數（有 Url 時一併帶上） */
+    function pick(s, params) {
+        var out = { Date: s.Date, Data: {} };
+        $.each(params, function (i, p) { out.Data[p] = s.Data[p] || []; });
+        if ($.isArray(s.Url)) {
+            out.Url = s.Url;
+        }
+        return out;
+    }
+
+    function showTbt() {
+        eachBox('tbt', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) { data[tool] = pick(s, box.group.params); });
+            show(box, data, drawTbt);
+        });
+    }
+
+    /** 單台機台：從 cache.tbt 取出，不發 request */
+    function showSingle() {
+        var tool = $('#cd-tool').val();
+        $('.cd-single-title').text(tool ? '· ' + tool : '');
+        if (!cache.tbt || !tool) {
+            return;
+        }
+        eachBox('single', function (box) {
+            var data = {};
+            if (cache.tbt[tool]) {
+                data[tool] = pick(cache.tbt[tool], box.group.params);
+            }
+            show(box, data, drawSingle);
+        });
+    }
+
+    /**
+     * 最新值：每台每個參數在區間內最後一個非 null 的值，再依機型篩選，不發 request
+     * 各參數最後一筆的日期可能不同，所以 Date 也依參數分開存：
+     *   { Date: { param: [日期] }, Data: { param: [值] } }
+     */
+    function showNewest() {
+        if (!cache.tbt) {
+            return;
+        }
+        var model = $('#cd-model').val() || 'All';  // ini 沒設定機型時沒有下拉選單
+        eachBox('newest', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) {
+                if (model !== 'All' && CFG.models[tool] !== model) {
+                    return;
+                }
+                var latest = { Date: {}, Data: {} };
+                var any = false;
+                $.each(box.group.params, function (pi, p) {
+                    var col = s.Data[p] || [];
+                    latest.Date[p] = [null];
+                    latest.Data[p] = [null];
+                    for (var i = col.length - 1; i >= 0; i--) {
+                        if (col[i] !== null && col[i] !== undefined) {
+                            latest.Date[p] = [s.Date[i]];
+                            latest.Data[p] = [col[i]];
+                            any = true;
+                            break;
+                        }
+                    }
+                });
+                if (any) {
+                    data[tool] = latest;
+                }
+            });
+            show(box, data, drawNewest);
+        });
+    }
+
+    // ---------- 選擇器 ----------
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function isDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s); }
+
+    function range() {
+        var start = $.trim($('#cd-start').val());
+        var end = $.trim($('#cd-end').val());
+        var $msg = $('#cd-msg').text('');
+        if (!isDate(start) || !isDate(end)) {
+            $msg.text('> 日期格式需為 YYYY-MM-DD');
+            return null;
+        }
+        if (start > end) {
+            $msg.text('> 起始日期不可晚於結束日期');
+            return null;
+        }
+        return { start: start, end: end };
+    }
+
+    /** 取日期區間內全部機台、全部參數的資料（所有圖共用），進頁面與改日期時呼叫 */
+    function loadRange() {
+        var r = range();
+        if (!r) {
+            return;
+        }
+        if (request) {
+            request.abort();
+        }
+        eachBox(null, function (box) { box.chart.showLoading('default', loadingOpts()); });
+        request = $.ajax({ url: CFG.urls.tbt, data: { start: r.start, end: r.end }, dataType: 'json', cache: false })
+            .done(function (res) {
+                cache.tbt = res || {};
+                eachBox(null, function (box) { box.chart.hideLoading(); });
+                showTbt();
+                showSingle();
+                showNewest();
+            })
+            .fail(function (xhr, status) {
+                if (status === 'abort') {
+                    return;
+                }
+                var msg = (xhr.responseJSON && xhr.responseJSON.error) || ('HTTP ' + xhr.status);
+                eachBox(null, function (box) {
+                    box.chart.hideLoading();
+                    showMessage(box.chart, '> ERROR: ' + msg);
+                });
+            });
+    }
+
+    $(function () {
+        if (!window.echarts) {
+            $('.cd-chart').html('<p class="text-red">&gt; ECharts 載入失敗：請確認可連到 CDN，或執行 scripts/shell/fetch_vendor.sh 放到 public/assets/vendor/</p>');
+            return;
+        }
+        $('.cd-box').each(function () {
+            var $el = $(this);
+            var kind = $el.data('kind');
+            var group = GROUPS[$el.data('group')];
+            boxes[kind + ':' + group.id] = {
+                kind: kind,
+                group: group,
+                $el: $el,
+                chart: window.echarts.init($el.find('.cd-chart')[0]),
+                shown: {},
+                urlInfo: null
+            };
+            if (kind === 'single') {
+                bindUrlClick(boxes[kind + ':' + group.id]);
+            }
+        });
+
+        if (!CFG.tools.length) {
+            eachBox(null, function (box) { showMessage(box.chart, '> 沒有任何機台 // NO TOOLS'); });
+            return;
+        }
+
+        $('#cd-filters').on('submit', function () {
+            loadRange();
+            return false;
+        });
+        $('#cd-tool').on('change', showSingle);
+        $('#cd-model').on('change', showNewest);
+        $('.cd-quick').on('click', 'button', function () {
+            var days = parseInt($(this).data('days'), 10);
+            var end = new Date();
+            var start = new Date(end.getTime() - (days - 1) * 86400000);
+            $('#cd-start').val(ymd(start));
+            $('#cd-end').val(ymd(end));
+            loadRange();
+        });
+
+        // 點最新值長條 → 切換單台機台
+        eachBox('newest', function (box) {
+            box.chart.on('click', function (p) {
+                if (p.componentType === 'series' && p.name) {
+                    $('#cd-tool').val(p.name);
+                    showSingle();
+                    var $first = $('.cd-box[data-kind="single"]').first();
+                    if ($first.length) {
+                        $('html, body').animate({ scrollTop: $first.offset().top - 80 }, 200);
+                    }
+                }
+            });
+        });
+
+        function boxOf(el) {
+            var $el = $(el).closest('.cd-box');
+            return boxes[$el.data('kind') + ':' + $el.data('group')];
+        }
+        $('.cd-legend-all').on('click', function () {
+            boxOf(this).chart.dispatchAction({ type: 'legendAllSelect' });
+        });
+        $('.cd-legend-none').on('click', function () {
+            var box = boxOf(this);
+            $.each(box.shown, function (tool) {
+                box.chart.dispatchAction({ type: 'legendUnSelect', name: tool });
+            });
+        });
+        $('.cd-table-btn').on('click', function () {
+            boxOf(this).$el.find('.cd-table').toggle();
+        });
+
+        // 切換畫面風格：換配色後用 cache 重畫，不重新取資料
+        $(document).on('aisle:theme', function (e, theme) {
+            setTheme(theme);
+            if (cache.tbt) {
+                showTbt();
+                showSingle();
+                showNewest();
+            }
+        });
+
+        var resizeTimer = null;
+        $(window).on('resize', function () {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                eachBox(null, function (box) { box.chart.resize(); });
+            }, 150);
+        });
+
+        loadRange();
+    });
+})(window.jQuery, window);
+#@@@ FILE public/assets/js/matrix-rain.js sha1=e34a5b0363385cb062d223a4dcfe44d08d6a1dbf base=587e1c9b06e178364e23e8b5267d705141e62581 mode=644 enc=text nl=1
+/*
+ * 數位雨背景（純 JavaScript，不依賴 jQuery）
+ * 字元：半形片假名 + 數字 + 部分英文字母，與電影相同的感覺
+ */
+(function () {
+    var canvas = document.getElementById('matrix-rain');
+    if (!canvas || !canvas.getContext) {
+        return;
+    }
+    var ctx = canvas.getContext('2d');
+    var chars = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789AISLE:.=*+-<>';
+    var fontSize = 16;
+    var columns = 0;
+    var drops = [];
+
+    // 使用者偏好減少動態時，只畫一張靜態畫面
+    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        columns = Math.ceil(canvas.width / fontSize);
+        drops = [];
+        for (var i = 0; i < columns; i++) {
+            drops[i] = Math.floor(Math.random() * -50);
+        }
+    }
+
+    // 兩種風格的配色：深色＝黑底亮綠字；淺色＝淡綠白底、深綠字
+    var THEMES = {
+        dark:  { fade: 'rgba(0, 0, 0, 0.06)',        head: '#d4ffe0', body: '#00ff41' },
+        light: { fade: 'rgba(242, 251, 244, 0.08)',  head: '#003d12', body: '#00a832' }
+    };
+    var theme = null;
+
+    /** body 有 theme-light 就是淺色；風格變了就清空畫布，避免殘留上一種風格的拖尾 */
+    function syncTheme() {
+        var now = /(^|\s)theme-light(\s|$)/.test(document.body.className) ? 'light' : 'dark';
+        if (now !== theme) {
+            theme = now;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            return true;
+        }
+        return false;
+    }
+
+    function draw() {
+        syncTheme();
+        var t = THEMES[theme];
+        // 半透明底色覆蓋，形成拖尾
+        ctx.fillStyle = t.fade;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = fontSize + 'px monospace';
+
+        for (var i = 0; i < columns; i++) {
+            var ch = chars.charAt(Math.floor(Math.random() * chars.length));
+            var y = drops[i] * fontSize;
+            // 雨滴最前端顏色較突出，其餘為綠色
+            ctx.fillStyle = Math.random() > 0.975 ? t.head : t.body;
+            ctx.fillText(ch, i * fontSize, y);
+            if (y > canvas.height && Math.random() > 0.975) {
+                drops[i] = 0;
+            }
+            drops[i]++;
+        }
+    }
+
+    resize();
+    window.addEventListener('resize', resize);
+
+    function drawStatic() {
+        for (var n = 0; n < 60; n++) { draw(); }
+    }
+    if (reduceMotion) {
+        drawStatic();
+        // 靜態畫面：切換風格時重畫一次
+        setInterval(function () {
+            if (syncTheme()) {
+                resize();
+                drawStatic();
+            }
+        }, 500);
+        return;
+    }
+
+    var last = 0;
+    var raf = window.requestAnimationFrame || function (cb) { return setTimeout(function () { cb(Date.now()); }, 50); };
+    function loop(ts) {
+        // 約 20fps，省 CPU
+        if (!last || ts - last > 50) {
+            draw();
+            last = ts;
+        }
+        raf(loop);
+    }
+    raf(loop);
+})();
+#@@@ FILE templates/layout.php sha1=3f054a83962005fb84fbae7894dd97f3900a62cc base=23c7c9dd642e3cc2d0c4579a425e959f731cad9a mode=644 enc=text nl=1
+<?php
+/**
+ * 共用版面
+ * 可用變數：$content $title $user $menu $current $flash
+ */
+$theme = current_theme();
+// 風格切換按鈕顯示「按下去會切換成的風格」
+$themeLabel = $theme === 'light' ? '[ ☾ 深色 ]' : '[ ☀ 淺色 ]';
+$themeTip = $theme === 'light' ? '切換為駭客任務（深色）風格' : '切換為淺色底的駭客任務風格';
+?><!DOCTYPE html>
+<html lang="zh-Hant"<?php echo $theme === 'light' ? ' class="theme-light"' : ''; ?>>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="<?php echo e(Security::csrfToken()); ?>">
+<meta name="login-url" content="<?php echo e(page_url('login.php')); ?>">
+<meta name="base-path" content="<?php echo e(base_url() . '/'); ?>">
+<title><?php echo e($title); ?> :: <?php echo e(Config::get('app', 'name', 'AISLE')); ?></title>
+<link rel="stylesheet" href="<?php echo e(asset('css/matrix.css')); ?>">
+<link rel="stylesheet" href="<?php echo e(asset('css/matrix-light.css')); ?>">
+<script>document.documentElement.className += ' js';</script>
+<script src="<?php echo e(asset('vendor/jquery-1.12.4.min.js')); ?>"></script>
+</head>
+<body class="<?php echo $user ? 'has-user' : 'is-guest'; ?><?php echo $theme === 'light' ? ' theme-light' : ''; ?>">
+<canvas id="matrix-rain" aria-hidden="true"></canvas>
+<div class="crt-overlay" aria-hidden="true"></div>
+
+<?php if ($user): ?>
+<header class="topbar">
+    <a class="brand" href="<?php echo e(url(Acl::defaultPage())); ?>">
+        <?php echo e(Config::get('app', 'name', 'AISLE')); ?><span class="cursor">_</span>
+    </a>
+    <div class="topbar-status">
+        <span class="hide-sm">OPERATOR:</span>
+        <b><?php echo e($user['display_name']); ?></b>
+        <span class="role-badge role-<?php echo e($user['role']); ?>"><?php echo e($user['role']); ?></span>
+        <span id="clock" class="hide-sm"></span>
+        <button type="button" class="btn btn-ghost btn-sm theme-toggle" title="<?php echo e($themeTip); ?>"><?php echo e($themeLabel); ?></button>
+        <form method="post" action="<?php echo e(page_url('logout.php')); ?>" class="inline">
+            <input type="hidden" name="_csrf" value="<?php echo e(Security::csrfToken()); ?>">
+            <button type="submit" class="btn btn-ghost btn-sm">[ 登出 ]</button>
+        </form>
+    </div>
+</header>
+
+<div class="shell">
+    <nav class="sidebar">
+        <div class="nav-title">// MODULES</div>
+        <ul>
+        <?php foreach (Acl::menuTree($menu, $current) as $item): ?>
+            <?php if ($item['is_group']): ?>
+            <li class="nav-group<?php echo ($item['open'] || $item['active']) ? ' open' : ''; ?><?php echo $item['active'] ? ' has-active' : ''; ?>" data-group="<?php echo e($item['key']); ?>">
+                <a href="#" class="nav-group-toggle" role="button" aria-expanded="<?php echo ($item['open'] || $item['active']) ? 'true' : 'false'; ?>">
+                    <span class="nav-icon"><?php echo e($item['icon']); ?></span><?php echo e($item['title']); ?><span class="nav-caret"></span>
+                </a>
+                <ul class="nav-children">
+                <?php foreach ($item['children'] as $child): ?>
+                    <li class="<?php echo $child['key'] === $current ? 'active' : ''; ?>">
+                        <a href="<?php echo e($child['url']); ?>">
+                            <span class="nav-icon"><?php echo e($child['icon']); ?></span><?php echo e($child['title']); ?>
+                        </a>
+                    </li>
+                <?php endforeach; ?>
+                </ul>
+            </li>
+            <?php else: ?>
+            <li class="<?php echo $item['key'] === $current ? 'active' : ''; ?>">
+                <a href="<?php echo e($item['url']); ?>">
+                    <span class="nav-icon"><?php echo e($item['icon']); ?></span><?php echo e($item['title']); ?>
+                </a>
+            </li>
+            <?php endif; ?>
+        <?php endforeach; ?>
+        </ul>
+    </nav>
+
+    <main class="main">
+        <h1 class="page-title glitch" data-text="<?php echo e($title); ?>"><?php echo e($title); ?></h1>
+        <?php if ($flash): ?>
+            <div class="alert alert-<?php echo e($flash['type']); ?>">&gt; <?php echo e($flash['message']); ?></div>
+        <?php endif; ?>
+        <?php echo $content; ?>
+    </main>
+</div>
+<?php else: ?>
+<button type="button" class="btn btn-sm theme-toggle theme-toggle-float" title="<?php echo e($themeTip); ?>"><?php echo e($themeLabel); ?></button>
+<main class="guest">
+    <?php echo $content; ?>
+</main>
+<?php endif; ?>
+
+<script src="<?php echo e(asset('js/matrix-rain.js')); ?>"></script>
+<script src="<?php echo e(asset('js/app.js')); ?>"></script>
+</body>
+</html>
+#@@@ END count=10

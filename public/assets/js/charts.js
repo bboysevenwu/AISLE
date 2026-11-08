@@ -42,19 +42,61 @@
         { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
         { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [1, 3], rotation: 0, color: 'rgba(0,0,0,0.5)' }
     ];
-    var INK = '#00ff41';       // 主要文字
-    var INK_DIM = '#00b82e';   // 次要文字
-    var GRID = '#0a2a12';      // 格線
-    var AXIS = '#00661a';      // 軸線
-    var NEUTRAL = '#7dffb0';   // 圖例中代表「參數」的中性色
-    var BAND = 'rgba(0, 255, 65, 0.05)';  // TBT 交錯底色
-    var OOS_COLOR = '#ff3b3b';  // spec 線：OOS（規格界限）
-    var OOC_COLOR = '#ffb000';  // spec 線：OOC（管制界限）
+    // 文字、格線、軸線等依畫面風格切換（body.theme-light = 淺色）；機台色盤兩種風格共用
+    // （PALETTE 另以淺色底 #ffffff 檢查過，同樣全部通過）
+    var THEMES = {
+        dark: {
+            INK: '#00ff41',                 // 主要文字
+            INK_DIM: '#00b82e',             // 次要文字
+            GRID: '#0a2a12',                // 格線
+            AXIS: '#00661a',                // 軸線
+            NEUTRAL: '#7dffb0',             // 圖例中代表「參數」的中性色
+            BAND: 'rgba(0, 255, 65, 0.05)', // TBT 交錯底色
+            INACTIVE: '#1f4a2a',            // 圖例關閉的項目
+            TIP_BG: 'rgba(0, 10, 3, 0.95)',
+            TIP_SHADOW: 'box-shadow: 0 0 12px rgba(0,255,65,0.3);',
+            MASK: 'rgba(0, 0, 0, 0.6)',
+            HOVER: 'rgba(0,255,65,0.06)',
+            ZOOM_FILL: 'rgba(0,255,65,0.12)',
+            ZOOM_AREA: 'rgba(0,255,65,0.08)',
+            OOS: '#ff3b3b',                 // spec 線：OOS（規格界限）
+            OOC: '#ffb000'                  // spec 線：OOC（管制界限）
+        },
+        light: {
+            INK: '#00591a',
+            INK_DIM: '#2e6b3c',
+            GRID: '#dcefe1',
+            AXIS: '#8fbf9a',
+            NEUTRAL: '#2e6b3c',
+            BAND: 'rgba(0, 143, 17, 0.06)',
+            INACTIVE: '#b5cdb9',
+            TIP_BG: 'rgba(255, 255, 255, 0.97)',
+            TIP_SHADOW: 'box-shadow: 0 2px 10px rgba(0,80,20,0.18);',
+            MASK: 'rgba(255, 255, 255, 0.7)',
+            HOVER: 'rgba(0,143,17,0.08)',
+            ZOOM_FILL: 'rgba(0,143,17,0.15)',
+            ZOOM_AREA: 'rgba(0,143,17,0.10)',
+            OOS: '#c62828',
+            OOC: '#b26a00'
+        }
+    };
+    var T, INK, INK_DIM, GRID, AXIS, NEUTRAL, BAND;
+    function setTheme(name) {
+        T = THEMES[name] || THEMES.dark;
+        INK = T.INK;
+        INK_DIM = T.INK_DIM;
+        GRID = T.GRID;
+        AXIS = T.AXIS;
+        NEUTRAL = T.NEUTRAL;
+        BAND = T.BAND;
+    }
+    setTheme($('body').hasClass('theme-light') ? 'light' : 'dark');
+    // spec 線的顏色依風格取 T.OOS / T.OOC，畫圖時才查（切換風格後會跟著變）
     var SPEC_KEYS = [
-        { key: 'upper_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' },
-        { key: 'upper_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
-        { key: 'lower_ooc', label: 'OOC', color: OOC_COLOR, type: 'dashed' },
-        { key: 'lower_oos', label: 'OOS', color: OOS_COLOR, type: 'solid' }
+        { key: 'upper_oos', label: 'OOS', colorKey: 'OOS', type: 'solid' },
+        { key: 'upper_ooc', label: 'OOC', colorKey: 'OOC', type: 'dashed' },
+        { key: 'lower_ooc', label: 'OOC', colorKey: 'OOC', type: 'dashed' },
+        { key: 'lower_oos', label: 'OOS', colorKey: 'OOS', type: 'solid' }
     ];
     var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
 
@@ -87,11 +129,11 @@
             textStyle: { color: INK, fontFamily: FONT },
             animationDuration: 400,
             tooltip: {
-                backgroundColor: 'rgba(0, 10, 3, 0.95)',
+                backgroundColor: T.TIP_BG,
                 borderColor: INK_DIM,
                 borderWidth: 1,
                 textStyle: { color: INK, fontFamily: FONT, fontSize: 13 },
-                extraCssText: 'box-shadow: 0 0 12px rgba(0,255,65,0.3);'
+                extraCssText: T.TIP_SHADOW
             },
             grid: { left: 50, right: 24, top: 40, bottom: 40, containLabel: false }
         };
@@ -177,11 +219,11 @@
             lines.push({
                 name: k.key,
                 yAxis: v,
-                lineStyle: { color: k.color, type: k.type, width: 1.5 },
+                lineStyle: { color: T[k.colorKey], type: k.type, width: 1.5 },
                 label: {
                     show: true,
                     position: k.key.indexOf('upper') === 0 ? 'insideEndTop' : 'insideEndBottom',
-                    color: k.color,
+                    color: T[k.colorKey],
                     fontFamily: FONT,
                     formatter: k.label + ' ' + fmt(v)
                 }
@@ -220,7 +262,7 @@
             pageTextStyle: { color: INK },
             pageIconColor: INK,
             pageIconInactiveColor: AXIS,
-            inactiveColor: '#1f4a2a',
+            inactiveColor: T.INACTIVE,
             itemWidth: 26,
             itemHeight: 10
         };
@@ -257,7 +299,7 @@
     }
 
     function loadingOpts() {
-        return { text: 'LOADING...', color: INK, textColor: INK, maskColor: 'rgba(0, 0, 0, 0.6)', fontFamily: FONT };
+        return { text: 'LOADING...', color: INK, textColor: INK, maskColor: T.MASK, fontFamily: FONT };
     }
 
     /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
@@ -422,7 +464,7 @@
         opt.legend = legendBase(group.params.slice(0));
         opt.legend.formatter = function (name) { return shortName(name, group); };
         opt.tooltip.trigger = 'axis';
-        opt.tooltip.axisPointer = { type: 'shadow', shadowStyle: { color: 'rgba(0,255,65,0.06)' } };
+        opt.tooltip.axisPointer = { type: 'shadow', shadowStyle: { color: T.HOVER } };
         opt.tooltip.formatter = function (params) {
             if (!params.length) {
                 return '';
@@ -548,9 +590,9 @@
             { type: 'inside' },
             {
                 type: 'slider', height: 18, bottom: 12,
-                borderColor: AXIS, fillerColor: 'rgba(0,255,65,0.12)',
+                borderColor: AXIS, fillerColor: T.ZOOM_FILL,
                 handleStyle: { color: INK_DIM }, moveHandleStyle: { color: INK_DIM },
-                dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: 'rgba(0,255,65,0.08)' } },
+                dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: T.ZOOM_AREA } },
                 textStyle: { color: INK_DIM },
                 labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
             }
@@ -822,6 +864,16 @@
         });
         $('.cd-table-btn').on('click', function () {
             boxOf(this).$el.find('.cd-table').toggle();
+        });
+
+        // 切換畫面風格：換配色後用 cache 重畫，不重新取資料
+        $(document).on('aisle:theme', function (e, theme) {
+            setTheme(theme);
+            if (cache.tbt) {
+                showTbt();
+                showSingle();
+                showNewest();
+            }
         });
 
         var resizeTimer = null;

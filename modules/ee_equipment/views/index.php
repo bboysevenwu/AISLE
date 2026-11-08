@@ -1,5 +1,5 @@
 <div class="panel">
-    <div class="panel-head">&gt; EQUIPMENT STATUS <span class="dim" id="eq-time" style="float:right;color:#000"></span></div>
+    <div class="panel-head">&gt; EQUIPMENT STATUS <span class="panel-head-aside" id="eq-time"></span></div>
     <div class="panel-body">
         <table class="table">
             <thead>

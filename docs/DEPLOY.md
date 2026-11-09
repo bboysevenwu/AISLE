@@ -140,7 +140,7 @@ chown -R apache:apache /var/www/html/aisle/storage
 chmod -R 775 storage
 ```
 
-`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用。
+`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用，`storage/uploads` 存 Pending Issue 的圖片（程式會自動建立 `pending_issue/<年月>/` 子資料夾）。
 
 ## 11. 設定 Apache
 
@@ -268,6 +268,22 @@ crontab -e
 由使用 `config/app.ini` `[charts_db]` 的版本升級時：把連線設定搬到每張圖表 ini 的 `[db]`（`host` 改名為 `ip`），`[charts_db]` 可以刪除。
 
 由舊版圖表 Demo 升級時：`config/app.ini` 的 `[chart_demo]` 區段可以刪除；舊網址 `index.php?m=chart_demo` 改為 `index.php?m=m1bf`。
+
+## 17-1.（選用）啟用 Pending Issue Control Table
+
+1. 建立資料表（只需一次，重複執行不影響既有資料）：
+   ```bash
+   mysql -u root -p aisle < sql/migrations/20261110_pending_issue.sql
+   ```
+2. 建立圖片資料夾並讓 Apache 可寫入：
+   ```bash
+   mkdir -p storage/uploads
+   chown -R apache:apache storage/uploads
+   chmod -R 775 storage/uploads
+   ```
+3. 確認 `php.ini`：`file_uploads = On`，`upload_max_filesize`、`post_max_size` 大於 `config/pending_issue.ini` 的 `max_mb`（預設 5 MB，建議設 8M）
+4. `config/pending_issue.ini`：依需要調整機型、分類、Sponsor 身份、匯出開關；`idle_seconds` 要小於 `app.ini` 的 `session_idle`
+5. `python scripts/python/check_config.py`，再以 EE 帳號開啟「Pending Issue // CONTROL TABLE」
 
 ## 18. 不能 git pull 時的更新方式（單檔更新）
 

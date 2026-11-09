@@ -20,7 +20,8 @@ AISLE/
 ├── README.md
 ├── config/
 │   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
-│   └── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   └── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
 ├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
 │   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
 │   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
@@ -47,6 +48,7 @@ AISLE/
 │   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
 │   ├── pe_recipe/             # 只有 PE
 │   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
+│   ├── pending_issue/         # Pending Issue Control Table，只有 EE（見第 11 節）
 │   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
@@ -558,3 +560,38 @@ class BSLrChart extends ChartSource
 - 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
 
 ![charts](docs/screenshots/charts.png)
+
+## 11. Pending Issue Control Table（`?m=pending_issue`）
+
+追蹤各機台的 pending issue。只有 **EE** 能使用（查詢、新增、編輯、刪除、匯出），**ADMIN** 全部可以，PE 看不到選單、直接開網址會 403。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.trash` / `action.restore` = `"ADMIN"`（看已刪除、還原） |
+| `config/pending_issue.ini` | 機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
+| `modules/pending_issue/` | controller + view |
+| `public/assets/js/pending_issue.js` | 表格、篩選、Sponsor 元件、貼圖、輪詢、衝突視窗 |
+| `sql/migrations/20261110_pending_issue.sql` | 建表（`pending_issues`、`pending_issue_status_logs`、`pending_issue_images`、`pending_issue_presence`） |
+| `storage/uploads/pending_issue/<年月>/` | 圖片檔（網址無法直接讀取） |
+
+**欄位**：機台（必填，機型依代號自動判定，例 `APAN01` → 1980 (PAN)）、機型、分類（PE/YED HL / 選機表 / Aging parts / Others）、Issue 描述（必填）、Initial date、狀態（Open / Monitor / Close）、Sponsor（AISLE 使用者）、Check point date、Remark、圖片。
+
+**畫面**
+
+- 上方機型頁籤（括號內是未結案筆數），下方是分類 × 狀態統計，點數字直接套用篩選
+- 篩選：Issue 狀態（多選，預設 Open + Monitor）、分類（多選）、機台、Sponsor、關鍵字、只看 Check point 逾期；條件寫在網址上，重新整理或分享網址都會保留
+- 點欄位標題排序（第三次點回預設：Open → Monitor → Close、Check point 早的在前）；Check point 已過且未 Close 顯示紅字「逾期 N 天」
+- **Sponsor**：點 ▼ 展開清單，或直接打字篩選（比對帳號與顯示名稱、不分大小寫），↑↓ / Enter / Esc 操作；只能選清單裡的人（`[sponsor] roles` 的啟用帳號）
+- **狀態紀錄**：每次狀態改變都寫進 `pending_issue_status_logs`（誰、何時、從哪個狀態），表格顯示最後改狀態的人，編輯視窗有完整歷程
+- **圖片**：編輯視窗中 Ctrl+V 貼上截圖、拖曳或選檔；只收 PNG / JPG / GIF（以檔案內容判斷）。圖片經 `?a=image` 檢查權限後才輸出：未存檔的暫存圖只有上傳者、已刪除 issue 的圖只有 ADMIN 看得到
+- **軟刪除**：刪除只標記 `deleted_at`；ADMIN 勾「顯示已刪除」後可以還原
+- **匯出 CSV**：匯出目前篩選與排序的結果（UTF-8 BOM，Excel 直接開）；`[export] enabled = Off` 時按鈕隱藏、網址回 404
+- **IE11**：開啟頁面時跳出警告視窗（IE11 無法貼上截圖，拖曳與選檔可用）
+
+**多人同時操作**
+
+- 樂觀鎖：每筆有 `version`，存檔時比對。別人先存過 → 回 409，視窗列出「你的版本 / 最新版本」不同的欄位，可選 **覆蓋（用我的版本）**、**載入最新** 或取消。覆蓋時仍會比對版本，不會蓋掉自己沒看過的第三人修改
+- 每 `poll_seconds`（預設 10）秒輪詢一次，同步別人的新增 / 修改 / 刪除，並顯示「某某 編輯中」；別人改了你正在編輯的那筆，視窗上方會立刻提示
+- 閒置 `idle_seconds`（預設 300）秒沒操作，或分頁切到背景，就暫停輪詢（右上角顯示「⏸ 已暫停同步」），讓登入依 `session_idle` 照常逾時；有操作時立即恢復。不設人數上限
+
+![pending issue](docs/screenshots/pending_issue.png)

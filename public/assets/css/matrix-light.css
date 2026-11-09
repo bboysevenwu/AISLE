@@ -127,6 +127,52 @@ body.theme-light .meter span.weak { background: #c62828; box-shadow: none; }
 /* ---------- charts 圖表頁 ---------- */
 body.theme-light .cd-box-head { border-bottom-color: #b9e3c3; }
 
+/* ---------- Pending Issue Control Table ---------- */
+body.theme-light .pi-tabs { border-bottom-color: #00a832; }
+body.theme-light .pi-tab { border-color: #7fbf8e; border-bottom-color: transparent; color: #2e6b3c; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .pi-tab:hover { color: #00591a; }
+body.theme-light .pi-tab.active { color: #fff; background: #00801a; border-color: #00801a; }
+body.theme-light .pi-sum-card { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.9); }
+body.theme-light .pi-sum-card:hover { border-color: #008f11; }
+body.theme-light .pi-st-open { color: #c62828; text-shadow: none; }
+body.theme-light .pi-st-monitor { color: #b26a00; }
+body.theme-light .pi-st-close { color: #2e6b3c; }
+body.theme-light .pi-live { color: #fff; }
+body.theme-light .pi-live.is-error { color: #c62828; background: #fff; }
+body.theme-light .pi-head-btn { border-color: #fff; color: #fff; }
+body.theme-light .pi-head-btn:hover { background: #fff; color: #00801a; }
+body.theme-light label.pi-check { color: #00591a; }
+body.theme-light label.pi-check-open,
+body.theme-light label.pi-check-trash { color: #c62828; }
+body.theme-light label.pi-check-monitor { color: #b26a00; }
+body.theme-light label.pi-check-close { color: #2e6b3c; }
+body.theme-light .pi-combo-btn { border-left-color: #7fbf8e; color: #00591a; }
+body.theme-light .pi-combo-list { border-color: #008f11; background: #fff; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.2); }
+body.theme-light .pi-combo-list li.is-active { background: #00801a; color: #fff; }
+body.theme-light .pi-combo-list li.is-active .dim { color: #d6eedc; }
+body.theme-light .pi-table th[data-sort]:hover,
+body.theme-light .pi-table th.is-sorted { color: #00591a; }
+body.theme-light .pi-row-close td { color: #5c8a68; }
+body.theme-light .pi-remark { color: #2e6b3c; }
+body.theme-light .pi-by,
+body.theme-light .pi-imgcount { color: #2e6b3c; }
+body.theme-light .pi-overdue { color: #c62828 !important; }
+body.theme-light .pi-who { color: #b26a00; }
+body.theme-light .pi-tag-open { color: #c62828; border-color: #c62828; }
+body.theme-light .pi-tag-monitor { color: #b26a00; border-color: #b26a00; }
+body.theme-light .pi-tag-close { color: #2e6b3c; border-color: #2e6b3c; }
+body.theme-light .pi-modal { background: rgba(0, 40, 10, 0.45); }
+body.theme-light .pi-dialog { background: #fff; box-shadow: 0 4px 24px rgba(0, 60, 20, 0.35); }
+body.theme-light .pi-close { color: #fff; }
+body.theme-light .pi-warn { border-color: #b26a00; color: #b26a00; background: #fff6e0; }
+body.theme-light .pi-paste { border-color: #7fbf8e; color: #2e6b3c; }
+body.theme-light .pi-paste:focus,
+body.theme-light .pi-paste.is-over { border-color: #008f11; color: #00591a; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+body.theme-light label.pi-file { color: #00801a; }
+body.theme-light .pi-thumb { border-color: #7fbf8e; background: #e3f6e8; }
+body.theme-light .pi-thumb-del { border-color: #c62828; background: #fff; color: #c62828; }
+body.theme-light .pi-diff tr.pi-diff-hot td { color: #b26a00; }
+
 /* ---------- 手機版 ---------- */
 @media (max-width: 760px) {
     body.theme-light .sidebar { border-bottom-color: #b9e3c3; }

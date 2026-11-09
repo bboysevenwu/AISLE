@@ -553,9 +553,16 @@
             markArea: { silent: true, itemStyle: { color: BAND }, data: bands }
         });
 
+        // 機台名稱轉 90 度：X 軸下方的高度依最長的名稱計算（名稱 + 刻度間距 + 縮放拉桿），
+        // 圖表高度同步加高，資料區不會因為名稱變長而被壓縮
+        var labelPx = 0;
+        $.each(segments, function (i, seg) { labelPx = Math.max(labelPx, textWidth(seg.tool)); });
+        var bottom = Math.max(70, Math.ceil(labelPx) + 52);
+        fitHeight(box, bottom - 70);
+
         var opt = baseOption();
         opt.grid.top = 64;
-        opt.grid.bottom = 70;
+        opt.grid.bottom = bottom;
         opt.legend = legendBase(legend);
         opt.tooltip.trigger = 'axis';
         opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
@@ -580,6 +587,7 @@
             axisTick: { show: false },
             axisLabel: {
                 color: INK,
+                rotate: 90,
                 interval: function (idx) { return centers.hasOwnProperty(idx); },
                 formatter: function (v) { return String(v).split('|')[0]; }
             },
@@ -606,6 +614,32 @@
             return shortName(p, group) + ' ' + LINE_NAMES[i % LINE_NAMES.length];
         });
         box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
+    }
+
+    /** 文字在圖表字型下的寬度（px），用來計算轉 90 度後需要的高度 */
+    var measureCtx = null;
+    function textWidth(text) {
+        if (measureCtx === null) {
+            var c = document.createElement('canvas');
+            measureCtx = c.getContext ? c.getContext('2d') : false;
+        }
+        if (!measureCtx) {
+            return String(text).length * 8;
+        }
+        measureCtx.font = '12px ' + FONT;
+        return measureCtx.measureText(String(text)).width;
+    }
+
+    /** 圖表高度 = CSS 原本的高度 + extra（px）；高度有變時通知 ECharts 重新排版 */
+    function fitHeight(box, extra) {
+        var $c = box.$el.find('.cd-chart');
+        var before = $c.height();
+        $c.css('height', '');                       // 先還原，讀 CSS（含手機版）的原始高度
+        var h = $c.height() + Math.max(0, extra);
+        $c.height(h);
+        if (h !== before) {
+            box.chart.resize();
+        }
     }
 
     // ---------- single 點擊數據點開啟 Url ----------

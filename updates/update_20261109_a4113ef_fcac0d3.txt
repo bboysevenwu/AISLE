@@ -1,0 +1,4600 @@
+#AISLE-UPDATE v1
+# AISLE single-file update. Apply on the server:
+#   python scripts/python/apply_update.py <this file>          (preview)
+#   python scripts/python/apply_update.py <this file> --apply  (apply)
+#@ from=a4113ef18d658b7b092552c07a832a7fc1943c32
+#@ to=fcac0d3ba1a80d93df74304627ed43a814049fee
+#@ created=2026-11-09 13:38:59
+#@ note=新增 Pending Issue Control Table（PR #13）。套用後需手動執行 sql/migrations/20261110_pending_issue.sql，並讓 storage/uploads 可寫入；config/config.ini 會被覆蓋，伺服器若自行改過請先比對（詳見 docs/DEPLOY.md 17-1）
+#@@@ FILE .gitignore sha1=f9357357b06720a0e4f5eef87f3706f2b39f1b46 base=b34d5f05e02280abc1be65105daaea12a32106fd mode=644 enc=text nl=1
+config/app.ini
+storage/logs/*
+storage/backups/*
+storage/uploads/*
+!storage/logs/.gitkeep
+!storage/backups/.gitkeep
+!storage/uploads/.gitkeep
+.DS_Store
+public/assets/vendor/*.js
+
+# Python
+__pycache__/
+*.pyc
+#@@@ FILE README.md sha1=4beebd07885a92f4462ef2e3159cefa186d61de4 base=5aa73e1d436c753f8c4309774e90ddb501d4fe7b mode=644 enc=text nl=1
+# AISLE 系統架構
+
+多功能、模組化的內部網頁系統。依「身份」(EE / PE) 決定每位使用者能看到哪些功能頁面，介面採用駭客任務 (The Matrix) 綠色終端機風格。
+
+| 層級 | 技術 | 備註 |
+|---|---|---|
+| 後端 | PHP 5.4 | 不使用 5.5+ 語法；資料庫一律 PDO prepared statement |
+| 資料庫 | MariaDB 5.5 / 10.x | InnoDB、utf8mb4 |
+| 輔助腳本 | Python 2.7、Bash | 權限檢查、建帳號、備份、產生模組 |
+| 前端 | HTML5、jQuery 1.12.4、原生 Canvas | 不需要 Node / 建置工具 |
+
+---
+
+## 1. 資料夾結構
+
+```
+AISLE/
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
+├── .gitignore
+├── README.md
+├── config/
+│   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
+│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   └── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
+├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
+│   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
+│   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
+├── core/                      # 框架核心（一般開發不需修改）
+│   ├── bootstrap.php          # 載入類別、設定、Session
+│   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
+│   ├── App.php                # 路由：index.php?m=<頁面>&a=<動作>，依 config.ini 的 route 載入
+│   ├── Acl.php                # 讀 config.ini，判斷權限、產生選單
+│   ├── Auth.php               # 登入 / 登出 / 失敗鎖定 / 閒置登出
+│   ├── Registration.php       # 註冊驗證、依 EE 名單判定身份
+│   ├── guard.php              # 頁面內細部判斷 require_role() / has_role() / csrf_field() …
+│   ├── password_compat.php    # PHP 5.4 補上 password_hash() / password_verify()
+│   ├── Password.php           # 包裝 password_hash()，成本讀 app.ini
+│   ├── Security.php           # 安全亂數、常數時間比較、CSRF
+│   ├── Database.php           # PDO 單例 + 查詢捷徑
+│   ├── Controller.php         # 模組 Controller 基底類別
+│   ├── View.php               # 純 PHP 樣板
+│   └── helpers.php            # e() js() url() asset() audit() 等
+├── modules/                   # 功能模組（route = "module:<資料夾>"）
+│   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
+│   ├── dashboard/             # EE + PE
+│   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── profile/               # EE + PE（改密碼）
+│   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
+│   ├── pe_recipe/             # 只有 PE
+│   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
+│   ├── pending_issue/         # Pending Issue Control Table，只有 EE（見第 11 節）
+│   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
+│       ├── controller.php     #   class AdminUsersController extends Controller
+│       └── views/index.php    #   該模組的畫面
+├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
+├── templates/
+│   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
+│   ├── error.php
+│   └── auth/                  # 登入、註冊頁面樣板
+├── public/                    # ★ 唯一對外的目錄
+│   ├── index.php              # 功能模組入口
+│   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
+│   ├── register.php           # 註冊（含帳號即時檢查）
+│   ├── logout.php             # 登出（需 CSRF token）
+│   ├── legacy/pe_notice.php   # 獨立頁面範例（route = "public/..."），第一行 require auth_check.php
+│   ├── .htaccess
+│   └── assets/
+│       ├── css/matrix.css     # 駭客任務主題
+│       ├── css/matrix-light.css # 淺色版（body.theme-light 時覆寫顏色）
+│       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
+│       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
+│       ├── js/charts.js       # 圖表頁的 ECharts 繪圖（所有圖表共用）
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
+├── scripts/
+│   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
+│   └── shell/
+│       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
+│       ├── create_user.sh     # 建立使用者（互動輸入密碼）
+│       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── new_chart.sh       # 由範本產生新圖表 charts/<名稱>.ini + .php（見第 10 節）
+│       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
+├── sql/
+│   ├── schema.sql             # 建表
+│   └── seed.sql               # 初始管理員
+├── storage/
+│   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
+│   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
+└── docs/screenshots/          # 介面截圖
+```
+
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
+
+---
+
+## 2. 資料庫
+
+`sql/schema.sql` 建立三張表：
+
+| 資料表 | 用途 |
+|---|---|
+| `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
+| `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
+| `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+
+設計重點：
+
+- **`role` 用 VARCHAR 而非 ENUM**：新增身份只要改 `config.ini`，不必 `ALTER TABLE`。
+- **`password_hash` 留 255 長度**：目前 bcrypt 固定 60 字元，保留未來更換演算法的空間。
+- **`created_at` 用 DATETIME 由程式寫入**：MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 `CURRENT_TIMESTAMP`，這個位置留給 `updated_at`。
+- 有索引的 VARCHAR 欄位長度 ≤ 191，避免舊版 InnoDB 在 utf8mb4 下超過 767 bytes 索引上限。
+
+### 密碼雜湊（PHP 5.4 的做法）
+
+`password_hash()` / `password_verify()` 是 PHP 5.5 才有的函式。`core/password_compat.php` 在函式不存在時補上同名函式：以 `crypt()` 搭配 `$2y$` bcrypt（PHP ≥ 5.3.7 支援），鹽來自 `openssl_random_pseudo_bytes`，驗證時使用常數時間比較。因此程式碼照標準 API 寫 `password_hash($pw, PASSWORD_BCRYPT)`，在 PHP 5.4 與 5.5+ 都能執行，雜湊格式也完全相同；日後升級 PHP 只要刪掉這個檔案，舊密碼不需重設。
+
+---
+
+## 3. 身份 → 頁面權限與路由（`config/config.ini` + `core/auth_check.php`）
+
+### config.ini
+
+```ini
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
+ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
+
+; ★ 頁面與路由
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
+action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
+```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
+
+`route` 有三種寫法：
+
+| route | 程式位置 | 網址 | 適合 |
+|---|---|---|---|
+| `module:<資料夾>` | `modules/<資料夾>/controller.php` | `index.php?m=<代號>&a=<動作>` | 有多個動作、AJAX 的功能 |
+| `pages/xxx.php` | `pages/xxx.php` | `index.php?m=<代號>` | 單純頁面，不用寫 Controller，自動套用版面 |
+| `public/xxx.php` | `public/xxx.php` | 直接開啟該檔案 | 既有網站的舊頁面，只需在第一行加一行 require |
+
+### auth_check.php：所有頁面共用同一套檢查
+
+```
+使用者開啟頁面
+  ├─ index.php?m=xxx  →  App 路由 ──────────┐
+  └─ public/legacy/xxx.php（第一行 require）─┤
+                                             ▼
+                              core/auth_check.php
+                    1. 未登入           → 導向 login.php（AJAX 回 401）
+                    2. 頁面未登記在 config.ini → 403
+                    3. 首次登入未改密碼 → 導向個人設定
+                    4. 身份不在 [access] 清單、或不符 action.* → 403
+                                             ▼
+                          通過 → 依 route 載入頁面程式
+```
+
+既有頁面接上權限只要在第一行加入（依檔案位置調整 `../`）：
+
+```php
+<?php require_once dirname(__FILE__) . '/../../core/auth_check.php';
+// 通過檢查後才會執行到這裡；可用 $AUTH_USER、$AUTH_PAGE
+```
+
+auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出頁面代號，所以頁面本身不用寫自己的代號或身份。檔案若沒登記在 config.ini，即使加了 require 也一律拒絕，避免漏設權限的頁面被看到。獨立頁面送出 POST 時會檢查 CSRF，舊表單請加上 `<?php echo csrf_field(); ?>`；若一時無法修改，可把 `[settings] direct_page_csrf` 設為 `Off`。
+
+權限一律在伺服器端檢查，隱藏選單只是介面效果；直接輸入網址也會得到 403。目前範例的結果：
+
+| 頁面 | EE | PE | ADMIN |
+|---|:-:|:-:|:-:|
+| 主控台 dashboard | ✓ | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
+| 個人設定 profile | ✓ | ✓ | ✓ |
+| 設備狀態 ee_equipment | ✓ | | ✓ |
+| 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
+| 製程配方 pe_recipe | | ✓ | ✓ |
+| 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 › M1BF m1bf（module:charts） | ✓ | ✓ | ✓ |
+| 使用者管理 admin_users | | | ✓ |
+
+修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
+
+---
+
+## 4. 註冊、登入、登出與權限檢查
+
+### 流程
+
+| 檔案 | 方法 | 行為 |
+|---|---|---|
+| `public/register.php` | GET | 註冊頁 |
+| | GET `?check_account=xxx`（AJAX） | 回傳帳號是否可用 |
+| | POST | 驗證 → 依 EE 名單判定身份 → 寫入 `users`，並在 `audit_logs` 記錄身份來源 |
+| `public/login.php` | GET / POST | 驗證帳密，成功後 `session_regenerate_id()` 並把使用者與身份寫入 `$_SESSION['user']` |
+| `public/logout.php` | POST（或 `?_csrf=`） | 清除 Session 與 Cookie，導回 `login.php?bye=1` |
+
+登入與註冊表單由 `js/auth.js` 以 jQuery 做即時驗證，並用 `$.ajax` 非同步送出，伺服器回 JSON。瀏覽器關閉 JavaScript 時表單照常以一般 POST 送出，伺服器端也會做完整驗證。
+
+### 註冊時的身份判定（`config.ini` 的 `[register]` 與 `[ee_accounts]`）
+
+註冊表單只填帳號、顯示名稱與密碼。身份在註冊當下依 INI 名單判定，直接寫入 `users.role`：
+
+```ini
+[register]
+enabled          = On
+require_approval = Off     ; On = 註冊後需管理員啟用
+listed_role      = "EE"    ; 名單上的帳號
+unlisted_role    = "PE"    ; 名單外的帳號；設為 "" 則名單外不能註冊
+
+[ee_accounts]              ; EE 正面表列，一行一個帳號，不分大小寫
+account[] = "neo"
+account[] = "trinity"
+```
+
+- 名單只在註冊時讀取。之後增減名單，不會改變已經註冊的人的身份，要調整請直接改資料庫的 `users.role`。
+- ADMIN 永遠無法經由註冊取得；`listed_role`、`unlisted_role` 若設成 superuser 角色會被忽略。
+- `audit_logs` 會記錄每個帳號的身份來源（`ee_accounts` 或 `unlisted_role`）。
+- 改完名單可以執行 `python scripts/python/check_config.py`，它會列出名單內容，並檢查帳號格式與重複。
+
+### 共用權限檢查函式（`core/guard.php`）
+
+```php
+require_login();                    // 未登入 → 導向 login.php；AJAX 回 401
+require_role('PE');                 // 身份不符 → 403（ADMIN 一律通過）
+require_role('EE,PE');              // 多個身份用逗號
+if (has_role('EE,PE')) { ... }      // 只判斷、不中止
+if (can_access('shared_report', 'export')) { ... }   // 依 [access] 與 [page.xxx] 判斷
+echo csrf_field();                  // 表單的 CSRF 隱藏欄位
+current_user();  current_role();  is_logged_in();
+```
+
+頁面層級的權限由 `auth_check.php` 處理；這些函式用在頁面內更細的判斷，例如只對某身份顯示某個按鈕。
+
+---
+
+## 5. 新增功能頁面
+
+只需要改 config.ini，核心程式（`core/`）不用動：
+
+1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
+2. 在 `[access]` 把頁面代號加進能使用它的身份
+3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
+
+例：新增一個 EE、PE 都能看的聯絡人頁面
+
+```ini
+[access]
+EE = "dashboard, ..., team_contacts"
+PE = "dashboard, ..., team_contacts"
+
+[page.team_contacts]
+title = "聯絡人 // CONTACTS"
+route = "pages/team_contacts.php"
+order = 60
+```
+
+需要多個動作或 AJAX 時用模組，腳本會產生程式骨架並自動完成上面第 2、3 步：
+
+```bash
+# 產生 modules/ee_alarm/，加入 EE、PE 的 [access] 清單並新增 [page.ee_alarm]
+bash scripts/shell/new_module.sh ee_alarm "EE,PE" "警報中心 // ALARMS" 35
+```
+
+產生的骨架：
+
+```php
+<?php
+class EeAlarmController extends Controller
+{
+    public function indexAction()          // index.php?m=ee_alarm
+    {
+        $this->render('index', array('message' => '...'));
+    }
+
+    public function listAction()           // index.php?m=ee_alarm&a=list
+    {
+        $rows = Database::fetchAll('SELECT ... WHERE x = ?', array($x));
+        $this->json(array('ok' => true, 'rows' => $rows));
+    }
+}
+```
+
+Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作')`、`isPost()`、`input()`、`query()`、`flash()`。View 中輸出變數一律用 `e($var)`；要放進 `<script>` 用 `js($var)`。
+
+---
+
+## 6. 安全機制
+
+- bcrypt 密碼雜湊，提高 `bcrypt_cost` 後使用者下次登入自動升級雜湊
+- 連續失敗 5 次鎖定 15 分鐘（`app.ini` 可調），帳號不存在時也執行一次 bcrypt，避免從回應時間猜出帳號
+- 登入成功 `session_regenerate_id()`，閒置 30 分鐘自動登出，Cookie 設 HttpOnly
+- 所有 POST（含 jQuery AJAX，透過 `X-CSRF-Token` 標頭）都檢查 CSRF token；登出也需要 token，避免被外部連結強制登出
+- 註冊無法取得 ADMIN 身份；可開啟 `require_approval` 讓新帳號需管理員啟用，或把 `unlisted_role` 設為空字串只開放名單內帳號註冊
+- 首次登入或被管理員重設密碼後強制改密碼
+- 所有 SQL 使用 PDO prepared statement，`ATTR_EMULATE_PREPARES = false`
+
+---
+
+## 7. PHP 5.4 相容規範
+
+可以用：`array()` 與 `[]` 短陣列、closure、`http_response_code()`、`JSON_UNESCAPED_UNICODE`、`session_status()`。
+
+不能用：
+
+| 不能用 | 版本 | 替代寫法 |
+|---|---|---|
+| `password_hash()` / `password_verify()` | 5.5 | 已由 `core/password_compat.php` 補上，可直接使用 |
+| `finally`、`yield`、`::class`、`array_column()`、`empty(函式())` | 5.5 | try/catch、迴圈、字串類別名稱、先存變數 |
+| `hash_equals()`、`...$args`、`const` 運算式 | 5.6 | `Security::equals()` |
+| `??`、`<=>`、純量 type hint、回傳型別、`random_bytes()` | 7.0 | `array_get()`、`Security::randomBytes()` |
+| `?->`、`match`、`fn() =>` | 8.0 | 一般寫法 |
+
+---
+
+## 8. 部署步驟
+
+完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
+
+1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
+2. `git clone -b main` 到 `/var/www/html/aisle/`
+3. `mysql -u root -p < sql/schema.sql`
+4. 建立 `aisle_app` 資料庫帳號
+5. `mysql -u root -p < sql/seed.sql`
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
+7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
+8. `python scripts/python/check_config.py`
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
+10. 目錄權限（storage 可寫）
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
+13. `admin` / `Neo@Zion2026` 首次登入並改密碼
+14. 註冊測試帳號，驗證 EE / PE 權限
+15.（選用）接入既有舊頁面
+16. 設定每日備份 crontab
+
+---
+
+## 9. 駭客任務主題
+
+| 元素 | 檔案 | 說明 |
+|---|---|---|
+| 數位雨背景 | `js/matrix-rain.js` | Canvas 半形片假名雨，約 20fps；系統設定「減少動態」時改為靜態畫面 |
+| CRT 掃描線 | `css/matrix.css` `.crt-overlay` | 全畫面細橫線疊層 |
+| 終端機面板 | `.panel` `.terminal` | 綠框黑底、亮綠標題列 |
+| 打字機效果 | `AISLE.typewriter()` | 登入頁標語、主控台訊息 |
+| 標題故障效果 | `.glitch` | 滑鼠移上時文字抖動 |
+| 狀態燈 | `.led-run/idle/down` | 綠、暗綠、閃爍紅 |
+| 身份徽章 | `.role-EE/PE/ADMIN` | EE 亮綠、PE 薄荷綠、ADMIN 紅藥丸 |
+
+色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
+
+截圖見 `docs/screenshots/`。
+
+### 風格切換（深色 / 淺色）
+
+上方列（登入、註冊頁在右上角）有 `[ ☀ 淺色 ]` / `[ ☾ 深色 ]` 按鈕，可在「駭客任務」與「淺色底的駭客任務」之間切換，不用重新整理。
+
+| 項目 | 說明 |
+|---|---|
+| 預設 | 深色（駭客任務） |
+| 記憶方式 | cookie `aisle_theme`（`light` / 沒有＝深色），path 為 `base_url` + `/`，一年；每台電腦各自記憶，不寫資料庫 |
+| 套用 | PHP 的 `current_theme()` 讀 cookie，`templates/layout.php` 輸出時就在 `<html>`、`<body>` 加上 `theme-light`，換頁不會閃爍 |
+| 樣式 | `css/matrix-light.css` 全部是 `body.theme-light ...` 覆寫規則，`matrix.css` 本身不變 |
+| 數位雨 / 圖表 | `matrix-rain.js` 依 body class 換色；`charts.js` 收到 `aisle:theme` 事件後換配色並用快取重畫 |
+
+淺色版色票：`#f2fbf4` 底色、`#00591a` 主文字、`#008f11` 強調、`#2e6b3c` 次要文字、`#c62828` 警示紅。
+新頁面請不要在 HTML 寫死顏色（`style="color:..."`），改用 class，淺色版才會跟著變。
+
+---
+
+## 10. 圖表（charts）
+
+多張圖表（BSLr、M1BF、CDM、BMMF…）共用同一個模組 `modules/charts`，每張圖表是選單「圖表 // CHARTS」底下的一頁。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+每張圖表只由兩個同名檔案定義，新增圖表不需要改任何程式：
+
+| 檔案 | 內容 |
+|---|---|
+| `charts/<名稱>.ini` | 畫什麼、怎麼畫：`[page]` 整頁設定、`[plot.<代號>]` 每組圖 |
+| `charts/<名稱>.php` | 部署者寫 SQL，整理成資料格式（`class <名稱>Chart extends ChartSource`） |
+| `config/config.ini` | `[page.<小寫名稱>]`，`route = "module:charts"`、`group = "charts"`；哪些身份看得到寫在 `[access]` |
+
+頁面代號 = 圖表名稱轉小寫：`[page.bslr]` → `charts/BSLr.ini`、`charts/BSLr.php`，網址 `index.php?m=bslr`。
+
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（快捷按鈕由 `quick_days` 設定）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選（`model.<機型>`）；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
+
+### 新增一張圖表
+
+```bash
+bash scripts/shell/new_chart.sh CDM      # 建立 charts/CDM.ini、charts/CDM.php，並印出 config.ini 要貼的區段
+```
+
+1. 編輯 `charts/CDM.ini` 的 `[plot.xxx]`；此時 `source = sample`，用範例資料就能看到完整畫面
+2. 編輯 `charts/CDM.php` 寫 `tools()`、`series()` 的 SQL，寫好把 ini 改成 `source = php`
+3. 把腳本印出的 `[page.cdm]` 貼進 `config/config.ini`，並把 `cdm` 加到 `[access]` 要看得到的身份
+4. `python scripts/python/check_config.py` 檢查
+
+### 設定檔：`charts/<名稱>.ini`
+
+```ini
+[page]
+source       = php          ; php = 用 <名稱>.php 查資料庫；sample = 內建範例資料
+default_days = 60           ; 預設顯示最近幾天
+max_days     = 366          ; 一次最多查幾天
+quick_days   = "7, 30, 90"  ; 快速區間按鈕
+model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
+model.2000   = "PAP"
+
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
+[plot.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+ymin   = 0                         ; Y 軸下限（三張圖共用）
+ymax   = 6                         ; Y 軸上限（三張圖共用）
+newest_ymax = 5                    ; 只改最新值排排站的上限
+upper_oos = 5                      ; spec 線（可留空 = 不畫）
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
+
+[plot.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
+```
+
+- 每個 `[plot.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
+
+### 資料來源：`charts/<名稱>.php`
+
+```php
+<?php
+class BSLrChart extends ChartSource
+{
+    public function tools()
+    {
+        $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM bslr_x_data');
+        $tools = array();
+        foreach ($rows as $r) {
+            $tools[] = $r['tool_id'];
+        }
+        return $tools;
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $where = 'tool_id IN (' . $this->in($tools) . ')
+                  AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        $bind  = array_merge($tools, array($start, $end));
+
+        // 長表（tool_id, data_time, param, value）
+        $a = self::pivot($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+               FROM bslr_x_data WHERE ' . $where, $bind), 'tool_id', 'd', 'param', 'value');
+
+        // 寬表，欄位 c1 / c2 對應參數 BSLr_Y_C1 / BSLr_Y_C2
+        $b = self::wide($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+               FROM bslr_y_summary WHERE ' . $where, $bind),
+            'tool_id', 'd', array('BSLr_Y_C1' => 'c1', 'BSLr_Y_C2' => 'c2'));
+
+        return self::merge($a, $b);   // 不同 table 的結果依機台 + 時間合併
+    }
+}
+```
+
+| 工具（`modules/charts/ChartSource.php`） | 用途 |
+|---|---|
+| `$this->fetchAll($sql, $bind)` | prepared statement 查詢，值一律用 `?` 綁定 |
+| `$this->in($list)` | 產生 `IN (...)` 用的 `?,?,?` |
+| `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
+| `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
+| `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+| `$this->machineOf($tool)` / `$this->machinesOf($tools)` / `$this->toolOf($machine)` | tool_id 與 machine_id 互換（要先實作 `machines()`） |
+| `self::table($name)` | 組出來的 table 名稱（例 `'M1BF_' . $machineId`）檢查後加反引號；table 名稱不能用 `?` 綁定，一定要經過它 |
+
+**table 用 machine_id 時**（例 table `M1BF_HP23`，`HP23` 是 `APAN01` 的 machine_id）：在 `<名稱>.php` 實作 `machines()`，回傳 `array('APAN01' => 'HP23', ...)`（可寫死或從對照表查）。實作後 `tools()` 可以省略（預設用 `machines()` 的 tool_id），`series()` 回傳的 key 也可以直接是 machine_id，controller 會自動換成 tool_id；網頁上的機台名稱一律是 tool_id。範例見 `charts/_template.php` 的寫法 4（每台一個 table）、寫法 5（machine_id 欄位）。
+
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
+
+### 資料格式與載入
+
+後端 `index.php?m=<頁面代號>&a=tbt&start=&end=` 回傳區間內全部機台、ini 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 選用 `"Url": [...]`（與 `Date` 等長）：單台機台趨勢圖點擊數據點會在瀏覽器新分頁開啟該時間點的網址，tooltip 會提示「點擊數據點開啟連結」，資料表多一欄 URL。只接受 `http://`、`https://` 或 `/` 開頭的網址（其他如 `javascript:` 一律忽略）；`pivot()` / `wide()` 最後多給網址欄位名稱即可產生，`merge()` 會保留。沒有 `Url` 時與原本相同
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視
+- 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
+
+![charts](docs/screenshots/charts.png)
+
+## 11. Pending Issue Control Table（`?m=pending_issue`）
+
+追蹤各機台的 pending issue。只有 **EE** 能使用（查詢、新增、編輯、刪除、匯出），**ADMIN** 全部可以，PE 看不到選單、直接開網址會 403。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.trash` / `action.restore` = `"ADMIN"`（看已刪除、還原） |
+| `config/pending_issue.ini` | 機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
+| `modules/pending_issue/` | controller + view |
+| `public/assets/js/pending_issue.js` | 表格、篩選、Sponsor 元件、貼圖、輪詢、衝突視窗 |
+| `sql/migrations/20261110_pending_issue.sql` | 建表（`pending_issues`、`pending_issue_status_logs`、`pending_issue_images`、`pending_issue_presence`） |
+| `storage/uploads/pending_issue/<年月>/` | 圖片檔（網址無法直接讀取） |
+
+**欄位**：機台（必填，機型依代號自動判定，例 `APAN01` → 1980 (PAN)）、機型、分類（PE/YED HL / 選機表 / Aging parts / Others）、Issue 描述（必填）、Initial date、狀態（Open / Monitor / Close）、Sponsor（AISLE 使用者）、Check point date、Remark、圖片。
+
+**畫面**
+
+- 上方機型頁籤（括號內是未結案筆數），下方是分類 × 狀態統計，點數字直接套用篩選
+- 篩選：Issue 狀態（多選，預設 Open + Monitor）、分類（多選）、機台、Sponsor、關鍵字、只看 Check point 逾期；條件寫在網址上，重新整理或分享網址都會保留
+- 點欄位標題排序（第三次點回預設：Open → Monitor → Close、Check point 早的在前）；Check point 已過且未 Close 顯示紅字「逾期 N 天」
+- **Sponsor**：點 ▼ 展開清單，或直接打字篩選（比對帳號與顯示名稱、不分大小寫），↑↓ / Enter / Esc 操作；只能選清單裡的人（`[sponsor] roles` 的啟用帳號）
+- **狀態紀錄**：每次狀態改變都寫進 `pending_issue_status_logs`（誰、何時、從哪個狀態），表格顯示最後改狀態的人，編輯視窗有完整歷程
+- **圖片**：編輯視窗中 Ctrl+V 貼上截圖、拖曳或選檔；只收 PNG / JPG / GIF（以檔案內容判斷）。圖片經 `?a=image` 檢查權限後才輸出：未存檔的暫存圖只有上傳者、已刪除 issue 的圖只有 ADMIN 看得到
+- **軟刪除**：刪除只標記 `deleted_at`；ADMIN 勾「顯示已刪除」後可以還原
+- **匯出 CSV**：匯出目前篩選與排序的結果（UTF-8 BOM，Excel 直接開）；`[export] enabled = Off` 時按鈕隱藏、網址回 404
+- **IE11**：開啟頁面時跳出警告視窗（IE11 無法貼上截圖，拖曳與選檔可用）
+
+**多人同時操作**
+
+- 樂觀鎖：每筆有 `version`，存檔時比對。別人先存過 → 回 409，視窗列出「你的版本 / 最新版本」不同的欄位，可選 **覆蓋（用我的版本）**、**載入最新** 或取消。覆蓋時仍會比對版本，不會蓋掉自己沒看過的第三人修改
+- 每 `poll_seconds`（預設 10）秒輪詢一次，同步別人的新增 / 修改 / 刪除，並顯示「某某 編輯中」；別人改了你正在編輯的那筆，視窗上方會立刻提示
+- 閒置 `idle_seconds`（預設 300）秒沒操作，或分頁切到背景，就暫停輪詢（右上角顯示「⏸ 已暫停同步」），讓登入依 `session_idle` 照常逾時；有操作時立即恢復。不設人數上限
+
+![pending issue](docs/screenshots/pending_issue.png)
+#@@@ FILE config/config.ini sha1=890c5a44a51261d0442e978d3a3d89ba27272f83 base=4beefbc909e07c5e625d30106e03ed1943e823f3 mode=644 enc=text nl=1
+; =====================================================================
+; AISLE 功能頁面設定：身份 → 可用頁面清單、頁面路由、註冊名單
+; ---------------------------------------------------------------------
+; 由 core/Acl.php 以 parse_ini_file($file, true) 讀取，每次請求重新讀取，
+; 存檔後立即生效，不需重啟。
+;
+; 新增一個功能頁面只需要兩步，不必改任何核心程式：
+;   1. 在 [access] 把頁面代號加進可以使用它的身份
+;   2. 新增 [page.<頁面代號>] 區段，寫上 title 與 route
+;
+; 寫法注意：
+;   1. 字串一律加雙引號（含中文、空白、斜線、括號時不加引號會解析失敗）
+;   2. 不可使用 yes / no / true / false / null / none 當作 key
+;   3. 修改後可執行 python scripts/python/check_config.py 檢查
+; =====================================================================
+
+[settings]
+; 登入後預設進入的頁面
+default_page     = "dashboard"
+; 獨立頁面（route 位於 public/ 底下）送出 POST 時是否檢查 CSRF token
+; 既有頁面的表單若尚未加上 <?php echo csrf_field(); ?>，可先設為 Off
+direct_page_csrf = On
+
+; ---------------------------------------------------------------------
+; 身份定義：key 必須與 users.role 欄位值一致
+; ---------------------------------------------------------------------
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ---------------------------------------------------------------------
+; ★ 身份 → 可用頁面清單（逗號分隔的頁面代號）
+;   同一個頁面同時列在 EE 與 PE，就是兩種身份都能看
+;   "*" 代表全部頁面與全部動作（超級身份），註冊永遠無法取得
+;   沒列出的頁面一律拒絕
+; ---------------------------------------------------------------------
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile, m1bf, pending_issue"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile, m1bf"
+ADMIN = "*"
+
+; ---------------------------------------------------------------------
+; ★ 頁面與路由：[page.<頁面代號>]
+;   title   選單顯示名稱
+;   route   頁面程式位置，三種寫法：
+;             "module:<資料夾>"      modules/<資料夾>/controller.php（Controller 類別，可有多個動作）
+;             "pages/xxx.php"        一般 PHP 頁面，由 index.php 檢查權限後載入並套用版面
+;             "public/xxx.php"       獨立頁面（例如既有網站的舊頁面），使用者直接開啟，
+;                                    檔案第一行需 require core/auth_check.php
+;           省略 route 時等同 "module:<頁面代號>"
+;   order   選單排序，數字小的在前
+;   menu    是否出現在選單（Off = 隱藏頁，仍受權限控管）
+;   icon    選單前綴字元
+;   group   （選用）歸到哪個選單分類，填 [group.<分類代號>] 的代號
+;   action.<動作> = "EE,PE"   （選用）單一動作再限制身份，必須同時能使用此頁面
+; ---------------------------------------------------------------------
+
+; ---------------------------------------------------------------------
+; ★ 選單分類：[group.<分類代號>]（選用）
+;   多個頁面寫上相同的 group，就會收在同一個可收折的分類底下
+;   title   分類標題
+;   order   分類在選單中的位置（和沒有分類的頁面一起排序）；分類內的頁面依各自的 order 排序
+;   icon    分類前綴字元
+;   open    預設是否展開（On / Off）。使用者點開或收起後，瀏覽器會記住；
+;           目前所在頁面的分類一律展開
+;   權限仍由 [access] 決定：某身份在分類裡看不到任何頁面時，整個分類不會出現
+; ---------------------------------------------------------------------
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+icon  = "#"
+open  = Off
+
+
+[page.dashboard]
+title = "主控台 // DASHBOARD"
+route = "module:dashboard"
+order = 10
+menu  = On
+icon  = ">"
+
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"
+group = "report"
+order = 1
+menu  = On
+icon  = "#"
+; 兩種身份都能看報表，但只有 PE 可以匯出 CSV
+action.export = "PE"
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+menu  = On
+icon  = "#"
+
+[page.report_weekly]
+title = "Report3 // 週報"
+route = "pages/report_weekly.php"
+group = "report"
+order = 3
+menu  = On
+icon  = "#"
+
+[page.pending_issue]
+title = "Pending Issue // CONTROL TABLE"
+route = "module:pending_issue"
+order = 28
+menu  = On
+icon  = "?"
+; 只有 EE（與 ADMIN）能使用：查詢、新增、編輯、刪除、匯出
+; 機型、分類、Sponsor、匯出開關、輪詢秒數在 config/pending_issue.ini
+; 「顯示已刪除」與「還原」只有 ADMIN
+action.trash   = "ADMIN"
+action.restore = "ADMIN"
+
+[page.ee_equipment]
+title = "設備狀態 // EQUIPMENT"
+route = "module:ee_equipment"
+order = 30
+menu  = On
+icon  = "~"
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"
+order = 35
+menu  = On
+icon  = "+"
+
+[page.pe_recipe]
+title = "製程配方 // RECIPES"
+route = "module:pe_recipe"
+order = 40
+menu  = On
+icon  = "%"
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php"
+order = 45
+menu  = On
+icon  = "*"
+
+[page.profile]
+title = "個人設定 // PROFILE"
+route = "module:profile"
+order = 90
+menu  = On
+icon  = "@"
+
+[page.admin_users]
+title = "使用者管理 // OPERATORS"
+route = "module:admin_users"
+order = 99
+menu  = On
+icon  = "!"
+
+; ---------------------------------------------------------------------
+; 註冊與身份判定（由 core/Registration.php 讀取）
+;   註冊表單只填帳號、顯示名稱、密碼。身份在註冊當下依下方名單判定並寫入資料庫：
+;     帳號列在 [ee_accounts] → listed_role（EE）
+;     其他帳號               → unlisted_role（PE）；設為 "" 則名單外的人不能註冊
+;   之後修改名單不會改變已註冊者的身份，需要時請由管理員調整資料庫
+;   enabled          是否開放自行註冊
+;   require_approval On = 註冊後帳號停用，需管理員在「使用者管理」啟用
+; ---------------------------------------------------------------------
+[register]
+enabled          = On
+require_approval = Off
+listed_role      = "EE"
+unlisted_role    = "PE"
+
+; ---------------------------------------------------------------------
+; EE 正面表列：一行一個帳號，不分大小寫
+; ---------------------------------------------------------------------
+[ee_accounts]
+account[] = "neo"
+account[] = "trinity"
+account[] = "morpheus"
+
+; ---------------------------------------------------------------------
+; ★ 圖表：每張 chart 一個頁面，route 一律寫 "module:charts"
+;   頁面代號 = chart 名稱轉小寫，對應 charts/<名稱>.ini 與 charts/<名稱>.php
+;     例：[page.bslr] → charts/BSLr.ini、charts/BSLr.php
+;   哪些身份看得到：把頁面代號加到上方 [access] 對應身份的清單
+;   新增 chart：bash scripts/shell/new_chart.sh <名稱>，再把它印出的區段貼到這裡
+; ---------------------------------------------------------------------
+[group.charts]
+title = "圖表 // CHARTS"
+order = 50
+icon  = "^"
+open  = On
+
+[page.m1bf]
+title = "M1BF"
+route = "module:charts"
+group = "charts"
+order = 10
+menu  = On
+icon  = "^"
+#@@@ FILE config/pending_issue.ini sha1=31385195aef7fc7d744606f26b92db81e20401b8 base=- mode=644 enc=text nl=1
+; =====================================================================
+; Pending Issue Control Table 設定（modules/pending_issue）
+; ---------------------------------------------------------------------
+; 每次請求重新讀取，存檔後立即生效。
+; 誰能使用這個頁面由 config/config.ini 的 [access] 與 [page.pending_issue] 決定。
+;
+; 寫法注意（與 config.ini 相同）：
+;   1. 字串一律加雙引號
+;   2. 代碼（等號左邊）會寫進資料庫，上線後不要改代碼，只改顯示名稱
+; =====================================================================
+
+; ---------------------------------------------------------------------
+; 機型：代碼 = 顯示名稱，頁面上方的機型頁籤依這裡的順序
+;   輸入機台代號時，代號包含機型代碼（不分大小寫）就自動判定為該機型，
+;   例 APAN01 → PAN（和 charts 的 model.* 規則一致）；判定不到才需要手動選
+; ---------------------------------------------------------------------
+[models]
+PAN = "1980 (PAN)"
+PAP = "2000 (PAP)"
+POV = "YSM (POV)"
+
+; ---------------------------------------------------------------------
+; Issue 分類
+; ---------------------------------------------------------------------
+[categories]
+hl          = "PE/YED HL"
+tool_select = "選機表"
+aging_parts = "Aging parts"
+others      = "Others"
+
+; ---------------------------------------------------------------------
+; Issue 狀態（只能改顯示名稱；open / monitor / close 三個代碼程式有用到）
+;   close 會記錄結案時間；Check point 逾期只提醒 open / monitor
+; ---------------------------------------------------------------------
+[status]
+open    = "Open"
+monitor = "Monitor"
+close   = "Close"
+
+; ---------------------------------------------------------------------
+; Sponsor：哪些身份的 AISLE 使用者可以被選為 Sponsor（只列啟用中的帳號）
+; ---------------------------------------------------------------------
+[sponsor]
+roles = "EE,ADMIN"
+
+; ---------------------------------------------------------------------
+; 匯出 CSV
+;   enabled = Off 時隱藏匯出按鈕，直接開匯出網址也會回 404
+; ---------------------------------------------------------------------
+[export]
+enabled = On
+
+; ---------------------------------------------------------------------
+; 圖片上傳
+;   max_mb       單張上限（MB）。php.ini 的 upload_max_filesize / post_max_size 也要大於這個值
+;   max_per_item 每筆 issue 最多幾張
+; ---------------------------------------------------------------------
+[upload]
+max_mb       = 5
+max_per_item = 20
+
+; ---------------------------------------------------------------------
+; 多人同步
+;   poll_seconds     幾秒輪詢一次（同步別人的修改與「編輯中」）
+;   idle_seconds     多久沒操作（滑鼠、鍵盤）就暫停輪詢，讓登入照常逾時；
+;                    必須小於 app.ini [security] session_idle
+;   presence_seconds 「某某 編輯中」多久沒更新就消失
+; ---------------------------------------------------------------------
+[sync]
+poll_seconds     = 10
+idle_seconds     = 300
+presence_seconds = 30
+#@@@ FILE docs/DEPLOY.md sha1=0875c0f2b596bee562f28406025d11e64023d0bb base=531505f8e6767c9b50366cae6116521c8e787575 mode=644 enc=text nl=1
+# AISLE 部署步驟
+
+以下指令以實際環境為例：
+
+| 項目 | 值 |
+|---|---|
+| 程式來源 | GitHub `bboysevenwu/AISLE` 的 `main` branch |
+| 部署位置 | `/var/www/html/aisle/`（Apache DocumentRoot 為 `/var/www/html`） |
+| 對外網址 | `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`（proxy 前綴 `/D1C1/`） |
+| Web Server 執行身份 | `apache`（Debian/Ubuntu 為 `www-data`） |
+
+網址的對應關係：
+
+```
+瀏覽器  http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/login.php
+  │ proxy 去掉 /D1C1 前綴後轉給主機
+主機    http://<主機>/aisle/login.php
+  │ /var/www/html/aisle/.htaccess 在內部轉進 public/
+檔案    /var/www/html/aisle/public/login.php
+```
+
+網址不會出現 `public/`；`config/`、`core/` 等目錄經由網址存取一律 404。
+
+---
+
+## 1. 確認主機環境
+
+| 項目 | 需求 | 確認指令 |
+|---|---|---|
+| PHP | 5.4（至少 5.3.7，bcrypt 需要） | `php -v` |
+| PHP 擴充 | `pdo_mysql`、`openssl`、`json`、`session` | `php -m` |
+| MariaDB | 5.5 以上（utf8mb4 需 5.5.3+） | `mysql --version` |
+| MariaDB 用戶端 | `mysql`、`mysqldump`（建帳號、備份腳本用） | `which mysql mysqldump` |
+| Apache | 2.2 或 2.4，需要 `mod_rewrite`；`mod_headers` 選用 | `httpd -v`、`httpd -M` |
+| Python | 2.7（設定檢查腳本） | `python -V` |
+| 其他 | `bash`、`curl` 或可從外網複製檔案 | |
+
+`php.ini` 確認：`date.timezone` 有設定、`session.save_path` 目錄可寫入、正式環境 `display_errors = Off`。
+
+## 2. 放置程式
+
+```bash
+cd /var/www/html
+git clone -b main https://github.com/bboysevenwu/AISLE.git aisle
+cd /var/www/html/aisle
+```
+
+主機不能連 GitHub 時，在其他電腦 clone 或下載 ZIP 後整包複製到 `/var/www/html/aisle/`。腳本在 git 裡已設為可執行，若是用 ZIP 複製則補一行 `chmod +x scripts/shell/*.sh scripts/python/*.py`。
+
+之後更新程式：
+
+```bash
+cd /var/www/html/aisle && git pull origin main
+```
+
+`config/app.ini` 不在版控內，`git pull` 不會覆蓋它。
+
+主機不能 `git pull`、也不能下載壓縮檔時，改用單檔更新，見第 18 步。
+
+## 3. 建立資料庫與資料表
+
+```bash
+mysql -u root -p < sql/schema.sql
+```
+
+建立 `aisle` 資料庫與 `users`、`login_logs`、`audit_logs` 三張表。MariaDB 低於 5.5.3 時，先把 schema.sql 裡的 `utf8mb4` 全部改成 `utf8`。
+
+## 4. 建立應用程式專用的資料庫帳號
+
+不要讓網站使用 root。以 root 登入 MariaDB 後執行（密碼自訂）：
+
+```sql
+CREATE USER 'aisle_app'@'localhost' IDENTIFIED BY '強密碼';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `aisle`.* TO 'aisle_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+## 5. 匯入初始管理員
+
+```bash
+mysql -u root -p < sql/seed.sql
+```
+
+建立帳號 `admin`，密碼 `Neo@Zion2026`（第 13 步首次登入時會被要求修改）。
+
+## 6. 設定 config/app.ini（主機與資料庫）
+
+```bash
+cp config/app.ini.example config/app.ini
+vi config/app.ini
+```
+
+| 區段 | 項目 | 填寫 |
+|---|---|---|
+| `[app]` | `debug` | 正式環境 `0` |
+| `[app]` | `base_url` | **`"/D1C1/aisle"`**（瀏覽器看到的路徑，要包含 proxy 前綴 `/D1C1`，結尾不加 `/`） |
+| `[database]` | `user` / `password` | 第 4 步建立的 `aisle_app` 與密碼 |
+| `[security]` | `cookie_secure` | 使用 HTTPS 時設 `1` |
+
+```bash
+chown root:apache config/app.ini
+chmod 640 config/app.ini
+```
+
+## 7. 設定 config/config.ini（身份、頁面、註冊名單）
+
+1. `[ee_accounts]`：把範例 `neo / trinity / morpheus` 換成實際的 EE 帳號，一行一個
+2. `[register]`：`unlisted_role` 決定名單外帳號的身份（`"PE"`，或 `""` 表示不開放註冊）；需要管理員審核時把 `require_approval` 設為 `On`
+3. `[access]` / `[page.*]`：確認每個身份可用的頁面。範例頁面 `ee_daily_check`、`pe_notice` 若不需要，從 `[access]` 移除即可
+4. 既有網站的舊頁面若要接入，見第 15 步
+
+## 8. 檢查設定
+
+```bash
+python scripts/python/check_config.py
+```
+
+最後一行出現 `[OK] config.ini 檢查通過` 才往下做。`admin_users 只有 * 身份能使用` 這個警告是正常的。
+
+## 9. 下載 jQuery、ECharts
+
+```bash
+bash scripts/shell/fetch_vendor.sh
+```
+
+主機不能連外網時，在可連外網的電腦下載以下檔案，複製到 `public/assets/vendor/`：
+
+| 下載網址 | 存成 |
+|---|---|
+| `https://code.jquery.com/jquery-1.12.4.min.js` | `jquery-1.12.4.min.js` |
+| `https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js` | `echarts-5.4.3.min.js` |
+
+ECharts 只有圖表 Demo 頁使用；沒放本機檔案時頁面會改從 CDN 載入，使用者的瀏覽器需要能連到 cdn.jsdelivr.net。
+
+## 10. 設定目錄權限
+
+```bash
+chown -R root:apache /var/www/html/aisle
+chown -R apache:apache /var/www/html/aisle/storage
+chmod -R 775 storage
+```
+
+`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用，`storage/uploads` 存 Pending Issue 的圖片（程式會自動建立 `pending_issue/<年月>/` 子資料夾）。
+
+## 11. 設定 Apache
+
+程式放在 `/var/www/html/aisle/`，靠專案根目錄的 `.htaccess` 把請求轉進 `public/`，所以需要：
+
+1. 開啟 `mod_rewrite`：
+   ```bash
+   httpd -M | grep rewrite        # Debian/Ubuntu：a2enmod rewrite
+   ```
+2. 允許 `/var/www/html/aisle` 使用 `.htaccess`（寫在 `httpd.conf` 或 `conf.d/aisle.conf`）：
+   ```apache
+   <Directory /var/www/html/aisle>
+       AllowOverride All
+   </Directory>
+   ```
+3. 套用設定：
+   ```bash
+   apachectl configtest && apachectl graceful
+   ```
+
+沒有 `mod_rewrite` 時，根目錄 `.htaccess` 會拒絕整個 `/aisle/`（避免設定檔外洩），網站會是 403。
+
+> 另一種做法：若可以為 AISLE 開一個獨立的 VirtualHost，可把 `DocumentRoot` 直接指向 `/var/www/html/aisle/public`，此時根目錄 `.htaccess` 不會被讀到，`base_url` 依對外路徑調整。
+
+## 12. 確認網址與敏感檔案
+
+先在主機上直接測（不經 proxy，路徑沒有 `/D1C1`）：
+
+```bash
+curl -I http://localhost/aisle/login.php             # 200
+curl -I http://localhost/aisle/config/app.ini        # 404（不可是 200）
+curl -I http://localhost/aisle/core/bootstrap.php    # 404
+```
+
+再從自己的電腦經 proxy 測：
+
+```bash
+P=http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle
+curl -I $P/                      # 302，Location 為 /D1C1/aisle/login.php
+curl -I $P/login.php             # 200，Set-Cookie 的 path=/D1C1/aisle/
+curl -I $P/assets/css/matrix.css # 200
+curl -I $P/config/app.ini        # 404
+```
+
+（proxy 需要登入驗證時，用瀏覽器開啟 `$P/` 確認會跳到登入頁、畫面有綠色樣式即可。）
+
+注意：`base_url` 設成 `/D1C1/aisle` 後，網頁內的連結都帶 `/D1C1` 前綴，**直接連主機 `http://<主機>/aisle/` 時頁面能開但連結會失效**，這是正常的，請一律從 proxy 網址使用。若 proxy 轉址後出現 `/D1C1/D1C1/...` 或少了 `/D1C1`，代表 proxy 對 `Location` 標頭有另外改寫，請告知 proxy 管理者或改 `base_url`。
+
+## 13. 首次登入
+
+1. 開啟 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`，會自動導向 `login.php`
+2. 以 `admin` / `Neo@Zion2026` 登入
+3. 系統強制進入「個人設定」修改密碼，改完才能使用其他功能
+
+## 14. 驗證身份與權限
+
+1. 登出後到 `register.php`，用一個 `[ee_accounts]` 名單內的帳號註冊 → 應顯示身份 EE
+2. 再用名單外的帳號註冊 → 應顯示 PE（或依第 7 步設定被拒絕）
+3. 分別登入，確認左側選單只出現 `[access]` 中該身份的頁面
+4. 以 EE 帳號直接輸入 PE 頁面網址（例 `/D1C1/aisle/index.php?m=pe_recipe`）→ 應顯示 403
+5. 以 admin 登入「使用者管理」，確認剛註冊的帳號與身份正確
+
+也可用指令直接建立帳號（建立後首次登入需改密碼）：
+
+```bash
+bash scripts/shell/create_user.sh ee_chen EE "陳工程師"
+```
+
+## 15.（選用）接入既有網站的舊頁面
+
+1. 把舊頁面放到 `public/` 底下，例如 `public/legacy/old_report.php`（網址為 `/D1C1/aisle/legacy/old_report.php`）
+2. 在檔案第一行加入（依層數調整 `../`）：
+   ```php
+   <?php require_once dirname(__FILE__) . '/../../core/auth_check.php'; ?>
+   ```
+3. 在 config.ini 登記：
+   ```ini
+   [access]
+   PE = "..., old_report"
+
+   [page.old_report]
+   title = "舊報表"
+   route = "public/legacy/old_report.php"
+   ```
+4. 舊頁面有 POST 表單時，在 `<form>` 內加上 `<?php echo csrf_field(); ?>`；暫時無法修改的話，把 `[settings] direct_page_csrf` 設為 `Off`
+5. 重新執行第 8 步的檢查
+
+## 16. 設定每日備份
+
+```bash
+crontab -e
+```
+
+```cron
+0 2 * * * /var/www/html/aisle/scripts/shell/backup_db.sh >> /var/www/html/aisle/storage/logs/backup.log 2>&1
+```
+
+備份檔放在 `storage/backups/`，預設保留 14 天。先手動執行一次 `bash scripts/shell/backup_db.sh` 確認能成功。
+
+## 17.（選用）圖表接上實際資料
+
+每張圖表（BSLr、M1BF…）是選單「圖表」底下的一頁，由 `charts/<名稱>.ini` 與 `charts/<名稱>.php` 定義（說明見 README 第 10 節）。內附的 M1BF 預設使用範例資料（`source = sample`），部署後即可看到畫面。
+
+1. 每張圖表的資料庫連線寫在主機上的 `charts/<名稱>.ini` 的 `[db]`（`ip` 留空則使用 AISLE 自己的資料庫）：
+   ```ini
+   [db]
+   ip       = "10.x.x.x"
+   port     = 3306
+   name     = "資料庫名稱"
+   user     = "唯讀帳號"
+   password = "密碼"
+   charset  = "utf8mb4"
+   ```
+   帳號密碼只填在主機上，**不要 commit 到 GitHub**；之後的單檔更新若包含這個 ini，套用前先記下 `[db]`，套用後再填回（`apply_update.py` 會先備份原檔）。
+   建議 `chmod 640 charts/*.ini`，並用只有 SELECT 權限的帳號：
+   ```sql
+   GRANT SELECT ON `資料庫`.* TO '唯讀帳號'@'AISLE 主機 IP' IDENTIFIED BY '密碼';
+   ```
+2. 新增圖表：`bash scripts/shell/new_chart.sh BSLr`，建立 `charts/BSLr.ini`、`charts/BSLr.php`
+3. 編輯 `charts/BSLr.ini`：`[plot.xxx]` 設定哪些參數畫在同一張圖、各區塊開關、Y 軸上下限與 spec 線（`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可留空）；`[page]` 設定機型規則、預設天數。參數名稱必須與 `BSLr.php` 回傳的名稱完全一致
+4. 編輯 `charts/BSLr.php`：在 `tools()`、`series()` 寫 SQL，用 `pivot()` / `wide()` 轉換、不同 table 用 `merge()` 合併（檔案內附三種寫法），寫好後把 ini 的 `source` 改成 `php`
+5. 把腳本印出的 `[page.bslr]` 區段貼進 `config/config.ini`，並把 `bslr` 加到 `[access]` 要看得到的身份
+6. `python scripts/python/check_config.py` 檢查，再以 EE 或 PE 帳號登入開啟頁面；`debug = 1` 時 SQL 錯誤會直接顯示在圖表中
+
+由使用 `config/app.ini` `[charts_db]` 的版本升級時：把連線設定搬到每張圖表 ini 的 `[db]`（`host` 改名為 `ip`），`[charts_db]` 可以刪除。
+
+由舊版圖表 Demo 升級時：`config/app.ini` 的 `[chart_demo]` 區段可以刪除；舊網址 `index.php?m=chart_demo` 改為 `index.php?m=m1bf`。
+
+## 17-1.（選用）啟用 Pending Issue Control Table
+
+1. 建立資料表（只需一次，重複執行不影響既有資料）：
+   ```bash
+   mysql -u root -p aisle < sql/migrations/20261110_pending_issue.sql
+   ```
+2. 建立圖片資料夾並讓 Apache 可寫入：
+   ```bash
+   mkdir -p storage/uploads
+   chown -R apache:apache storage/uploads
+   chmod -R 775 storage/uploads
+   ```
+3. 確認 `php.ini`：`file_uploads = On`，`upload_max_filesize`、`post_max_size` 大於 `config/pending_issue.ini` 的 `max_mb`（預設 5 MB，建議設 8M）
+4. `config/pending_issue.ini`：依需要調整機型、分類、Sponsor 身份、匯出開關；`idle_seconds` 要小於 `app.ini` 的 `session_idle`
+5. `python scripts/python/check_config.py`，再以 EE 帳號開啟「Pending Issue // CONTROL TABLE」
+
+## 18. 不能 git pull 時的更新方式（單檔更新）
+
+公司內只能開 GitHub 網頁複製文字時使用。每次更新會在 repo 的 `updates/` 放一個純文字更新檔，裡面包含這次新增、修改、刪除的所有檔案；在主機上貼成一個檔案，執行一次 `apply_update.py` 就全部更新完。
+
+### 18-1. 第一次：把 apply_update.py 放到主機上
+
+在 GitHub 打開 `scripts/python/apply_update.py`，按 **Raw**，全選複製，然後在主機上：
+
+```bash
+cd /var/www/html/aisle
+cat > scripts/python/apply_update.py     # 貼上內容，最後按 Enter 再按 Ctrl-D
+chmod +x scripts/python/apply_update.py
+python scripts/python/apply_update.py -h # 出現用法說明即可
+```
+
+之後的更新檔若包含新版的 `apply_update.py`，會自動一起更新，不需要再手動複製。
+
+### 18-2. 每次更新
+
+1. 在 GitHub 打開 `updates/` 底下這次的更新檔（例 `update_20261104_7d8729a_xxxxxxx.txt`），按 **Raw**，`Ctrl-A` 全選、`Ctrl-C` 複製
+2. 貼到主機上，放在網站目錄以外（例 `~/`）：
+   ```bash
+   cat > ~/update.txt     # 貼上，最後按 Enter 再按 Ctrl-D
+   ```
+   用 `vi` 貼上時，先輸入 `:set paste` 再進入插入模式，否則 vi 會自動加縮排，內容會對不上
+3. 先預覽（不會改任何檔案）：
+   ```bash
+   cd /var/www/html/aisle
+   python scripts/python/apply_update.py ~/update.txt
+   ```
+   會列出每個檔案是 `[新增]`、`[覆蓋]`、`[刪除]` 還是 `[相同]`，以及備份檔名
+4. 確認後實際套用：
+   ```bash
+   python scripts/python/apply_update.py ~/update.txt --apply
+   ```
+5. 新增了 config.ini 的頁面時，照第 8 步執行 `check_config.py`
+
+### 腳本會做的檢查
+
+| 狀況 | 結果 |
+|---|---|
+| 複製時漏了一段、貼了兩次、更新檔被截斷 | 每個檔案都有 sha1，結尾有項目數；任何一個對不上就整批不寫入 |
+| vi 自動縮排、Windows 換行（CRLF）、UTF-8 BOM | 換行與 BOM 會自動處理；縮排被改會被 sha1 擋下 |
+| 主機上的檔案被直接改過（和更新前的版本不同） | 列為「衝突」並停止。確認可以覆蓋後加 `--force`（仍會先備份） |
+| 寫入到一半失敗（權限不足等） | 自動把已經改過的檔案還原 |
+| 同一個更新檔執行兩次 | 第二次全部顯示 `[相同]`，不會再改 |
+
+### 備份與還原
+
+- 被覆蓋的檔案先複製一份在原位置，檔名後面加上 `_<日期>_<時間>`，例 `core/Auth.php_20261104_204500`；被刪除的檔案改名成同樣格式，不會真的刪掉
+- 同一次執行共用同一個時間，紀錄寫在 `storage/logs/update_<時間>.json`
+- 根目錄與 `public/` 的 `.htaccess` 會擋掉這種備份檔名（403），避免舊版程式碼被當純文字下載
+- 查看紀錄與主機目前的版本：
+  ```bash
+  python scripts/python/apply_update.py --list
+  ```
+- 還原某次更新（先預覽，再加 `--apply`；`last` 代表最近一次）：
+  ```bash
+  python scripts/python/apply_update.py --rollback 20261104_204500
+  python scripts/python/apply_update.py --rollback 20261104_204500 --apply
+  ```
+  還原會把備份檔改回原檔名，並移除那次新增的檔案
+- 備份檔確認不需要後可以手動刪除，例 `find . -name '*_20261104_204500' -delete`
+
+### 產生更新檔（開發端）
+
+在有 git 的電腦上，指定主機目前的版本（`--list` 最後一筆的「版本 → 」右邊，或部署時的 commit）：
+
+```bash
+python scripts/python/make_update.py 7d8729a HEAD --note "這次更新的說明"
+```
+
+輸出到 `updates/update_<日期>_<舊>_<新>.txt`，commit 後即可在 GitHub 打開。預設不打包 `updates/` 與 `docs/screenshots/`；圖片等非文字檔會用 base64 存放。主機版本不明時可用 `--all` 打包全部檔案（不檢查衝突）。`config/app.ini` 不在 git 裡，不會被更新檔覆蓋。
+#@@@ FILE modules/pending_issue/controller.php sha1=4933f80e619e5993168b219a4aa988fa59894ac1 base=- mode=644 enc=text nl=1
+<?php
+/**
+ * Pending Issue Control Table（config.ini：EE 與 ADMIN）
+ * 機型 / 分類 / 狀態 / Sponsor 等設定在 config/pending_issue.ini
+ *
+ *   index    頁面（表格、篩選、編輯視窗都由 pending_issue.js 呼叫下列 JSON 動作）
+ *   list     GET  全部未刪除的 issue（trash=1 且有 action.trash 權限時含已刪除），篩選在前端做
+ *   get      GET  單筆完整資料（含圖片、狀態歷程）
+ *   save     POST 新增 / 修改；以 version 做樂觀鎖，別人先改過時回 409，不覆蓋
+ *   delete   POST 軟刪除（同樣檢查 version）
+ *   restore  POST 還原軟刪除（action.restore，預設只有 ADMIN）
+ *   upload   POST 上傳一張圖片（貼上 / 拖曳 / 選檔），存到 storage/uploads/pending_issue/<年月>/
+ *   image    GET  輸出圖片（storage 無法從網址直接讀取，一律經過這裡檢查權限）
+ *   poll     GET  輪詢：游標之後有變動的資料、誰正在編輯哪一筆
+ *   release  POST 關閉編輯視窗時清除自己的「編輯中」
+ *   export   GET  依目前篩選匯出 CSV（pending_issue.ini [export] enabled = Off 時 404）
+ */
+class PendingIssueController extends Controller
+{
+    const POLL_OVERLAP = 5;   // 輪詢游標往前重疊的秒數，避免交易較晚提交的修改被漏掉（前端用 version 去重）
+
+    private static $cfg = null;
+
+    // ==================================================================
+    // 頁面
+    // ==================================================================
+
+    public function indexAction()
+    {
+        $cfg = self::cfg();
+        $urls = array();
+        foreach (array('list', 'get', 'save', 'delete', 'restore', 'upload', 'image', 'poll', 'release', 'export') as $a) {
+            $urls[$a] = url($this->module, $a);
+        }
+        $this->render('index', array(
+            'cfg'    => $cfg,
+            'canTrash' => $this->can('trash'),
+            'export' => $cfg['export'],
+            'config' => array(
+                'urls'            => $urls,
+                'models'          => $cfg['models'],
+                'categories'      => $cfg['categories'],
+                'statuses'        => $cfg['statuses'],
+                'sponsors'        => $this->sponsorList(),
+                'me'              => array('id' => (int) $this->user['id'], 'name' => $this->user['display_name']),
+                'canTrash'        => $this->can('trash'),
+                'canRestore'      => $this->can('restore'),
+                'exportEnabled'   => $cfg['export'],
+                'maxImageMb'      => $cfg['max_mb'],
+                'maxImages'       => $cfg['max_per_item'],
+                'pollSeconds'     => $cfg['poll_seconds'],
+                'idleSeconds'     => $cfg['idle_seconds'],
+                'csrfToken'       => Security::csrfToken(),
+            ),
+        ));
+    }
+
+    // ==================================================================
+    // 讀取
+    // ==================================================================
+
+    public function listAction()
+    {
+        $trash = $this->query('trash') === '1' && $this->can('trash');
+        $rows = Database::fetchAll(
+            self::rowSelect() . ($trash ? '' : ' WHERE i.deleted_at IS NULL') . ' ORDER BY i.id DESC'
+        );
+        foreach ($rows as $k => $r) {
+            $rows[$k] = $this->castRow($r);
+        }
+        $this->json(array(
+            'ok'     => true,
+            'rows'   => $rows,
+            'cursor' => $this->cursor(),
+            'trash'  => $trash,
+        ));
+    }
+
+    public function getAction()
+    {
+        $issue = $this->findIssue((int) $this->query('id'), $this->can('trash'));
+        if (!$issue) {
+            return $this->json(array('ok' => false, 'error' => '找不到這筆 issue，可能已被刪除'), 404);
+        }
+        $this->json(array('ok' => true, 'issue' => $issue));
+    }
+
+    public function pollAction()
+    {
+        $cfg = self::cfg();
+        $uid = (int) $this->user['id'];
+        $editing = (int) $this->query('editing');
+        $now = now();
+
+        // 自己的「編輯中」：只保留正在編輯的那一筆
+        Database::execute('DELETE FROM pending_issue_presence WHERE user_id = ? AND issue_id <> ?', array($uid, $editing));
+        if ($editing > 0) {
+            Database::execute('REPLACE INTO pending_issue_presence (issue_id, user_id, seen_at) VALUES (?, ?, ?)', array($editing, $uid, $now));
+        }
+        Database::execute('DELETE FROM pending_issue_presence WHERE seen_at < ?', array(date('Y-m-d H:i:s', time() - 3600)));
+
+        // 游標之後有變動的資料（含被刪除 / 還原的）
+        $cursor = $this->cursor();
+        $since = $this->query('since');
+        $changed = array();
+        $deleted = array();
+        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $since)) {
+            $trash = $this->query('trash') === '1' && $this->can('trash');
+            foreach (Database::fetchAll(self::rowSelect() . ' WHERE i.updated_at >= ? ORDER BY i.id', array($since)) as $r) {
+                $r = $this->castRow($r);
+                if ($r['deleted'] && !$trash) {
+                    $deleted[] = $r['id'];
+                } else {
+                    $changed[] = $r;
+                }
+            }
+        }
+
+        $this->json(array(
+            'ok'      => true,
+            'cursor'  => $cursor,
+            'changed' => $changed,
+            'deleted' => $deleted,
+            'editors' => (object) $this->editors($cfg['presence_seconds']),
+        ));
+    }
+
+    // ==================================================================
+    // 寫入
+    // ==================================================================
+
+    public function saveAction()
+    {
+        if (!$this->isPost()) {
+            return $this->json(array('ok' => false, 'error' => 'POST only'), 405);
+        }
+        $cfg = self::cfg();
+        $id = (int) $this->input('id');
+        $version = (int) $this->input('version');
+        $overwrite = $this->input('overwrite') === '1';
+        $data = array(
+            'tool_id'         => strtoupper($this->input('tool_id')),
+            'model'           => strtoupper($this->input('model')),
+            'category'        => $this->input('category'),
+            'issue'           => $this->input('issue'),
+            'initial_date'    => $this->input('initial_date'),
+            'status'          => $this->input('status', 'open'),
+            'sponsor_id'      => (int) $this->input('sponsor_id'),
+            'checkpoint_date' => $this->input('checkpoint_date'),
+            'remark'          => $this->input('remark'),
+        );
+        $imageIds = $this->idList($this->input('image_ids'));
+
+        $now = now();
+        $uid = (int) $this->user['id'];
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $old = null;
+            if ($id > 0) {
+                // 鎖住這一筆再比對 version，避免兩個人同時通過檢查
+                $old = Database::fetchOne(
+                    'SELECT id, version, status, sponsor_id, deleted_at FROM pending_issues WHERE id = ? FOR UPDATE',
+                    array($id)
+                );
+                if (!$old || $old['deleted_at'] !== null || (int) $old['version'] !== $version) {
+                    $pdo->rollBack();
+                    return $this->conflict($id);
+                }
+            }
+
+            $error = $this->validate($data, $old);
+            if ($error === '' && count($imageIds) > $cfg['max_per_item']) {
+                $error = '每筆 issue 最多 ' . $cfg['max_per_item'] . ' 張圖片';
+            }
+            if ($error !== '') {
+                $pdo->rollBack();
+                return $this->json(array('ok' => false, 'error' => $error), 422);
+            }
+
+            $checkpoint = $data['checkpoint_date'] !== '' ? $data['checkpoint_date'] : null;
+            $removed = array();
+            if (!$old) {
+                Database::execute(
+                    'INSERT INTO pending_issues (tool_id, model, category, issue, initial_date, status, status_changed_by,
+                        status_changed_at, sponsor_id, checkpoint_date, remark, closed_at, version,
+                        created_by, updated_by, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)',
+                    array(
+                        $data['tool_id'], $data['model'], $data['category'], $data['issue'], $data['initial_date'],
+                        $data['status'], $uid, $now, $data['sponsor_id'], $checkpoint, $data['remark'],
+                        $data['status'] === 'close' ? $now : null,
+                        $uid, $uid, $now, $now,
+                    )
+                );
+                $id = (int) Database::lastInsertId();
+                $this->logStatus($id, null, $data['status'], $uid, $now);
+            } else {
+                $statusChanged = $old['status'] !== $data['status'];
+                Database::execute(
+                    'UPDATE pending_issues SET tool_id = ?, model = ?, category = ?, issue = ?, initial_date = ?, status = ?,
+                        status_changed_by = ' . ($statusChanged ? '?' : 'status_changed_by') . ',
+                        status_changed_at = ' . ($statusChanged ? '?' : 'status_changed_at') . ",
+                        sponsor_id = ?, checkpoint_date = ?, remark = ?,
+                        closed_at = CASE WHEN ? = 'close' THEN IFNULL(closed_at, ?) ELSE NULL END,
+                        version = version + 1, updated_by = ?, updated_at = ?
+                     WHERE id = ?",
+                    array_merge(
+                        array($data['tool_id'], $data['model'], $data['category'], $data['issue'], $data['initial_date'], $data['status']),
+                        $statusChanged ? array($uid, $now) : array(),
+                        array($data['sponsor_id'], $checkpoint, $data['remark'], $data['status'], $now, $uid, $now, $id)
+                    )
+                );
+                if ($statusChanged) {
+                    // from 一律用資料庫當下的狀態，覆蓋別人的修改時也不會漏記
+                    $this->logStatus($id, $old['status'], $data['status'], $uid, $now);
+                }
+                $removed = $this->detachImages($id, $imageIds);
+            }
+            $this->attachImages($id, $imageIds);
+            $pdo->commit();
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        // 檔案在交易成功後才刪，避免回滾後資料還在但檔案已不見
+        foreach ($removed as $path) {
+            $this->unlinkUpload($path);
+        }
+
+        $action = !$old ? 'create' : ($overwrite ? 'overwrite' : 'update');
+        audit($this->module, $action, array(
+            'id' => $id, 'tool_id' => $data['tool_id'], 'status' => $data['status'],
+            'from_status' => $old ? $old['status'] : null,
+        ));
+        $this->json(array('ok' => true, 'issue' => $this->findIssue($id, false)));
+    }
+
+    public function deleteAction()
+    {
+        if (!$this->isPost()) {
+            return $this->json(array('ok' => false, 'error' => 'POST only'), 405);
+        }
+        $id = (int) $this->input('id');
+        $now = now();
+        $affected = Database::execute(
+            'UPDATE pending_issues SET deleted_at = ?, deleted_by = ?, updated_by = ?, updated_at = ?, version = version + 1
+             WHERE id = ? AND version = ? AND deleted_at IS NULL',
+            array($now, $this->user['id'], $this->user['id'], $now, $id, (int) $this->input('version'))
+        );
+        if ($affected === 0) {
+            return $this->conflict($id);
+        }
+        Database::execute('DELETE FROM pending_issue_presence WHERE issue_id = ?', array($id));
+        audit($this->module, 'delete', array('id' => $id));
+        $this->json(array('ok' => true));
+    }
+
+    public function restoreAction()
+    {
+        if (!$this->isPost()) {
+            return $this->json(array('ok' => false, 'error' => 'POST only'), 405);
+        }
+        $id = (int) $this->input('id');
+        $now = now();
+        $affected = Database::execute(
+            'UPDATE pending_issues SET deleted_at = NULL, deleted_by = NULL, updated_by = ?, updated_at = ?, version = version + 1
+             WHERE id = ? AND version = ? AND deleted_at IS NOT NULL',
+            array($this->user['id'], $now, $id, (int) $this->input('version'))
+        );
+        if ($affected === 0) {
+            $row = $this->findIssue($id, true);
+            return $this->json(array(
+                'ok' => false, 'conflict' => true,
+                'error' => $row ? '這筆資料剛被其他人變更，已重新載入' : '找不到這筆 issue',
+                'issue' => $row,
+            ), 409);
+        }
+        audit($this->module, 'restore', array('id' => $id));
+        $this->json(array('ok' => true, 'issue' => $this->findIssue($id, true)));
+    }
+
+    public function releaseAction()
+    {
+        Database::execute('DELETE FROM pending_issue_presence WHERE user_id = ?', array($this->user['id']));
+        if (App::isAjax()) {
+            $this->json(array('ok' => true));
+        }
+    }
+
+    // ==================================================================
+    // 圖片
+    // ==================================================================
+
+    public function uploadAction()
+    {
+        if (!$this->isPost()) {
+            return $this->json(array('ok' => false, 'error' => 'POST only'), 405);
+        }
+        $cfg = self::cfg();
+        $maxBytes = (int) round($cfg['max_mb'] * 1048576);
+        $file = isset($_FILES['image']) ? $_FILES['image'] : null;
+        if (!$file || !is_array($file) || !isset($file['error']) || is_array($file['error'])) {
+            return $this->json(array('ok' => false, 'error' => '沒有收到圖片（可能超過伺服器上傳上限）'), 400);
+        }
+        if ($file['error'] === UPLOAD_ERR_INI_SIZE || $file['error'] === UPLOAD_ERR_FORM_SIZE || $file['size'] > $maxBytes) {
+            return $this->json(array('ok' => false, 'error' => '圖片超過 ' . $cfg['max_mb'] . ' MB'), 413);
+        }
+        if ($file['error'] !== UPLOAD_ERR_OK || !is_uploaded_file($file['tmp_name'])) {
+            return $this->json(array('ok' => false, 'error' => '上傳失敗（錯誤碼 ' . (int) $file['error'] . '）'), 400);
+        }
+        // 用檔案內容判斷真實格式，不相信副檔名與瀏覽器給的 MIME
+        $info = @getimagesize($file['tmp_name']);
+        $types = array(IMAGETYPE_PNG => 'png', IMAGETYPE_JPEG => 'jpg', IMAGETYPE_GIF => 'gif');
+        if ($info === false || !isset($types[$info[2]])) {
+            return $this->json(array('ok' => false, 'error' => '只接受 PNG / JPG / GIF 圖片'), 415);
+        }
+
+        $this->cleanupOrphans();
+
+        $dir = 'pending_issue/' . date('Ym');
+        $abs = AISLE_STORAGE . '/uploads/' . $dir;
+        if (!is_dir($abs) && !@mkdir($abs, 0775, true)) {
+            throw new RuntimeException('無法建立上傳資料夾：storage/uploads/' . $dir . '（請確認 storage/ 可讓 Web Server 寫入）');
+        }
+        $path = $dir . '/' . bin2hex(Security::randomBytes(16)) . '.' . $types[$info[2]];
+        if (!move_uploaded_file($file['tmp_name'], AISLE_STORAGE . '/uploads/' . $path)) {
+            throw new RuntimeException('無法寫入上傳檔案，請確認 storage/uploads 可寫入');
+        }
+        @chmod(AISLE_STORAGE . '/uploads/' . $path, 0664);
+
+        $name = preg_replace('/[\x00-\x1f"\/\\\\]/', '', (string) $file['name']);
+        if ($name === '') {
+            $name = 'image.' . $types[$info[2]];
+        }
+        Database::execute(
+            'INSERT INTO pending_issue_images (issue_id, file_path, original_name, mime, size, width, height, uploaded_by, created_at)
+             VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)',
+            array($path, $this->usub($name, 150), $info['mime'], (int) $file['size'],
+                min((int) $info[0], 65535), min((int) $info[1], 65535), $this->user['id'], now())
+        );
+        $id = (int) Database::lastInsertId();
+        $this->json(array('ok' => true, 'image' => $this->imageInfo(array(
+            'id' => $id, 'original_name' => $name, 'width' => $info[0], 'height' => $info[1],
+        ))));
+    }
+
+    public function imageAction()
+    {
+        $img = Database::fetchOne(
+            'SELECT m.id, m.issue_id, m.file_path, m.mime, m.original_name, m.uploaded_by, i.deleted_at
+             FROM pending_issue_images m
+             LEFT JOIN pending_issues i ON i.id = m.issue_id
+             WHERE m.id = ?',
+            array((int) $this->query('id'))
+        );
+        $allowed = $img && (
+            ($img['issue_id'] === null && (int) $img['uploaded_by'] === (int) $this->user['id'])   // 尚未存檔的暫存圖：只有上傳者
+            || ($img['issue_id'] !== null && ($img['deleted_at'] === null || $this->can('trash')))  // 已刪除 issue 的圖：只有 ADMIN
+        );
+        $base = realpath(AISLE_STORAGE . '/uploads/pending_issue');
+        $file = $allowed ? realpath(AISLE_STORAGE . '/uploads/' . $img['file_path']) : false;
+        if (!$allowed || $file === false || $base === false || strpos($file, $base . DIRECTORY_SEPARATOR) !== 0 || !is_file($file)) {
+            http_response_code(404);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'image not found';
+            return;
+        }
+
+        // 檔名是亂數、內容不會變，可讓瀏覽器快取
+        $etag = '"pi' . $img['id'] . '-' . filesize($file) . '"';
+        header('Cache-Control: private, max-age=86400');
+        header('ETag: ' . $etag);
+        header('X-Content-Type-Options: nosniff');
+        if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
+            http_response_code(304);
+            return;
+        }
+        $name = $img['original_name'] !== '' ? $img['original_name'] : basename($file);
+        header('Content-Type: ' . $img['mime']);
+        header('Content-Length: ' . filesize($file));
+        header("Content-Disposition: inline; filename*=UTF-8''" . rawurlencode($name));
+        readfile($file);
+    }
+
+    // ==================================================================
+    // 匯出
+    // ==================================================================
+
+    public function exportAction()
+    {
+        $cfg = self::cfg();
+        if (!$cfg['export']) {
+            return App::error(404, '匯出功能未開啟');
+        }
+        $trash = $this->query('trash') === '1' && $this->can('trash');
+        $where = array();
+        $params = array();
+        if (!$trash) {
+            $where[] = 'i.deleted_at IS NULL';
+        }
+        $model = strtoupper($this->query('model'));
+        if (isset($cfg['models'][$model])) {
+            $where[] = 'i.model = ?';
+            $params[] = $model;
+        }
+        foreach (array('status' => 'statuses', 'cat' => 'categories') as $param => $key) {
+            $vals = array();
+            foreach (explode(',', $this->query($param)) as $v) {
+                if (isset($cfg[$key][$v])) {
+                    $vals[] = $v;
+                }
+            }
+            if ($vals) {
+                $where[] = 'i.' . ($param === 'cat' ? 'category' : 'status') . ' IN (' . implode(',', array_fill(0, count($vals), '?')) . ')';
+                $params = array_merge($params, $vals);
+            }
+        }
+        $tool = $this->query('tool');
+        if ($tool !== '') {
+            $where[] = 'i.tool_id LIKE ?';
+            $params[] = '%' . addcslashes(strtoupper($tool), '%_\\') . '%';
+        }
+        $sponsor = (int) $this->query('sponsor');
+        if ($sponsor > 0) {
+            $where[] = 'i.sponsor_id = ?';
+            $params[] = $sponsor;
+        }
+        $q = $this->query('q');
+        if ($q !== '') {
+            $like = '%' . addcslashes($q, '%_\\') . '%';
+            $where[] = '(i.issue LIKE ? OR i.remark LIKE ? OR i.tool_id LIKE ?)';
+            $params = array_merge($params, array($like, $like, $like));
+        }
+        if ($this->query('overdue') === '1') {
+            $where[] = "i.checkpoint_date < CURDATE() AND i.status <> 'close'";
+        }
+
+        $sorts = array(
+            'id' => 'i.id', 'model' => 'i.model', 'tool_id' => 'i.tool_id', 'category' => 'i.category',
+            'issue' => 'i.issue', 'initial_date' => 'i.initial_date', 'sponsor' => 'sponsor_name',
+            'checkpoint_date' => 'i.checkpoint_date', 'remark' => 'i.remark', 'updated_at' => 'i.updated_at',
+            'status' => "FIELD(i.status, 'open', 'monitor', 'close')",
+        );
+        $sort = $this->query('sort');
+        $dir = $this->query('dir') === 'desc' ? 'DESC' : 'ASC';
+        $order = isset($sorts[$sort])
+            ? $sorts[$sort] . ' ' . $dir . ', i.id DESC'
+            : "FIELD(i.status, 'open', 'monitor', 'close'), i.checkpoint_date IS NULL, i.checkpoint_date, i.id DESC";
+
+        $rows = Database::fetchAll(
+            self::rowSelect() . ($where ? ' WHERE ' . implode(' AND ', $where) : '') . ' ORDER BY ' . $order,
+            $params
+        );
+
+        $label = isset($cfg['models'][$model]) ? $model : 'ALL';
+        $filename = 'pending_issue_' . $label . '_' . date('Ymd_Hi') . '.csv';
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Cache-Control: private, no-store');
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM，Excel 直接開不會亂碼
+        $head = array('ID', '機型', '機台', '分類', 'Issue', 'Initial date', 'Status', '最後改狀態者', '改狀態時間',
+            'Sponsor', 'Check point', '逾期天數', 'Remark', '圖片張數', '建立者', '建立時間', '最後更新者', '最後更新時間');
+        if ($trash) {
+            $head[] = '已刪除';
+        }
+        fputcsv($out, $head);
+        $today = strtotime(date('Y-m-d'));
+        foreach ($rows as $r) {
+            $overdue = '';
+            if ($r['checkpoint_date'] !== null && $r['status'] !== 'close') {
+                $days = (int) floor(($today - strtotime($r['checkpoint_date'])) / 86400);
+                $overdue = $days > 0 ? $days : '';
+            }
+            $line = array(
+                $r['id'],
+                array_get($cfg['models'], $r['model'], $r['model']),
+                $r['tool_id'],
+                array_get($cfg['categories'], $r['category'], $r['category']),
+                $r['issue'],
+                $r['initial_date'],
+                array_get($cfg['statuses'], $r['status'], $r['status']),
+                $r['status_changed_by_name'],
+                $r['status_changed_at'],
+                $r['sponsor_name'],
+                $r['checkpoint_date'],
+                $overdue,
+                $r['remark'],
+                $r['image_count'],
+                $r['created_by_name'],
+                $r['created_at'],
+                $r['updated_by_name'],
+                $r['updated_at'],
+            );
+            if ($trash) {
+                $line[] = $r['deleted_at'] !== null ? $r['deleted_at'] : '';
+            }
+            fputcsv($out, array_map(array($this, 'csvCell'), $line));
+        }
+        fclose($out);
+        audit($this->module, 'export', array('rows' => count($rows), 'model' => $label));
+    }
+
+    /** 防 CSV 公式注入：= + - @ 開頭的內容前面加單引號 */
+    public function csvCell($v)
+    {
+        $v = $v === null ? '' : (string) $v;
+        if ($v !== '' && strpos('=+-@', $v[0]) !== false && !preg_match('/^-?\d+(\.\d+)?$/', $v)) {
+            $v = "'" . $v;
+        }
+        return $v;
+    }
+
+    // ==================================================================
+    // 內部
+    // ==================================================================
+
+    /** 讀取 config/pending_issue.ini（每次請求一次） */
+    private static function cfg()
+    {
+        if (self::$cfg !== null) {
+            return self::$cfg;
+        }
+        $file = AISLE_ROOT . '/config/pending_issue.ini';
+        $ini = is_file($file) ? parse_ini_file($file, true) : array();
+        if ($ini === false) {
+            throw new RuntimeException('INI 解析失敗：config/pending_issue.ini');
+        }
+        $models = array();
+        foreach (array_get($ini, 'models', array()) as $k => $v) {
+            $models[strtoupper(trim($k))] = (string) $v;
+        }
+        $statuses = array();
+        foreach (array('open' => 'Open', 'monitor' => 'Monitor', 'close' => 'Close') as $k => $default) {
+            $statuses[$k] = (string) array_get(array_get($ini, 'status', array()), $k, $default);
+        }
+        $sync = array_get($ini, 'sync', array());
+        $upload = array_get($ini, 'upload', array());
+        $sessionIdle = (int) Config::get('security', 'session_idle', 1800);
+        $idle = max(30, (int) array_get($sync, 'idle_seconds', 300));
+        if ($sessionIdle > 0 && $idle >= $sessionIdle) {
+            $idle = max(30, $sessionIdle - 60);
+        }
+        $roles = array_values(array_filter(array_map('trim', explode(',', (string) array_get(array_get($ini, 'sponsor', array()), 'roles', 'EE,ADMIN'))), 'strlen'));
+
+        self::$cfg = array(
+            'models'           => $models ? $models : array('PAN' => '1980 (PAN)', 'PAP' => '2000 (PAP)', 'POV' => 'YSM (POV)'),
+            'categories'       => array_get($ini, 'categories', array()) ? array_get($ini, 'categories') : array(
+                'hl' => 'PE/YED HL', 'tool_select' => '選機表', 'aging_parts' => 'Aging parts', 'others' => 'Others'),
+            'statuses'         => $statuses,
+            'sponsor_roles'    => $roles,
+            'export'           => (bool) array_get(array_get($ini, 'export', array()), 'enabled', true),
+            'max_mb'           => max(0.1, (float) array_get($upload, 'max_mb', 5)),
+            'max_per_item'     => max(1, (int) array_get($upload, 'max_per_item', 20)),
+            'poll_seconds'     => max(3, (int) array_get($sync, 'poll_seconds', 10)),
+            'idle_seconds'     => $idle,
+            'presence_seconds' => max(10, (int) array_get($sync, 'presence_seconds', 30)),
+        );
+        return self::$cfg;
+    }
+
+    /** 列表、輪詢、匯出共用的查詢 */
+    private static function rowSelect()
+    {
+        return 'SELECT i.id, i.tool_id, i.model, i.category, i.issue, i.initial_date, i.status,
+                    i.status_changed_at, i.sponsor_id, i.checkpoint_date, i.remark, i.closed_at, i.version,
+                    i.created_at, i.updated_at, i.deleted_at,
+                    COALESCE(NULLIF(sp.display_name, \'\'), sp.account) AS sponsor_name, sp.is_active AS sponsor_active,
+                    COALESCE(NULLIF(sc.display_name, \'\'), sc.account) AS status_changed_by_name,
+                    COALESCE(NULLIF(cu.display_name, \'\'), cu.account) AS created_by_name,
+                    COALESCE(NULLIF(uu.display_name, \'\'), uu.account) AS updated_by_name,
+                    COALESCE(NULLIF(du.display_name, \'\'), du.account) AS deleted_by_name,
+                    (SELECT COUNT(*) FROM pending_issue_images m WHERE m.issue_id = i.id) AS image_count
+             FROM pending_issues i
+             LEFT JOIN users sp ON sp.id = i.sponsor_id
+             LEFT JOIN users sc ON sc.id = i.status_changed_by
+             LEFT JOIN users cu ON cu.id = i.created_by
+             LEFT JOIN users uu ON uu.id = i.updated_by
+             LEFT JOIN users du ON du.id = i.deleted_by';
+    }
+
+    private function castRow($r)
+    {
+        foreach (array('id', 'version', 'image_count', 'sponsor_id') as $k) {
+            if (isset($r[$k])) {
+                $r[$k] = (int) $r[$k];
+            }
+        }
+        $r['sponsor_active'] = (bool) $r['sponsor_active'];
+        $r['deleted'] = $r['deleted_at'] !== null;
+        foreach (array('sponsor_name', 'status_changed_by_name', 'created_by_name', 'updated_by_name', 'deleted_by_name') as $k) {
+            if ($r[$k] === null) {
+                $r[$k] = '-';
+            }
+        }
+        foreach (array('remark', 'checkpoint_date') as $k) {
+            if ($r[$k] === null) {
+                $r[$k] = '';
+            }
+        }
+        return $r;
+    }
+
+    /** 單筆完整資料（含圖片、狀態歷程） */
+    private function findIssue($id, $withDeleted)
+    {
+        $row = Database::fetchOne(self::rowSelect() . ' WHERE i.id = ?' . ($withDeleted ? '' : ' AND i.deleted_at IS NULL'), array($id));
+        if (!$row) {
+            return null;
+        }
+        $issue = $this->castRow($row);
+        $issue['images'] = array();
+        foreach (Database::fetchAll(
+            'SELECT id, original_name, width, height FROM pending_issue_images WHERE issue_id = ? ORDER BY id',
+            array($id)
+        ) as $img) {
+            $issue['images'][] = $this->imageInfo($img);
+        }
+        $issue['status_logs'] = array();
+        foreach (Database::fetchAll(
+            'SELECT l.from_status, l.to_status, l.changed_at, COALESCE(NULLIF(u.display_name, \'\'), u.account) AS by_name
+             FROM pending_issue_status_logs l LEFT JOIN users u ON u.id = l.changed_by
+             WHERE l.issue_id = ? ORDER BY l.id',
+            array($id)
+        ) as $log) {
+            if ($log['by_name'] === null) {
+                $log['by_name'] = '-';
+            }
+            $issue['status_logs'][] = $log;
+        }
+        return $issue;
+    }
+
+    private function imageInfo($img)
+    {
+        return array(
+            'id'     => (int) $img['id'],
+            'name'   => $img['original_name'],
+            'width'  => (int) $img['width'],
+            'height' => (int) $img['height'],
+            'url'    => url($this->module, 'image', array('id' => (int) $img['id'])),
+        );
+    }
+
+    /**
+     * 欄位檢查，會正規化 $d（機型由機台代號自動判定）
+     * @param array|null $old 修改時的原資料（Sponsor 沒改時，允許保留已停用的帳號）
+     */
+    private function validate(&$d, $old)
+    {
+        $cfg = self::cfg();
+        if (!preg_match('/^[A-Z0-9][A-Z0-9_.\-]{0,63}$/', $d['tool_id'])) {
+            return '機台代號必填，只能使用英數字、底線、點、減號（最多 64 字）';
+        }
+        $detected = $this->detectModel($d['tool_id']);
+        if ($detected !== '') {
+            $d['model'] = $detected;
+        }
+        if (!isset($cfg['models'][$d['model']])) {
+            return '無法由機台代號判定機型，請選擇機型';
+        }
+        if (!isset($cfg['categories'][$d['category']])) {
+            return '請選擇分類';
+        }
+        if ($d['issue'] === '') {
+            return 'Issue 描述必填';
+        }
+        if (strlen($d['issue']) > 60000 || strlen($d['remark']) > 60000) {
+            return '內容過長';
+        }
+        if (!isset($cfg['statuses'][$d['status']])) {
+            return '狀態不正確';
+        }
+        if (!$this->validDate($d['initial_date'])) {
+            return 'Initial date 格式需為 YYYY-MM-DD';
+        }
+        if ($d['checkpoint_date'] !== '' && !$this->validDate($d['checkpoint_date'])) {
+            return 'Check point date 格式需為 YYYY-MM-DD';
+        }
+        $keepOld = $old && (int) $old['sponsor_id'] === $d['sponsor_id'];
+        if (!$keepOld && !$this->isSponsorCandidate($d['sponsor_id'])) {
+            return 'Sponsor 必須是 AISLE 使用者（請從清單中選擇）';
+        }
+        return '';
+    }
+
+    /** 機台代號包含機型代碼（不分大小寫）→ 該機型；較長的代碼優先 */
+    private function detectModel($toolId)
+    {
+        $keys = array_keys(self::cfg()['models']);
+        usort($keys, function ($a, $b) {
+            return strlen($b) - strlen($a);
+        });
+        foreach ($keys as $k) {
+            if ($k !== '' && stripos($toolId, $k) !== false) {
+                return $k;
+            }
+        }
+        return '';
+    }
+
+    /** 可選為 Sponsor 的使用者：啟用中、身份在 [sponsor] roles */
+    private function sponsorList()
+    {
+        $roles = self::cfg()['sponsor_roles'];
+        if (!$roles) {
+            return array();
+        }
+        $list = array();
+        foreach (Database::fetchAll(
+            'SELECT id, account, display_name FROM users
+             WHERE is_active = 1 AND role IN (' . implode(',', array_fill(0, count($roles), '?')) . ')
+             ORDER BY display_name, account',
+            $roles
+        ) as $u) {
+            $list[] = array(
+                'id'      => (int) $u['id'],
+                'account' => $u['account'],
+                'name'    => $u['display_name'] !== '' ? $u['display_name'] : $u['account'],
+            );
+        }
+        return $list;
+    }
+
+    private function isSponsorCandidate($id)
+    {
+        foreach ($this->sponsorList() as $u) {
+            if ($u['id'] === $id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function logStatus($issueId, $from, $to, $uid, $now)
+    {
+        Database::execute(
+            'INSERT INTO pending_issue_status_logs (issue_id, from_status, to_status, changed_by, changed_at) VALUES (?, ?, ?, ?, ?)',
+            array($issueId, $from, $to, $uid, $now)
+        );
+    }
+
+    /** 存檔 / 刪除時 version 不符或已被刪除：回 409 並附上最新資料，讓前端選擇覆蓋或載入最新 */
+    private function conflict($id)
+    {
+        $current = $this->findIssue($id, true);
+        if (!$current) {
+            return $this->json(array('ok' => false, 'conflict' => true, 'reason' => 'gone', 'error' => '找不到這筆 issue'), 409);
+        }
+        if ($current['deleted']) {
+            return $this->json(array(
+                'ok' => false, 'conflict' => true, 'reason' => 'deleted',
+                'error' => '這筆 issue 已被 ' . $current['deleted_by_name'] . ' 於 ' . $current['deleted_at'] . ' 刪除',
+            ), 409);
+        }
+        return $this->json(array(
+            'ok'       => false,
+            'conflict' => true,
+            'reason'   => 'modified',
+            'error'    => '這筆 issue 在你編輯期間已被 ' . $current['updated_by_name'] . ' 於 ' . $current['updated_at'] . ' 修改',
+            'issue'    => $current,
+        ), 409);
+    }
+
+    /** 其他人正在編輯哪幾筆：issue_id => [名字] */
+    private function editors($seconds)
+    {
+        $out = array();
+        foreach (Database::fetchAll(
+            'SELECT p.issue_id, COALESCE(NULLIF(u.display_name, \'\'), u.account) AS name
+             FROM pending_issue_presence p JOIN users u ON u.id = p.user_id
+             WHERE p.seen_at >= ? AND p.user_id <> ? ORDER BY p.seen_at',
+            array(date('Y-m-d H:i:s', time() - $seconds), $this->user['id'])
+        ) as $r) {
+            $out[$r['issue_id']][] = $r['name'];
+        }
+        return $out;
+    }
+
+    /** 輪詢游標：伺服器時間往前重疊幾秒 */
+    private function cursor()
+    {
+        return date('Y-m-d H:i:s', time() - self::POLL_OVERLAP);
+    }
+
+    private function usub($s, $length)
+    {
+        return preg_match('/^.{0,' . (int) $length . '}/us', $s, $m) ? $m[0] : '';
+    }
+
+    private function validDate($s)
+    {
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m)) {
+            return false;
+        }
+        return checkdate((int) $m[2], (int) $m[3], (int) $m[1]);
+    }
+
+    private function idList($csv)
+    {
+        $ids = array();
+        foreach (explode(',', $csv) as $v) {
+            $v = (int) $v;
+            if ($v > 0) {
+                $ids[$v] = $v;
+            }
+        }
+        return array_values($ids);
+    }
+
+    /** 把自己剛上傳、尚未綁定的圖片綁到這筆 issue */
+    private function attachImages($issueId, $ids)
+    {
+        if (!$ids) {
+            return;
+        }
+        Database::execute(
+            'UPDATE pending_issue_images SET issue_id = ?
+             WHERE issue_id IS NULL AND uploaded_by = ? AND id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')',
+            array_merge(array($issueId, $this->user['id']), $ids)
+        );
+    }
+
+    /** 移除這筆 issue 上不在保留清單內的圖片，回傳要刪的檔案路徑 */
+    private function detachImages($issueId, $keepIds)
+    {
+        $paths = array();
+        foreach (Database::fetchAll('SELECT id, file_path FROM pending_issue_images WHERE issue_id = ?', array($issueId)) as $img) {
+            if (!in_array((int) $img['id'], $keepIds, true)) {
+                Database::execute('DELETE FROM pending_issue_images WHERE id = ?', array($img['id']));
+                $paths[] = $img['file_path'];
+            }
+        }
+        return $paths;
+    }
+
+    /** 清除超過一天仍未綁定 issue 的暫存圖片（貼上後沒按儲存） */
+    private function cleanupOrphans()
+    {
+        $old = Database::fetchAll(
+            'SELECT id, file_path FROM pending_issue_images WHERE issue_id IS NULL AND created_at < ? LIMIT 50',
+            array(date('Y-m-d H:i:s', time() - 86400))
+        );
+        foreach ($old as $img) {
+            Database::execute('DELETE FROM pending_issue_images WHERE id = ?', array($img['id']));
+            $this->unlinkUpload($img['file_path']);
+        }
+    }
+
+    private function unlinkUpload($path)
+    {
+        $file = AISLE_STORAGE . '/uploads/' . $path;
+        if (strpos($path, '..') === false && strpos($path, 'pending_issue/') === 0 && is_file($file)) {
+            @unlink($file);
+        }
+    }
+}
+#@@@ FILE modules/pending_issue/views/index.php sha1=e9d7aa6ffb2b9915ad1e10a845bad25e3936fea2 base=- mode=644 enc=text nl=1
+<?php
+/**
+ * Pending Issue Control Table
+ * 可用變數：$cfg（pending_issue.ini 整理後的設定）、$canTrash、$export、$config（給 JS 的設定）
+ */
+?>
+<div class="pi-tabs" id="pi-tabs" role="tablist">
+    <a href="#" class="pi-tab active" data-model="">全部 <span class="pi-tab-n" data-model-count=""></span></a>
+<?php foreach ($cfg['models'] as $key => $label): ?>
+    <a href="#" class="pi-tab" data-model="<?php echo e($key); ?>"><?php echo e($label); ?> <span class="pi-tab-n" data-model-count="<?php echo e($key); ?>"></span></a>
+<?php endforeach; ?>
+</div>
+
+<div class="pi-summary" id="pi-summary">
+<?php foreach ($cfg['categories'] as $key => $label): ?>
+    <div class="pi-sum-card" data-category="<?php echo e($key); ?>">
+        <a href="#" class="pi-sum-title" data-sum-cat="<?php echo e($key); ?>" title="只看這個分類"><?php echo e($label); ?></a>
+        <span class="pi-sum-counts">
+        <?php foreach ($cfg['statuses'] as $st => $stLabel): ?>
+            <a href="#" class="pi-st pi-st-<?php echo e($st); ?>" data-sum-cat="<?php echo e($key); ?>" data-sum-status="<?php echo e($st); ?>" title="只看 <?php echo e($label . ' / ' . $stLabel); ?>">
+                <small><?php echo e($stLabel); ?></small><b data-count="<?php echo e($st); ?>">0</b>
+            </a>
+        <?php endforeach; ?>
+        </span>
+    </div>
+<?php endforeach; ?>
+</div>
+
+<div class="panel">
+    <div class="panel-head">&gt; FILTER
+        <span class="pi-live" id="pi-live" title="多人同步狀態">● LIVE</span>
+    </div>
+    <div class="panel-body">
+        <form id="pi-filter" class="pi-filter" autocomplete="off" onsubmit="return false;">
+            <div class="pi-f">
+                <label>ISSUE 狀態（可多選）</label>
+                <div class="pi-checks" id="f-status">
+                <?php foreach ($cfg['statuses'] as $key => $label): ?>
+                    <label class="pi-check pi-check-<?php echo e($key); ?>"><input type="checkbox" name="status" value="<?php echo e($key); ?>"> <?php echo e($label); ?></label>
+                <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="pi-f pi-f-wide">
+                <label>分類（可多選）</label>
+                <div class="pi-checks" id="f-cat">
+                <?php foreach ($cfg['categories'] as $key => $label): ?>
+                    <label class="pi-check"><input type="checkbox" name="cat" value="<?php echo e($key); ?>"> <?php echo e($label); ?></label>
+                <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="pi-f">
+                <label for="f-tool">機台 // TOOL</label>
+                <input type="text" id="f-tool" name="tool" list="pi-tools" placeholder="例 APAN01">
+            </div>
+            <div class="pi-f">
+                <label for="f-sponsor-text">SPONSOR</label>
+                <div class="pi-combo" id="f-sponsor"></div>
+            </div>
+            <div class="pi-f pi-f-wide">
+                <label for="f-q">關鍵字 // KEYWORD</label>
+                <input type="text" id="f-q" name="q" placeholder="Issue / Remark / 機台">
+            </div>
+            <div class="pi-f pi-f-btns">
+                <label class="pi-check"><input type="checkbox" id="f-overdue" name="overdue" value="1"> 只看 Check point 逾期</label>
+            <?php if ($canTrash): ?>
+                <label class="pi-check pi-check-trash"><input type="checkbox" id="f-trash" name="trash" value="1"> 顯示已刪除（ADMIN）</label>
+            <?php endif; ?>
+                <button type="button" class="btn btn-ghost btn-sm" id="pi-reset">[ 清除篩選 ]</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-head">&gt; CONTROL TABLE <span id="pi-count"></span>
+        <span class="pi-head-btns">
+        <?php if ($export): ?>
+            <button type="button" class="btn btn-sm pi-head-btn" id="pi-export" title="匯出目前篩選與排序的結果">[ 匯出 CSV ]</button>
+        <?php endif; ?>
+            <button type="button" class="btn btn-sm pi-head-btn" id="pi-new">[ + 新增 ISSUE ]</button>
+        </span>
+    </div>
+    <div class="panel-body pi-table-wrap">
+        <table class="table pi-table">
+            <thead>
+                <tr>
+                    <th data-sort="id">#</th>
+                    <th data-sort="model">機型</th>
+                    <th data-sort="tool_id">機台</th>
+                    <th data-sort="category">分類</th>
+                    <th data-sort="issue">ISSUE</th>
+                    <th data-sort="initial_date">INITIAL DATE</th>
+                    <th data-sort="status">STATUS</th>
+                    <th data-sort="sponsor">SPONSOR</th>
+                    <th data-sort="checkpoint_date">CHECK POINT</th>
+                    <th data-sort="remark">REMARK</th>
+                    <th data-sort="updated_at">更新</th>
+                </tr>
+            </thead>
+            <tbody id="pi-rows">
+                <tr><td colspan="11" class="dim">&gt; LOADING...</td></tr>
+            </tbody>
+        </table>
+        <noscript><p class="text-red">&gt; 此頁面需要啟用 JavaScript</p></noscript>
+    </div>
+</div>
+
+<!-- 新增 / 編輯視窗 -->
+<div class="pi-modal" id="pi-modal" style="display:none">
+    <div class="pi-dialog panel">
+        <div class="panel-head"><span id="pi-modal-title">&gt; NEW ISSUE</span>
+            <button type="button" class="pi-close" id="pi-cancel-x" title="關閉">×</button>
+        </div>
+        <div class="panel-body">
+            <div class="alert alert-error" id="pi-error" style="display:none"></div>
+            <div class="alert pi-warn" id="pi-editors" style="display:none"></div>
+            <div class="alert pi-warn" id="pi-stale" style="display:none">
+                <span id="pi-stale-text"></span>
+                <button type="button" class="btn btn-sm" id="pi-stale-load">[ 載入最新 ]</button>
+            </div>
+            <form id="pi-form" autocomplete="off" onsubmit="return false;">
+                <input type="hidden" name="id" value="0">
+                <input type="hidden" name="version" value="0">
+                <div class="pi-form-grid">
+                    <div>
+                        <label for="e-tool">機台 // TOOL *</label>
+                        <input type="text" id="e-tool" name="tool_id" list="pi-tools" maxlength="64" placeholder="例 APAN01">
+                    </div>
+                    <div>
+                        <label for="e-model">機型 // MODEL *</label>
+                        <select id="e-model" name="model">
+                            <option value="">-- 由機台自動判定 --</option>
+                        <?php foreach ($cfg['models'] as $key => $label): ?>
+                            <option value="<?php echo e($key); ?>"><?php echo e($label); ?></option>
+                        <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="e-category">分類 // CATEGORY *</label>
+                        <select id="e-category" name="category">
+                        <?php foreach ($cfg['categories'] as $key => $label): ?>
+                            <option value="<?php echo e($key); ?>"><?php echo e($label); ?></option>
+                        <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="e-status">狀態 // STATUS *</label>
+                        <select id="e-status" name="status">
+                        <?php foreach ($cfg['statuses'] as $key => $label): ?>
+                            <option value="<?php echo e($key); ?>"><?php echo e($label); ?></option>
+                        <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="e-sponsor-text">SPONSOR *</label>
+                        <div class="pi-combo" id="e-sponsor"></div>
+                    </div>
+                    <div>
+                        <label for="e-initial">INITIAL DATE *</label>
+                        <input type="date" id="e-initial" name="initial_date" placeholder="YYYY-MM-DD" maxlength="10">
+                    </div>
+                    <div>
+                        <label for="e-checkpoint">CHECK POINT DATE</label>
+                        <input type="date" id="e-checkpoint" name="checkpoint_date" placeholder="YYYY-MM-DD" maxlength="10">
+                    </div>
+                </div>
+                <label for="e-issue">ISSUE 描述 *</label>
+                <textarea id="e-issue" name="issue" rows="4"></textarea>
+                <label for="e-remark">REMARK</label>
+                <textarea id="e-remark" name="remark" rows="3"></textarea>
+
+                <label>圖片 // IMAGES</label>
+                <div class="pi-paste" id="pi-paste" tabindex="0">
+                    <span id="pi-paste-hint">&gt; 在編輯視窗中按 Ctrl+V 貼上截圖、把圖片拖曳到這裡，或</span>
+                    <label class="pi-file">選擇檔案<input type="file" id="pi-file" accept="image/png,image/jpeg,image/gif" multiple></label>
+                </div>
+                <div class="pi-images" id="pi-images"></div>
+
+                <div class="pi-history" id="pi-history" style="display:none">
+                    <label>狀態歷程 // STATUS LOG</label>
+                    <ol id="pi-history-list"></ol>
+                </div>
+
+                <p class="dim pi-meta" id="pi-meta"></p>
+                <div class="pi-actions">
+                    <button type="submit" class="btn" id="pi-save">[ 儲存 ]</button>
+                    <button type="button" class="btn btn-ghost" id="pi-cancel">[ 取消 ]</button>
+                    <button type="button" class="btn btn-red pi-del" id="pi-delete" style="display:none">[ 刪除 ]</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 存檔衝突（409） -->
+<div class="pi-modal pi-modal-top" id="pi-conflict" style="display:none">
+    <div class="pi-dialog pi-dialog-sm panel">
+        <div class="panel-head">&gt; ⚠ CONFLICT</div>
+        <div class="panel-body">
+            <p id="pi-conflict-msg"></p>
+            <table class="table pi-diff">
+                <thead><tr><th>欄位</th><th>你的版本</th><th>最新版本</th></tr></thead>
+                <tbody id="pi-conflict-rows"></tbody>
+            </table>
+            <div class="pi-actions">
+                <button type="button" class="btn btn-red" id="pi-conflict-overwrite" title="用你畫面上的內容覆蓋最新版本">[ 覆蓋（用我的版本） ]</button>
+                <button type="button" class="btn" id="pi-conflict-load" title="放棄你的修改，載入最新內容">[ 載入最新 ]</button>
+                <button type="button" class="btn btn-ghost" id="pi-conflict-cancel">[ 取消，繼續編輯 ]</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- IE11 警告 -->
+<div class="pi-modal pi-modal-top" id="pi-ie" style="display:none">
+    <div class="pi-dialog pi-dialog-sm panel">
+        <div class="panel-head">&gt; ⚠ BROWSER WARNING</div>
+        <div class="panel-body">
+            <p>偵測到 <b>Internet Explorer 11</b>。</p>
+            <p>這個頁面在 IE11 上<b>無法用 Ctrl+V 貼上截圖</b>，部分畫面也可能顯示不正常。<br>
+               請改用 <b>Chrome</b> 或 <b>Edge</b> 開啟。</p>
+            <p class="dim">繼續使用時，圖片仍可用拖曳或「選擇檔案」上傳。</p>
+            <div class="pi-actions">
+                <button type="button" class="btn" id="pi-ie-ok">[ 我知道了，繼續使用 ]</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<datalist id="pi-tools"></datalist>
+
+<script>
+window.PENDING_ISSUE = <?php echo js($config); ?>;
+</script>
+<script src="<?php echo e(asset('js/pending_issue.js')); ?>"></script>
+#@@@ FILE public/assets/css/matrix-light.css sha1=a28588d5e854490d73b6c6d68ab70d704140b326 base=b1a97226e925667f2d793f84bba142709459fb64 mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme（淺色版）
+   body 加上 theme-light 時才生效，只覆寫 matrix.css 的顏色，不動版面。
+   一樣不用 CSS 變數，以相容較舊的瀏覽器。
+   底色   #f2fbf4   淡綠白
+   主文字 #00591a   深綠（淺底上亮綠看不清楚，改用深綠）
+   強調   #008f11   綠（邊框、按鈕）
+   輔助   #2e6b3c   暗綠灰（次要文字）
+   線條   #b9e3c3   淡綠（分隔線）
+   警示   #c62828   紅
+   ===================================================================== */
+
+html.theme-light { background: #f2fbf4; }
+body.theme-light { background: #f2fbf4; color: #00591a; }
+
+body.theme-light a { color: #00801a; }
+body.theme-light a:hover { color: #003d12; text-shadow: none; text-decoration: underline; }
+body.theme-light ::selection { background: #008f11; color: #fff; }
+
+/* ---------- 背景 ---------- */
+body.theme-light #matrix-rain { opacity: 0.22; }
+body.theme-light.is-guest #matrix-rain { opacity: 0.45; }
+body.theme-light .crt-overlay {
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 80, 20, 0) 0px,
+        rgba(0, 80, 20, 0) 2px,
+        rgba(0, 80, 20, 0.04) 3px
+    );
+}
+
+/* ---------- 頂部列 / 選單 ---------- */
+body.theme-light .topbar {
+    border-bottom-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 10px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .brand { text-shadow: none; }
+body.theme-light #clock { color: #2e6b3c; }
+
+body.theme-light .sidebar { border-right-color: #b9e3c3; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .nav-title,
+body.theme-light .nav-icon,
+body.theme-light .nav-caret { color: #2e6b3c; }
+body.theme-light .sidebar li a:hover { background: #e3f6e8; border-left-color: #7fbf8e; }
+body.theme-light .sidebar li.active a { background: #c9ebd2; border-left-color: #008f11; text-shadow: none; font-weight: bold; }
+body.theme-light .sidebar .nav-group-toggle { color: #00591a; }
+body.theme-light .nav-group.has-active > .nav-group-toggle { color: #00591a; text-shadow: none; font-weight: bold; }
+
+/* ---------- 標題 ---------- */
+body.theme-light .page-title { text-shadow: none; }
+body.theme-light .glitch:hover::before { color: #00a832; }
+body.theme-light .glitch:hover::after  { color: #7fbf8e; }
+
+/* ---------- 面板 ---------- */
+body.theme-light .panel {
+    border-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 1px 6px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .panel-head { border-bottom-color: #00801a; color: #fff; background: #00801a; }
+body.theme-light .card-link { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .card-link:hover { border-color: #008f11; box-shadow: 0 2px 12px rgba(0, 143, 17, 0.25); }
+
+/* ---------- 表格 ---------- */
+body.theme-light .table th,
+body.theme-light .table td { border-bottom-color: #cfe9d6; }
+body.theme-light .table th { color: #2e6b3c; }
+body.theme-light .table tbody tr:hover { background: #e3f6e8; }
+
+/* ---------- 表單 ---------- */
+body.theme-light label { color: #2e6b3c; }
+body.theme-light label.label-bright { color: #00591a; }
+body.theme-light input[type=text],
+body.theme-light input[type=password],
+body.theme-light input[type=email],
+body.theme-light input[type=date],
+body.theme-light select,
+body.theme-light textarea {
+    border-color: #7fbf8e;
+    background: #fff;
+    color: #00591a;
+    color-scheme: light;
+}
+body.theme-light input:focus,
+body.theme-light select:focus,
+body.theme-light textarea:focus { border-color: #008f11; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+
+body.theme-light .btn { border-color: #008f11; color: #00591a; }
+body.theme-light .btn:hover { background: #008f11; color: #fff; box-shadow: 0 0 8px rgba(0, 143, 17, 0.4); }
+body.theme-light .btn-ghost { border-color: transparent; }
+body.theme-light .btn-ghost:hover { border-color: #008f11; }
+body.theme-light .btn-red { border-color: #c62828; color: #c62828; }
+body.theme-light .btn-red:hover { background: #c62828; color: #fff; box-shadow: 0 0 8px rgba(198, 40, 40, 0.4); }
+body.theme-light .theme-toggle-float { background: rgba(255, 255, 255, 0.9); }
+
+/* ---------- 訊息 ---------- */
+body.theme-light .alert { border-color: #008f11; background: #e3f6e8; }
+body.theme-light .alert-error { border-color: #c62828; color: #c62828; background: #fdecec; }
+body.theme-light .text-red { color: #c62828; }
+body.theme-light .dim { color: #2e6b3c; }
+
+/* ---------- 角色徽章 / 狀態燈 ---------- */
+body.theme-light .role-badge { border-color: #00801a; }
+body.theme-light .role-EE    { color: #00801a; border-color: #00801a; }
+body.theme-light .role-PE    { color: #00796b; border-color: #00796b; }
+body.theme-light .role-ADMIN { color: #c62828; border-color: #c62828; }
+body.theme-light .led-run  { background: #00b82e; box-shadow: 0 0 6px rgba(0, 184, 46, 0.6); }
+body.theme-light .led-idle { background: #8fbf9a; }
+body.theme-light .led-down { background: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.6); }
+
+/* ---------- 登入 / 註冊頁 ---------- */
+body.theme-light .login-box .logo { text-shadow: 0 0 6px rgba(0, 143, 17, 0.35); }
+body.theme-light .login-box .tagline { color: #2e6b3c; }
+
+/* ---------- 表單驗證 ---------- */
+body.theme-light .field-error { color: #c62828; }
+body.theme-light input.is-invalid,
+body.theme-light select.is-invalid { border-color: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.3); }
+body.theme-light input.is-valid { border-color: #008f11; }
+body.theme-light .hint { color: #00801a; }
+body.theme-light .hint.text-red { color: #c62828; }
+body.theme-light .meter { background: #d6eedc; }
+body.theme-light .meter span { background: #00a832; box-shadow: none; }
+body.theme-light .meter span.weak { background: #c62828; box-shadow: none; }
+
+/* ---------- charts 圖表頁 ---------- */
+body.theme-light .cd-box-head { border-bottom-color: #b9e3c3; }
+
+/* ---------- Pending Issue Control Table ---------- */
+body.theme-light .pi-tabs { border-bottom-color: #00a832; }
+body.theme-light .pi-tab { border-color: #7fbf8e; border-bottom-color: transparent; color: #2e6b3c; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .pi-tab:hover { color: #00591a; }
+body.theme-light .pi-tab.active { color: #fff; background: #00801a; border-color: #00801a; }
+body.theme-light .pi-sum-card { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.9); }
+body.theme-light .pi-sum-card:hover { border-color: #008f11; }
+body.theme-light .pi-st-open { color: #c62828; text-shadow: none; }
+body.theme-light .pi-st-monitor { color: #b26a00; }
+body.theme-light .pi-st-close { color: #2e6b3c; }
+body.theme-light .pi-live { color: #fff; }
+body.theme-light .pi-live.is-error { color: #c62828; background: #fff; }
+body.theme-light .pi-head-btn { border-color: #fff; color: #fff; }
+body.theme-light .pi-head-btn:hover { background: #fff; color: #00801a; }
+body.theme-light label.pi-check { color: #00591a; }
+body.theme-light label.pi-check-open,
+body.theme-light label.pi-check-trash { color: #c62828; }
+body.theme-light label.pi-check-monitor { color: #b26a00; }
+body.theme-light label.pi-check-close { color: #2e6b3c; }
+body.theme-light .pi-combo-btn { border-left-color: #7fbf8e; color: #00591a; }
+body.theme-light .pi-combo-list { border-color: #008f11; background: #fff; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.2); }
+body.theme-light .pi-combo-list li.is-active { background: #00801a; color: #fff; }
+body.theme-light .pi-combo-list li.is-active .dim { color: #d6eedc; }
+body.theme-light .pi-table th[data-sort]:hover,
+body.theme-light .pi-table th.is-sorted { color: #00591a; }
+body.theme-light .pi-row-close td { color: #5c8a68; }
+body.theme-light .pi-remark { color: #2e6b3c; }
+body.theme-light .pi-by,
+body.theme-light .pi-imgcount { color: #2e6b3c; }
+body.theme-light .pi-overdue { color: #c62828 !important; }
+body.theme-light .pi-who { color: #b26a00; }
+body.theme-light .pi-tag-open { color: #c62828; border-color: #c62828; }
+body.theme-light .pi-tag-monitor { color: #b26a00; border-color: #b26a00; }
+body.theme-light .pi-tag-close { color: #2e6b3c; border-color: #2e6b3c; }
+body.theme-light .pi-modal { background: rgba(0, 40, 10, 0.45); }
+body.theme-light .pi-dialog { background: #fff; box-shadow: 0 4px 24px rgba(0, 60, 20, 0.35); }
+body.theme-light .pi-close { color: #fff; }
+body.theme-light .pi-warn { border-color: #b26a00; color: #b26a00; background: #fff6e0; }
+body.theme-light .pi-paste { border-color: #7fbf8e; color: #2e6b3c; }
+body.theme-light .pi-paste:focus,
+body.theme-light .pi-paste.is-over { border-color: #008f11; color: #00591a; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+body.theme-light label.pi-file { color: #00801a; }
+body.theme-light .pi-thumb { border-color: #7fbf8e; background: #e3f6e8; }
+body.theme-light .pi-thumb-del { border-color: #c62828; background: #fff; color: #c62828; }
+body.theme-light .pi-diff tr.pi-diff-hot td { color: #b26a00; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    body.theme-light .sidebar { border-bottom-color: #b9e3c3; }
+    body.theme-light .sidebar li.active a { border-bottom-color: #008f11; }
+}
+#@@@ FILE public/assets/css/matrix.css sha1=79673ab444816f59913cef7755a6f2ebd8f230f3 base=c40c403628421d754782da7b7aa1e3fdcace7b16 mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme
+   綠色磷光終端機風格。刻意不用 CSS 變數，以相容較舊的瀏覽器。
+   主色   #00ff41   亮綠（文字、邊框）
+   次色   #00b82e   中綠
+   暗色   #008f11   暗綠（輔助文字）
+   深底   #001a07   面板底色
+   警示   #ff3b3b   紅藥丸
+   ===================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #000;
+    color: #00ff41;
+    font-family: "Share Tech Mono", "Consolas", "Courier New", "Microsoft JhengHei", monospace;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+a { color: #00ff41; text-decoration: none; }
+a:hover { color: #b6ffc8; text-shadow: 0 0 8px #00ff41; }
+
+::selection { background: #00ff41; color: #000; }
+
+/* ---------- 背景：數位雨與 CRT 掃描線 ---------- */
+#matrix-rain {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+    opacity: 0.18;
+    pointer-events: none;
+}
+body.is-guest #matrix-rain { opacity: 0.55; }
+
+.crt-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.25) 3px
+    );
+}
+
+/* ---------- 頂部列 ---------- */
+.topbar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid #00b82e;
+    background: rgba(0, 10, 3, 0.92);
+    box-shadow: 0 0 18px rgba(0, 255, 65, 0.25);
+}
+.brand {
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    text-shadow: 0 0 10px #00ff41;
+}
+.topbar-status > * { margin-left: 12px; vertical-align: middle; }
+#clock { color: #008f11; }
+
+.cursor { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 主框架 ---------- */
+.shell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    min-height: calc(100vh - 52px);
+}
+.sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid #003b00;
+    background: rgba(0, 10, 3, 0.85);
+    padding: 16px 0;
+}
+.nav-title {
+    padding: 0 20px 10px;
+    color: #008f11;
+    font-size: 12px;
+    letter-spacing: 2px;
+}
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li a {
+    display: block;
+    padding: 9px 20px;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sidebar li a:hover { background: #001a07; border-left-color: #008f11; }
+.sidebar li.active a {
+    background: #002a0b;
+    border-left-color: #00ff41;
+    text-shadow: 0 0 8px #00ff41;
+}
+.nav-icon { display: inline-block; width: 18px; color: #008f11; }
+
+/* 選單分類（config.ini 的 [group.xxx]），可收折；沒有 JS 時一律展開 */
+.sidebar .nav-group-toggle { position: relative; padding-right: 34px; color: #00ff41; }
+.nav-group.has-active > .nav-group-toggle { color: #00ff41; text-shadow: 0 0 6px #00ff41; }
+.nav-caret { position: absolute; right: 6px; top: 9px; color: #008f11; }
+.nav-caret:before { content: "[-]"; }
+.js .nav-group:not(.open) .nav-caret:before { content: "[+]"; }
+.js .nav-group:not(.open) > .nav-children { display: none; }
+.sidebar .nav-children li a { padding-left: 38px; font-size: 0.95em; }
+
+.main {
+    flex: 1;
+    min-width: 0;
+    padding: 24px 32px;
+}
+.guest {
+    position: relative;
+    z-index: 2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+/* ---------- 標題 glitch ---------- */
+.page-title {
+    position: relative;
+    margin: 0 0 20px;
+    font-size: 24px;
+    letter-spacing: 3px;
+    text-shadow: 0 0 12px #00ff41;
+}
+.glitch::before,
+.glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    overflow: hidden;
+    opacity: 0;
+}
+.glitch:hover::before { opacity: 0.8; color: #b6ffc8; animation: glitch 0.3s infinite; }
+.glitch:hover::after  { opacity: 0.6; color: #008f11; animation: glitch 0.3s infinite reverse; }
+@keyframes glitch {
+    0%   { clip: rect(0, 9999px, 6px, 0);   transform: translate(-2px, 0); }
+    50%  { clip: rect(12px, 9999px, 20px, 0); transform: translate(2px, 0); }
+    100% { clip: rect(4px, 9999px, 14px, 0);  transform: translate(-1px, 0); }
+}
+
+/* ---------- 面板 / 終端機 ---------- */
+.panel {
+    border: 1px solid #00b82e;
+    background: rgba(0, 20, 6, 0.88);
+    box-shadow: 0 0 12px rgba(0, 255, 65, 0.15), inset 0 0 20px rgba(0, 255, 65, 0.05);
+    margin-bottom: 20px;
+}
+.panel-head {
+    padding: 8px 14px;
+    border-bottom: 1px solid #003b00;
+    color: #000;
+    background: #00b82e;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+.panel-body { padding: 14px; }
+.panel-head-aside { float: right; font-weight: normal; }
+.terminal .panel-body { font-size: 14px; }
+.terminal .line { white-space: pre-wrap; margin: 0; }
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0 -10px;
+}
+.grid > .col {
+    flex: 1 1 260px;
+    padding: 0 10px;
+}
+
+.card-link {
+    display: block;
+    padding: 18px;
+    border: 1px dashed #008f11;
+    margin-bottom: 20px;
+    background: rgba(0, 20, 6, 0.7);
+    transition: all 0.15s;
+}
+.card-link:hover {
+    border-style: solid;
+    border-color: #00ff41;
+    box-shadow: 0 0 16px rgba(0, 255, 65, 0.4);
+}
+.card-link .big { font-size: 28px; display: block; }
+
+/* ---------- 表格 ---------- */
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #003b00;
+    text-align: left;
+}
+.table th { color: #008f11; font-weight: normal; letter-spacing: 1px; }
+.table tbody tr:hover { background: #002a0b; }
+
+/* ---------- 表單 ---------- */
+label { display: block; margin: 12px 0 4px; color: #008f11; font-size: 13px; letter-spacing: 1px; }
+input[type=text], input[type=password], input[type=email], select, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: #00ff41;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+.inline { display: inline; }
+
+.btn {
+    display: inline-block;
+    padding: 7px 16px;
+    border: 1px solid #00ff41;
+    background: transparent;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 14px;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+.btn:hover { background: #00ff41; color: #000; text-shadow: none; box-shadow: 0 0 14px #00ff41; }
+.btn-ghost { border-color: transparent; }
+.btn-ghost:hover { border-color: #00ff41; }
+.btn-sm { padding: 3px 8px; font-size: 13px; }
+.btn-red { border-color: #ff3b3b; color: #ff3b3b; }
+.btn-red:hover { background: #ff3b3b; color: #000; box-shadow: 0 0 14px #ff3b3b; }
+
+/* ---------- 訊息 ---------- */
+.alert {
+    padding: 10px 14px;
+    margin-bottom: 18px;
+    border: 1px solid #00ff41;
+    background: rgba(0, 40, 10, 0.9);
+}
+.alert-error { border-color: #ff3b3b; color: #ff3b3b; background: rgba(40, 0, 0, 0.85); }
+.text-red { color: #ff3b3b; }
+.dim { color: #008f11; }
+label.label-bright { color: #00ff41; }
+
+/* ---------- 角色徽章 ---------- */
+.role-badge {
+    display: inline-block;
+    padding: 0 8px;
+    border: 1px solid #00ff41;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.role-EE    { color: #00ff41; border-color: #00ff41; }
+.role-PE    { color: #7dffb0; border-color: #7dffb0; }
+.role-ADMIN { color: #ff3b3b; border-color: #ff3b3b; }
+
+/* 狀態燈 */
+.led { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.led-run   { background: #00ff41; box-shadow: 0 0 8px #00ff41; }
+.led-idle  { background: #008f11; }
+.led-down  { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: blink 0.8s steps(1) infinite; }
+
+/* ---------- 登入頁 ---------- */
+.login-box {
+    width: 380px;
+    max-width: 100%;
+}
+.login-box .logo {
+    text-align: center;
+    font-size: 40px;
+    letter-spacing: 14px;
+    margin-bottom: 4px;
+    text-shadow: 0 0 18px #00ff41, 0 0 4px #00ff41;
+}
+.login-box .tagline { text-align: center; color: #008f11; margin-bottom: 20px; min-height: 1.6em; }
+.login-box .btn { width: 100%; margin-top: 18px; padding: 10px; }
+
+/* ---------- 表單驗證 ---------- */
+.field-error { min-height: 1.2em; color: #ff3b3b; font-size: 13px; margin-top: 2px; }
+input.is-invalid, select.is-invalid { border-color: #ff3b3b; box-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+input.is-valid { border-color: #00ff41; }
+.hint { float: right; color: #00ff41; letter-spacing: 1px; }
+.hint.text-red { color: #ff3b3b; }
+.meter { height: 3px; background: #001a07; margin-top: 4px; }
+.meter span { display: block; height: 100%; width: 0; background: #00ff41; box-shadow: 0 0 6px #00ff41; transition: width 0.2s; }
+.meter span.weak { background: #ff3b3b; box-shadow: 0 0 6px #ff3b3b; }
+.btn:disabled { opacity: 0.6; cursor: wait; }
+.form-foot { margin: 14px 0 0; text-align: center; }
+.register-box { width: 440px; }
+
+/* ---------- 風格切換按鈕（沒有 JavaScript 時隱藏） ---------- */
+.theme-toggle { display: none; }
+.js .theme-toggle { display: inline-block; }
+.theme-toggle-float { position: fixed; top: 12px; right: 16px; z-index: 3; background: rgba(0, 10, 3, 0.85); }
+
+/* ---------- charts 圖表頁（modules/charts） ---------- */
+input[type=date] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.cd-filters { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.cd-field { padding: 0 8px; }
+.cd-field select { width: auto; min-width: 140px; }
+.cd-quick .btn { margin-right: 4px; }
+.cd-msg { min-height: 1em; margin: 8px 0 0; }
+.cd-note { margin: 4px 0 0; font-size: 13px; }
+.cd-sub { margin: 0 0 8px; font-size: 13px; }
+.cd-sub select { width: auto; margin: 0 10px 0 6px; padding: 4px 8px; }
+.cd-sub label.inline { margin: 0; }
+.cd-boxes-grid { display: flex; flex-wrap: wrap; padding: 14px 4px; }
+.cd-boxes-grid > .cd-box { flex: 1 1 460px; min-width: 0; padding: 0 10px; }
+.cd-box { margin-bottom: 18px; }
+.cd-box:last-child { margin-bottom: 0; }
+.cd-box-head { border-bottom: 1px dashed #003b00; padding-bottom: 4px; margin-bottom: 6px; }
+.cd-box-head b { letter-spacing: 1px; }
+.cd-box-info { font-size: 13px; margin-left: 8px; }
+.cd-box-tools { float: right; }
+.cd-box-tools .btn { padding: 0 6px; margin-left: 4px; font-size: 12px; }
+.cd-chart { height: 320px; }
+.cd-chart-tall { height: 440px; }
+.cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }
+    .sidebar ul { display: flex; overflow-x: auto; }
+    .sidebar li a { border-left: 0; border-bottom: 2px solid transparent; padding: 6px 12px; }
+    .sidebar li.active a { border-bottom-color: #00ff41; }
+    .nav-title { display: none; }
+    .sidebar .nav-group { display: flex; }
+    .sidebar .nav-children { display: flex; }
+    .sidebar .nav-children li a { padding-left: 12px; }
+    .sidebar .nav-group-toggle { padding-right: 12px; }
+    .nav-caret { position: static; margin-left: 4px; }
+    .main { padding: 16px; }
+    .hide-sm { display: none; }
+    .topbar { padding: 8px 16px; }
+    .topbar-status > * { margin-left: 6px; }
+    .table { font-size: 13px; }
+    .cd-box-tools { float: none; display: block; margin-top: 4px; }
+    .cd-chart-tall { height: 380px; }
+}
+
+/* =====================================================================
+   Pending Issue Control Table（modules/pending_issue）
+   狀態色：Open 紅、Monitor 黃、Close 暗綠
+   ===================================================================== */
+.pi-tabs { display: flex; flex-wrap: wrap; margin-bottom: 12px; border-bottom: 1px solid #008f11; }
+.pi-tab {
+    padding: 8px 16px;
+    margin: 0 4px -1px 0;
+    border: 1px solid #008f11;
+    border-bottom-color: transparent;
+    color: #008f11;
+    letter-spacing: 1px;
+    background: rgba(0, 20, 6, 0.6);
+}
+.pi-tab:hover { color: #00ff41; text-decoration: none; }
+.pi-tab.active { color: #000; background: #00b82e; border-color: #00b82e; font-weight: bold; }
+.pi-tab-n { font-size: 12px; }
+
+.pi-summary { display: flex; flex-wrap: wrap; margin: 0 -6px 12px; }
+.pi-sum-card {
+    flex: 1 1 210px;
+    margin: 0 6px 10px;
+    padding: 10px 12px;
+    border: 1px dashed #008f11;
+    background: rgba(0, 20, 6, 0.8);
+}
+.pi-sum-card:hover { border-style: solid; border-color: #00ff41; }
+.pi-sum-title { display: block; letter-spacing: 2px; margin-bottom: 6px; }
+.pi-sum-counts { display: flex; }
+.pi-st { flex: 1 1 0; display: block; text-decoration: none; }
+.pi-st:hover { text-decoration: none; opacity: 0.8; }
+.pi-st small { display: block; font-size: 11px; letter-spacing: 1px; }
+.pi-st b { font-size: 22px; font-weight: normal; }
+.pi-st-open { color: #ff3b3b; text-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+.pi-st-monitor { color: #e6ff3b; }
+.pi-st-close { color: #008f11; }
+
+.pi-live { float: right; font-weight: normal; font-size: 12px; color: #000; }
+.pi-live.is-paused { opacity: 0.7; }
+.pi-live.is-error { color: #ff3b3b; background: #000; padding: 0 6px; }
+.pi-head-btns { float: right; margin: -3px 0; }
+.pi-head-btn { margin-left: 8px; border-color: #000; color: #000; }
+.pi-head-btn:hover { background: #000; color: #00ff41; box-shadow: none; }
+
+.pi-filter { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.pi-f { flex: 1 1 180px; padding: 0 8px; }
+.pi-f-wide { flex: 2 1 280px; }
+.pi-f-btns { flex: 1 1 100%; padding-top: 8px; }
+.pi-checks { padding: 6px 0; }
+label.pi-check { display: inline-block; margin: 0 14px 4px 0; color: #00ff41; font-size: 14px; letter-spacing: 0; cursor: pointer; white-space: nowrap; }
+label.pi-check-open { color: #ff3b3b; }
+label.pi-check-monitor { color: #e6ff3b; }
+label.pi-check-close { color: #008f11; }
+label.pi-check-trash { color: #ff3b3b; }
+
+/* Sponsor 下拉 + 輸入篩選 */
+.pi-combo { position: relative; }
+.pi-combo-input { padding-right: 34px !important; }
+.pi-combo-btn {
+    position: absolute;
+    top: 1px; right: 1px; bottom: 1px;
+    width: 30px;
+    border: 0;
+    border-left: 1px solid #008f11;
+    background: transparent;
+    color: #00ff41;
+    cursor: pointer;
+    font-size: 11px;
+}
+.pi-combo-list {
+    position: absolute;
+    left: 0; right: 0;
+    top: 100%;
+    z-index: 30;
+    max-height: 240px;
+    overflow-y: auto;
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid #00ff41;
+    background: #000;
+    box-shadow: 0 0 14px rgba(0, 255, 65, 0.35);
+}
+.pi-combo-list li { padding: 6px 10px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-combo-list li.is-active { background: #00b82e; color: #000; }
+.pi-combo-list li.is-active .dim { color: #003b00; }
+.pi-combo-list li.is-selected { font-weight: bold; }
+.pi-combo-list li.pi-combo-empty { cursor: default; }
+.pi-combo-list mark { background: transparent; color: inherit; text-decoration: underline; font-weight: bold; }
+
+.pi-table-wrap { overflow-x: auto; }
+.pi-table { font-size: 14px; }
+.pi-table td { vertical-align: top; }
+.pi-table th[data-sort] { cursor: pointer; white-space: nowrap; user-select: none; }
+.pi-table th[data-sort]:hover { color: #00ff41; }
+.pi-table th.is-sorted { color: #00ff41; }
+.pi-table th.is-sorted[data-dir=asc]:after { content: " ▲"; font-size: 10px; }
+.pi-table th.is-sorted[data-dir=desc]:after { content: " ▼"; font-size: 10px; }
+.pi-row { cursor: pointer; }
+.pi-row-close td { color: #008f11; }
+.pi-row-deleted { cursor: default; opacity: 0.6; }
+.pi-row-deleted td { text-decoration: line-through; }
+.pi-row-deleted td:last-child { text-decoration: none; }
+.pi-tool { white-space: nowrap; font-weight: bold; }
+.pi-issue { min-width: 220px; max-width: 420px; }
+.pi-remark { min-width: 140px; max-width: 280px; font-size: 13px; color: #7dffb0; }
+.pi-clip { max-height: 7.5em; overflow: hidden; word-break: break-word; }
+.pi-nowrap { white-space: nowrap; }
+.pi-by { display: block; font-size: 11px; color: #008f11; margin-top: 2px; }
+.pi-overdue { color: #ff3b3b !important; font-weight: bold; }
+.pi-overdue small { display: block; font-size: 11px; font-weight: normal; }
+.pi-imgcount { color: #008f11; font-size: 12px; margin-right: 6px; }
+.pi-who { display: inline-block; color: #e6ff3b; font-size: 12px; animation: blink 1.6s steps(1) infinite; }
+.pi-restore { margin-top: 4px; text-decoration: none; }
+
+.pi-tag { display: inline-block; padding: 0 6px; border: 1px solid; font-size: 12px; letter-spacing: 1px; }
+.pi-tag-open { color: #ff3b3b; border-color: #ff3b3b; }
+.pi-tag-monitor { color: #e6ff3b; border-color: #e6ff3b; }
+.pi-tag-close { color: #008f11; border-color: #008f11; }
+
+/* 編輯視窗 / 衝突視窗 / IE11 警告 */
+body.pi-modal-open { overflow: hidden; }
+.pi-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.8);
+    overflow-y: auto;
+    padding: 30px 16px;
+}
+.pi-modal-top { z-index: 20; padding-top: 80px; }
+.pi-dialog { max-width: 900px; margin: 0 auto; background: #000; box-shadow: 0 0 30px rgba(0, 255, 65, 0.35); }
+.pi-dialog-sm { max-width: 640px; }
+.pi-close { float: right; border: 0; background: transparent; color: #000; font-size: 20px; line-height: 1; cursor: pointer; }
+.pi-form-grid { display: flex; flex-wrap: wrap; margin: 0 -8px; }
+.pi-form-grid > div { flex: 1 1 250px; padding: 0 8px; }
+.pi-dialog textarea { resize: vertical; }
+.pi-warn { border-color: #e6ff3b; color: #e6ff3b; }
+.pi-warn .btn { margin-left: 8px; }
+.pi-paste { padding: 14px; border: 1px dashed #008f11; color: #008f11; text-align: center; outline: none; }
+.pi-paste:focus, .pi-paste.is-over { border-color: #00ff41; color: #00ff41; box-shadow: 0 0 10px rgba(0, 255, 65, 0.4); }
+label.pi-file { display: inline; margin: 0; color: #00ff41; text-decoration: underline; cursor: pointer; font-size: inherit; }
+label.pi-file input { display: none; }
+.pi-images { display: flex; flex-wrap: wrap; margin: 8px -5px 0; }
+.pi-thumb { position: relative; width: 140px; height: 105px; margin: 5px; border: 1px solid #008f11; background: #001a07; overflow: hidden; }
+.pi-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pi-thumb-loading { display: flex; align-items: center; justify-content: center; font-size: 12px; animation: blink 1s steps(1) infinite; }
+.pi-thumb-del {
+    position: absolute;
+    top: 2px; right: 2px;
+    width: 22px; height: 22px;
+    border: 1px solid #ff3b3b;
+    background: #000;
+    color: #ff3b3b;
+    cursor: pointer;
+    line-height: 1;
+}
+.pi-history ol { margin: 0; padding-left: 22px; font-size: 13px; }
+.pi-history li { margin: 3px 0; }
+.pi-meta { font-size: 12px; margin: 14px 0 0; }
+.pi-actions { margin-top: 14px; }
+.pi-actions .btn { margin: 0 6px 6px 0; }
+.pi-del { float: right; }
+.pi-diff { font-size: 13px; margin: 10px 0; }
+.pi-diff td { vertical-align: top; word-break: break-word; }
+.pi-diff tr.pi-diff-hot td { color: #e6ff3b; }
+
+@media (max-width: 760px) {
+    .pi-modal { padding: 0; }
+    .pi-modal-top { padding-top: 20px; }
+    .pi-st b { font-size: 18px; }
+    .pi-head-btns { float: none; display: block; margin: 6px 0 0; }
+    .pi-head-btn { margin: 0 8px 0 0; }
+}
+#@@@ FILE public/assets/js/pending_issue.js sha1=d8863d1bdd91174cc0eb2f157556a24ab3cb34f0 base=- mode=644 enc=text nl=1
+/*
+ * AISLE Pending Issue Control Table (jQuery 1.12，維持 IE11 可執行的 ES5 寫法)
+ *   - 列表一次載入，篩選 / 排序 / 統計都在前端做；篩選條件寫進網址
+ *   - 每 N 秒輪詢同步別人的修改與「某某 編輯中」；閒置或分頁在背景時暫停，讓登入照常逾時
+ *   - 存檔以 version 做樂觀鎖，衝突（409）時可選「覆蓋」或「載入最新」
+ *   - 編輯視窗可 Ctrl+V 貼上截圖、拖曳或選檔上傳圖片
+ * 設定由 view 放在 window.PENDING_ISSUE
+ */
+(function ($) {
+    if (!$ || !window.PENDING_ISSUE) {
+        return;
+    }
+    var CFG = window.PENDING_ISSUE;
+    var STATUS_ORDER = { open: 0, monitor: 1, close: 2 };
+    var DEFAULT_STATUS = ['open', 'monitor'];
+    var IS_IE = /Trident\/|MSIE /.test(window.navigator.userAgent);
+
+    // ==================================================================
+    // 小工具
+    // ==================================================================
+    function esc(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function nl2br(s) { return esc(s).replace(/\r?\n/g, '<br>'); }
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    function today() {
+        var d = new Date();
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    }
+    function nowMs() { return new Date().getTime(); }
+    function daysBetween(a, b) {
+        // a、b 為 YYYY-MM-DD，回傳 b - a 的天數
+        var pa = a.split('-'), pb = b.split('-');
+        var ta = Date.UTC(+pa[0], +pa[1] - 1, +pa[2]), tb = Date.UTC(+pb[0], +pb[1] - 1, +pb[2]);
+        return Math.round((tb - ta) / 86400000);
+    }
+    function errorText(xhr, fallback) {
+        var r = xhr && xhr.responseJSON;
+        return (r && r.error) || fallback || '連線失敗，請稍後再試';
+    }
+    function store(kind, key, value) {
+        try {
+            var s = window[kind];
+            if (value === undefined) {
+                return s.getItem(key);
+            }
+            s.setItem(key, value);
+        } catch (e) {
+            // 瀏覽器停用 storage 時只是不記憶
+        }
+        return null;
+    }
+    /** 把符合的字標亮（不分大小寫） */
+    function highlight(text, q) {
+        text = String(text);
+        if (!q) {
+            return esc(text);
+        }
+        var i = text.toLowerCase().indexOf(q.toLowerCase());
+        if (i < 0) {
+            return esc(text);
+        }
+        return esc(text.substring(0, i)) + '<mark>' + esc(text.substring(i, i + q.length)) + '</mark>' + esc(text.substring(i + q.length));
+    }
+    function shortTime(dt) { return dt ? String(dt).substring(5, 16) : ''; }
+    function shortDate(dt) { return dt ? String(dt).substring(5, 10).replace('-', '/') : ''; }
+
+    // ==================================================================
+    // Sponsor 元件：下拉選單 + 直接輸入篩選（只能選清單裡的人）
+    // ==================================================================
+    function Combo($wrap, opts) {
+        var self = this;
+        this.opts = opts;
+        this.items = opts.items.slice(0);
+        this.extra = null;        // 不在清單內的目前值（例如已停用的帳號）
+        this.value = '';
+        this.active = -1;
+        this.shown = [];
+        $wrap.html(
+            '<input type="text" class="pi-combo-input" id="' + esc(opts.inputId) + '" placeholder="' + esc(opts.placeholder || '') + '" autocomplete="off">' +
+            '<button type="button" class="pi-combo-btn" tabindex="-1" title="展開清單">▼</button>' +
+            '<ul class="pi-combo-list" style="display:none"></ul>'
+        );
+        this.$input = $wrap.find('.pi-combo-input');
+        this.$list = $wrap.find('.pi-combo-list');
+
+        this.$input.on('focus click', function () {
+            self.open(self.$input.val() === self.labelOf(self.value) ? '' : self.$input.val());
+        }).on('input', function () {
+            self.open(self.$input.val());
+        }).on('keydown', function (e) {
+            var k = e.keyCode;
+            if (k === 40 || k === 38) {
+                e.preventDefault();
+                if (!self.$list.is(':visible')) {
+                    self.open('');
+                    return;
+                }
+                self.move(k === 40 ? 1 : -1);
+            } else if (k === 13) {
+                e.preventDefault();
+                if (self.$list.is(':visible') && self.active >= 0 && self.shown[self.active]) {
+                    self.choose(self.shown[self.active].id);
+                }
+            } else if (k === 27) {
+                if (self.$list.is(':visible')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    self.close();
+                    self.$input.val(self.labelOf(self.value));
+                }
+            }
+        }).on('blur', function () {
+            setTimeout(function () { self.commit(); }, 150);
+        });
+        $wrap.find('.pi-combo-btn').on('mousedown', function (e) {
+            e.preventDefault();
+        }).on('click', function () {
+            if (self.$list.is(':visible')) {
+                self.close();
+            } else {
+                self.$input.focus();
+                self.open('');
+            }
+        });
+        this.$list.on('mousedown', 'li', function (e) {
+            e.preventDefault();
+            var id = $(this).data('id');
+            self.choose(id === undefined || id === '' ? '' : String(id));
+        });
+    }
+    Combo.prototype.all = function () {
+        var list = [];
+        if (this.opts.allowAll) {
+            list.push({ id: '', name: this.opts.allLabel || '全部', account: '' });
+        }
+        list = list.concat(this.items);
+        if (this.extra) {
+            list.push(this.extra);
+        }
+        return list;
+    };
+    Combo.prototype.labelOf = function (id) {
+        var list = this.all();
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].id) === String(id)) {
+                return list[i].id === '' ? '' : list[i].name;
+            }
+        }
+        return '';
+    };
+    Combo.prototype.open = function (q) {
+        q = $.trim(q || '').toLowerCase();
+        var list = this.all(), html = '', self = this;
+        this.shown = [];
+        $.each(list, function (i, it) {
+            if (q && it.id !== '' && it.name.toLowerCase().indexOf(q) < 0 && it.account.toLowerCase().indexOf(q) < 0) {
+                return;
+            }
+            if (q && it.id === '') {
+                return;
+            }
+            self.shown.push(it);
+        });
+        $.each(this.shown, function (i, it) {
+            var sel = String(it.id) === String(self.value);
+            html += '<li data-id="' + esc(it.id) + '" class="' + (sel ? 'is-selected' : '') + (it.inactive ? ' is-inactive' : '') + '">' +
+                (it.id === '' ? esc(it.name) : highlight(it.name, q) +
+                    (it.account && it.account !== it.name ? ' <span class="dim">' + highlight(it.account, q) + '</span>' : '') +
+                    (it.inactive ? ' <span class="dim">（已停用）</span>' : '')) +
+                '</li>';
+        });
+        if (!this.shown.length) {
+            html = '<li class="pi-combo-empty dim">&gt; 沒有符合的 AISLE 使用者</li>';
+        }
+        this.$list.html(html).show();
+        this.active = -1;
+        for (var i = 0; i < this.shown.length; i++) {
+            if (String(this.shown[i].id) === String(this.value)) {
+                this.active = i;
+            }
+        }
+        if (this.active < 0 && this.shown.length && q) {
+            this.active = 0;
+        }
+        this.paintActive();
+    };
+    Combo.prototype.move = function (d) {
+        if (!this.shown.length) {
+            return;
+        }
+        this.active = (this.active + d + this.shown.length) % this.shown.length;
+        this.paintActive();
+    };
+    Combo.prototype.paintActive = function () {
+        var $li = this.$list.children('li').removeClass('is-active');
+        if (this.active >= 0) {
+            var el = $li.eq(this.active).addClass('is-active')[0];
+            if (el && el.offsetTop !== undefined) {
+                var list = this.$list[0];
+                if (el.offsetTop < list.scrollTop) {
+                    list.scrollTop = el.offsetTop;
+                } else if (el.offsetTop + el.offsetHeight > list.scrollTop + list.clientHeight) {
+                    list.scrollTop = el.offsetTop + el.offsetHeight - list.clientHeight;
+                }
+            }
+        }
+    };
+    Combo.prototype.close = function () {
+        this.$list.hide();
+    };
+    Combo.prototype.choose = function (id) {
+        var changed = String(id) !== String(this.value);
+        this.value = String(id);
+        this.$input.val(this.labelOf(id)).removeClass('is-invalid');
+        this.close();
+        if (changed && this.opts.onChange) {
+            this.opts.onChange(this.value);
+        }
+    };
+    /** 離開欄位：打了字卻沒選 → 完全符合一人就選他，否則還原 */
+    Combo.prototype.commit = function () {
+        if (this.$input.is(':focus')) {
+            return;
+        }
+        this.close();
+        var text = $.trim(this.$input.val());
+        if (text === this.labelOf(this.value)) {
+            return;
+        }
+        if (text === '' && this.opts.allowAll) {
+            this.choose('');
+            return;
+        }
+        var list = this.all(), hit = null, lower = text.toLowerCase();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id !== '' && (list[i].name.toLowerCase() === lower || list[i].account.toLowerCase() === lower)) {
+                hit = list[i];
+                break;
+            }
+        }
+        if (hit) {
+            this.choose(String(hit.id));
+            return;
+        }
+        this.$input.val(this.labelOf(this.value));
+        if (this.opts.onInvalid) {
+            this.opts.onInvalid();
+        }
+    };
+    /** 設定目前值；不在清單內（已停用）的帳號用 name 顯示 */
+    Combo.prototype.set = function (id, name) {
+        id = id === null || id === undefined ? '' : String(id);
+        this.extra = null;
+        var found = false;
+        for (var i = 0; i < this.items.length; i++) {
+            if (String(this.items[i].id) === id) {
+                found = true;
+            }
+        }
+        if (!found && id !== '') {
+            this.extra = { id: id, name: name || ('#' + id), account: '', inactive: true };
+        }
+        this.value = id;
+        this.$input.val(this.labelOf(id)).removeClass('is-invalid');
+    };
+
+    // ==================================================================
+    // 主程式
+    // ==================================================================
+    $(function () {
+        var $rows = $('#pi-rows');
+        var $modal = $('#pi-modal');
+        var $form = $('#pi-form');
+        var $error = $('#pi-error');
+        var $images = $('#pi-images');
+        var $conflict = $('#pi-conflict');
+        var $live = $('#pi-live');
+
+        var sponsorItems = $.map(CFG.sponsors, function (u) {
+            return { id: String(u.id), name: u.name, account: u.account };
+        });
+        var sponsorName = {};
+        $.each(CFG.sponsors, function (i, u) { sponsorName[u.id] = u.name; });
+
+        var state = {
+            rows: {},            // id => row
+            cursor: '',
+            trash: false,
+            loaded: false,
+            filter: { model: '', status: DEFAULT_STATUS.slice(0), cat: [], tool: '', sponsor: '', q: '', overdue: false },
+            sort: { key: '', dir: 'asc' },
+            editors: {},         // issue_id => [名字]
+            editing: null,       // 編輯中的 issue（新增時為 null）
+            editingId: 0,
+            original: null,      // 開啟編輯視窗當下的表單值，衝突比對用
+            images: [],
+            uploading: 0,
+            dirty: false,
+            conflictIssue: null,
+            lastActivity: nowMs(),
+            paused: false,
+            pollXhr: null
+        };
+
+        // ---------------- 網址參數 ----------------
+        function getParam(name) {
+            var m = new RegExp('[?&]' + name + '=([^&#]*)').exec(window.location.search);
+            return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
+        }
+        function splitList(v, allowed) {
+            var out = [];
+            $.each(String(v || '').split(','), function (i, s) {
+                if (s && allowed[s] !== undefined) {
+                    out.push(s);
+                }
+            });
+            return out;
+        }
+        function readUrl() {
+            var f = state.filter, v;
+            v = getParam('model');
+            f.model = v && CFG.models[v] !== undefined ? v : '';
+            v = getParam('status');
+            f.status = v === null ? DEFAULT_STATUS.slice(0) : splitList(v, CFG.statuses);
+            f.cat = splitList(getParam('cat'), CFG.categories);
+            f.tool = getParam('tool') || '';
+            f.sponsor = getParam('sponsor') || '';
+            f.q = getParam('q') || '';
+            f.overdue = getParam('overdue') === '1';
+            v = getParam('sort');
+            state.sort.key = v || '';
+            state.sort.dir = getParam('dir') === 'desc' ? 'desc' : 'asc';
+        }
+        function filterParams() {
+            var f = state.filter, p = {};
+            if (f.model) { p.model = f.model; }
+            p.status = f.status.join(',');
+            if (f.cat.length) { p.cat = f.cat.join(','); }
+            if (f.tool) { p.tool = f.tool; }
+            if (f.sponsor) { p.sponsor = f.sponsor; }
+            if (f.q) { p.q = f.q; }
+            if (f.overdue) { p.overdue = 1; }
+            if (state.sort.key) {
+                p.sort = state.sort.key;
+                p.dir = state.sort.dir;
+            }
+            return p;
+        }
+        function writeUrl() {
+            if (!window.history || !window.history.replaceState) {
+                return;
+            }
+            var p = $.extend({ m: getParam('m') || 'pending_issue' }, filterParams());
+            window.history.replaceState(null, '', window.location.pathname + '?' + $.param(p));
+        }
+
+        // ---------------- 篩選與排序 ----------------
+        function isOverdue(r) {
+            return r.checkpoint_date && r.status !== 'close' && !r.deleted && r.checkpoint_date < today();
+        }
+        function matches(r, ignoreModel) {
+            var f = state.filter;
+            if (!ignoreModel && f.model && r.model !== f.model) { return false; }
+            if (f.status.length && $.inArray(r.status, f.status) < 0) { return false; }
+            if (f.cat.length && $.inArray(r.category, f.cat) < 0) { return false; }
+            if (f.tool && r.tool_id.indexOf(f.tool.toUpperCase()) < 0) { return false; }
+            if (f.sponsor && String(r.sponsor_id) !== String(f.sponsor)) { return false; }
+            if (f.q) {
+                var q = f.q.toLowerCase();
+                if ((r.issue + '\n' + r.remark + '\n' + r.tool_id).toLowerCase().indexOf(q) < 0) { return false; }
+            }
+            if (f.overdue && !isOverdue(r)) { return false; }
+            return true;
+        }
+        function sortValue(r, key) {
+            switch (key) {
+            case 'id': return r.id;
+            case 'status': return STATUS_ORDER[r.status];
+            case 'sponsor': return String(r.sponsor_name).toLowerCase();
+            case 'model': return String(CFG.models[r.model] || r.model).toLowerCase();
+            case 'category': return String(CFG.categories[r.category] || r.category).toLowerCase();
+            default: return String(r[key] === null || r[key] === undefined ? '' : r[key]).toLowerCase();
+            }
+        }
+        function compare(a, b) {
+            var key = state.sort.key, va, vb;
+            if (key) {
+                va = sortValue(a, key);
+                vb = sortValue(b, key);
+                // 空值一律排最後
+                if (va === '' && vb !== '') { return 1; }
+                if (vb === '' && va !== '') { return -1; }
+                if (va < vb) { return state.sort.dir === 'asc' ? -1 : 1; }
+                if (va > vb) { return state.sort.dir === 'asc' ? 1 : -1; }
+                return b.id - a.id;
+            }
+            // 預設：Open → Monitor → Close，Check point 早的在前（沒填的最後），再依新到舊
+            if (a.status !== b.status) { return STATUS_ORDER[a.status] - STATUS_ORDER[b.status]; }
+            if (a.checkpoint_date !== b.checkpoint_date) {
+                if (!a.checkpoint_date) { return 1; }
+                if (!b.checkpoint_date) { return -1; }
+                return a.checkpoint_date < b.checkpoint_date ? -1 : 1;
+            }
+            return b.id - a.id;
+        }
+
+        // ---------------- 畫面 ----------------
+        function statusTag(s) {
+            return '<span class="pi-tag pi-tag-' + esc(s) + '">' + esc(CFG.statuses[s] || s) + '</span>';
+        }
+        function render() {
+            var list = [], all = [];
+            $.each(state.rows, function (id, r) {
+                all.push(r);
+                if (matches(r, false)) {
+                    list.push(r);
+                }
+            });
+            list.sort(compare);
+
+            var html = '';
+            $.each(list, function (i, r) {
+                var od = isOverdue(r) ? daysBetween(r.checkpoint_date, today()) : 0;
+                html += '<tr class="pi-row pi-row-' + esc(r.status) + (r.deleted ? ' pi-row-deleted' : '') + '" data-id="' + r.id + '">' +
+                    '<td class="dim">' + r.id + '</td>' +
+                    '<td class="pi-nowrap">' + esc(CFG.models[r.model] || r.model) + '</td>' +
+                    '<td class="pi-tool">' + esc(r.tool_id) + '</td>' +
+                    '<td>' + esc(CFG.categories[r.category] || r.category) + '</td>' +
+                    '<td class="pi-issue"><div class="pi-clip">' + nl2br(r.issue) + '</div>' +
+                        (r.image_count ? '<span class="pi-imgcount" title="圖片">[IMG×' + r.image_count + ']</span>' : '') +
+                        '<span class="pi-editing" data-editing="' + r.id + '"></span></td>' +
+                    '<td class="pi-nowrap">' + esc(r.initial_date) + '</td>' +
+                    '<td class="pi-nowrap">' + statusTag(r.status) +
+                        '<small class="pi-by" title="最後改狀態：' + esc(r.status_changed_by_name + ' ' + (r.status_changed_at || '')) + '">' +
+                        esc(r.status_changed_by_name) + ' ' + esc(shortDate(r.status_changed_at)) + '</small></td>' +
+                    '<td class="pi-nowrap">' + esc(r.sponsor_name) + (r.sponsor_active ? '' : ' <span class="dim">(已停用)</span>') + '</td>' +
+                    '<td class="pi-nowrap' + (od > 0 ? ' pi-overdue' : '') + '">' + esc(r.checkpoint_date) +
+                        (od > 0 ? '<small>逾期 ' + od + ' 天</small>' : '') + '</td>' +
+                    '<td class="pi-remark"><div class="pi-clip">' + nl2br(r.remark) + '</div></td>' +
+                    '<td class="dim pi-nowrap" title="' + esc(r.updated_at) + '">' + esc(r.updated_by_name) + '<br>' + esc(shortTime(r.updated_at)) +
+                        (r.deleted ? '<br><span class="text-red">已刪除</span>' +
+                            (CFG.canRestore ? '<br><button type="button" class="btn btn-sm pi-restore" data-id="' + r.id + '">[ 還原 ]</button>' : '') : '') +
+                    '</td></tr>';
+            });
+            if (!list.length) {
+                html = '<tr><td colspan="11" class="dim">&gt; ' + (state.loaded ? '沒有符合條件的 issue' : 'LOADING...') + '</td></tr>';
+            }
+            $rows.html(html);
+            $('#pi-count').text('(' + list.length + ' / ' + all.length + ')');
+            renderSort();
+            renderSummary(all);
+            renderTools(all);
+            renderEditors();
+        }
+
+        function renderSort() {
+            $('.pi-table th[data-sort]').each(function () {
+                var $th = $(this), on = $th.data('sort') === state.sort.key;
+                $th.toggleClass('is-sorted', on).attr('data-dir', on ? state.sort.dir : null);
+            });
+        }
+
+        function renderSummary(all) {
+            var sum = {}, models = { '': 0 };
+            $.each(CFG.categories, function (c) { sum[c] = { open: 0, monitor: 0, close: 0 }; });
+            $.each(CFG.models, function (m) { models[m] = 0; });
+            $.each(all, function (i, r) {
+                if (r.deleted) {
+                    return;
+                }
+                if (r.status !== 'close') {
+                    models[''] += 1;
+                    if (models[r.model] !== undefined) {
+                        models[r.model] += 1;
+                    }
+                }
+                if ((!state.filter.model || r.model === state.filter.model) && sum[r.category] && sum[r.category][r.status] !== undefined) {
+                    sum[r.category][r.status] += 1;
+                }
+            });
+            $('#pi-summary .pi-sum-card').each(function () {
+                var $c = $(this), s = sum[$c.data('category')] || {};
+                $c.find('[data-count]').each(function () {
+                    $(this).text(s[$(this).data('count')] || 0);
+                });
+            });
+            $('#pi-tabs [data-model-count]').each(function () {
+                var n = models[$(this).attr('data-model-count')] || 0;
+                $(this).text(n ? '(' + n + ')' : '').attr('title', '未結案 ' + n + ' 筆');
+            });
+            $('#pi-tabs .pi-tab').each(function () {
+                $(this).toggleClass('active', String($(this).data('model')) === state.filter.model);
+            });
+        }
+
+        function renderTools(all) {
+            var seen = {}, html = '';
+            $.each(all, function (i, r) {
+                if (!seen[r.tool_id] && (!state.filter.model || r.model === state.filter.model)) {
+                    seen[r.tool_id] = true;
+                }
+            });
+            $.each($.map(seen, function (v, k) { return k; }).sort(), function (i, t) {
+                html += '<option value="' + esc(t) + '">';
+            });
+            $('#pi-tools').html(html);
+        }
+
+        function renderEditors() {
+            $rows.find('[data-editing]').each(function () {
+                var names = state.editors[$(this).data('editing')];
+                $(this).html(names ? '<span class="pi-who">✎ ' + esc(names.join(', ')) + ' 編輯中</span>' : '');
+            });
+            var others = state.editingId ? state.editors[state.editingId] : null;
+            if (others && $modal.is(':visible')) {
+                $('#pi-editors').html('&gt; ' + esc(others.join(', ')) + ' 也正在編輯這筆；誰先存檔，另一人存檔時會出現衝突提示').show();
+            } else {
+                $('#pi-editors').hide();
+            }
+        }
+
+        function syncFilterInputs() {
+            var f = state.filter;
+            $('#f-status input').each(function () { this.checked = $.inArray(this.value, f.status) >= 0; });
+            $('#f-cat input').each(function () { this.checked = $.inArray(this.value, f.cat) >= 0; });
+            $('#f-tool').val(f.tool);
+            $('#f-q').val(f.q);
+            $('#f-overdue').prop('checked', f.overdue);
+            filterSponsor.set(f.sponsor);
+        }
+
+        function setLive(mode, text) {
+            $live.removeClass('is-paused is-error');
+            if (mode === 'paused') {
+                $live.addClass('is-paused').text('⏸ ' + text);
+            } else if (mode === 'error') {
+                $live.addClass('is-error').text('● OFFLINE');
+            } else {
+                $live.text('● LIVE');
+            }
+        }
+
+        // ---------------- 載入與輪詢 ----------------
+        function load() {
+            return $.get(CFG.urls.list, { trash: state.trash ? 1 : 0 }).done(function (res) {
+                state.rows = {};
+                $.each(res.rows, function (i, r) { state.rows[r.id] = r; });
+                state.cursor = res.cursor;
+                state.loaded = true;
+                render();
+            }).fail(function (xhr) {
+                if (xhr.status !== 401) {
+                    $rows.html('<tr><td colspan="11" class="text-red">&gt; ' + esc(errorText(xhr)) + '</td></tr>');
+                }
+            });
+        }
+
+        function poll(force) {
+            if ((state.paused && !force) || state.pollXhr || !state.loaded) {
+                return;
+            }
+            state.pollXhr = $.get(CFG.urls.poll, {
+                since: state.cursor,
+                editing: state.editingId,
+                trash: state.trash ? 1 : 0
+            }).done(function (res) {
+                var changed = false;
+                state.cursor = res.cursor;
+                state.editors = res.editors || {};
+                $.each(res.changed || [], function (i, r) {
+                    var cur = state.rows[r.id];
+                    if (!cur || cur.version < r.version) {
+                        state.rows[r.id] = r;
+                        changed = true;
+                        noteStale(r, false);
+                    }
+                });
+                $.each(res.deleted || [], function (i, id) {
+                    if (state.rows[id]) {
+                        noteStale(state.rows[id], true);
+                        delete state.rows[id];
+                        changed = true;
+                    }
+                });
+                if (changed) {
+                    render();
+                } else {
+                    renderEditors();
+                }
+                if (!state.paused) {
+                    setLive('live');
+                }
+            }).fail(function (xhr) {
+                if (xhr.status !== 401) {
+                    setLive('error');
+                }
+            }).always(function () {
+                state.pollXhr = null;
+            });
+        }
+
+        /** 別人改了我正在編輯的那一筆：立刻提示，不用等到存檔 */
+        function noteStale(r, gone) {
+            if (!$modal.is(':visible') || state.editingId !== r.id) {
+                return;
+            }
+            var mine = +$form.find('[name=version]').val();
+            if (!gone && r.version <= mine) {
+                return;
+            }
+            $('#pi-stale-text').text(gone
+                ? '> 這筆已被刪除，存檔將會失敗'
+                : '> 這筆已被 ' + r.updated_by_name + ' 於 ' + r.updated_at + ' 更新');
+            $('#pi-stale-load').toggle(!gone);
+            $('#pi-stale').show();
+        }
+
+        // 閒置偵測：超過 idleSeconds 沒操作，或分頁在背景，就暫停輪詢，讓 session 照常逾時
+        function isHidden() { return document.hidden === true || document.msHidden === true; }
+        function pause(reason) {
+            if (!state.paused) {
+                state.paused = true;
+            }
+            setLive('paused', reason);
+        }
+        function resume() {
+            state.paused = false;
+            setLive('live');
+            poll(true);
+        }
+        function tick() {
+            if (isHidden()) {
+                pause('已暫停同步（分頁在背景）');
+            } else if (nowMs() - state.lastActivity > CFG.idleSeconds * 1000) {
+                pause('已暫停同步（閒置）');
+            } else {
+                poll(false);
+            }
+        }
+        $(document).on('mousemove keydown mousedown wheel touchstart paste', function () {
+            state.lastActivity = nowMs();
+            if (state.paused && !isHidden()) {
+                resume();
+            }
+        });
+        $(document).on('visibilitychange msvisibilitychange', function () {
+            if (isHidden()) {
+                pause('已暫停同步（分頁在背景）');
+            } else if (nowMs() - state.lastActivity <= CFG.idleSeconds * 1000) {
+                resume();
+            }
+        });
+
+        // ---------------- 篩選操作 ----------------
+        function applyFilter() {
+            writeUrl();
+            render();
+        }
+        var filterSponsor = new Combo($('#f-sponsor'), {
+            items: sponsorItems,
+            allowAll: true,
+            allLabel: '全部',
+            inputId: 'f-sponsor-text',
+            placeholder: '全部（可輸入篩選）',
+            onChange: function (id) {
+                state.filter.sponsor = id;
+                applyFilter();
+            }
+        });
+
+        $('#pi-tabs').on('click', '.pi-tab', function (e) {
+            e.preventDefault();
+            state.filter.model = String($(this).data('model') || '');
+            applyFilter();
+        });
+        $('#f-status, #f-cat').on('change', 'input', function () {
+            state.filter.status = $('#f-status input:checked').map(function () { return this.value; }).get();
+            state.filter.cat = $('#f-cat input:checked').map(function () { return this.value; }).get();
+            applyFilter();
+        });
+        var typing = null;
+        $('#f-tool, #f-q').on('input', function () {
+            clearTimeout(typing);
+            typing = setTimeout(function () {
+                state.filter.tool = $.trim($('#f-tool').val());
+                state.filter.q = $.trim($('#f-q').val());
+                applyFilter();
+            }, 250);
+        });
+        $('#f-overdue').on('change', function () {
+            state.filter.overdue = this.checked;
+            applyFilter();
+        });
+        $('#f-trash').on('change', function () {
+            state.trash = this.checked;
+            state.loaded = false;
+            load();
+        });
+        $('#pi-reset').on('click', function () {
+            state.filter = { model: state.filter.model, status: DEFAULT_STATUS.slice(0), cat: [], tool: '', sponsor: '', q: '', overdue: false };
+            state.sort = { key: '', dir: 'asc' };
+            syncFilterInputs();
+            applyFilter();
+        });
+        $('#pi-summary').on('click', '[data-sum-cat]', function (e) {
+            e.preventDefault();
+            var st = $(this).data('sum-status');
+            state.filter.cat = [String($(this).data('sum-cat'))];
+            state.filter.status = st ? [String(st)] : [];
+            syncFilterInputs();
+            applyFilter();
+        });
+        $('.pi-table').on('click', 'th[data-sort]', function () {
+            var key = $(this).data('sort');
+            if (state.sort.key === key) {
+                if (state.sort.dir === 'asc') {
+                    state.sort.dir = 'desc';
+                } else {
+                    state.sort = { key: '', dir: 'asc' };   // 第三次點回到預設排序
+                }
+            } else {
+                state.sort = { key: key, dir: 'asc' };
+            }
+            applyFilter();
+        });
+
+        $('#pi-export').on('click', function () {
+            var p = filterParams();
+            if (state.trash) {
+                p.trash = 1;
+            }
+            window.location.href = CFG.urls['export'] + '&' + $.param(p);
+        });
+
+        // ---------------- 編輯視窗 ----------------
+        var editSponsor = new Combo($('#e-sponsor'), {
+            items: sponsorItems,
+            allowAll: false,
+            inputId: 'e-sponsor-text',
+            placeholder: '輸入帳號或名字篩選',
+            onChange: function () { state.dirty = true; },
+            onInvalid: function () {
+                showError('Sponsor 必須是 AISLE 使用者，請從清單中選擇');
+                editSponsor.$input.addClass('is-invalid');
+            }
+        });
+
+        var FIELDS = ['tool_id', 'model', 'category', 'issue', 'initial_date', 'status', 'checkpoint_date', 'remark'];
+        var FIELD_LABEL = {
+            tool_id: '機台', model: '機型', category: '分類', issue: 'Issue 描述', initial_date: 'Initial date',
+            status: '狀態', sponsor_id: 'Sponsor', checkpoint_date: 'Check point', remark: 'Remark', images: '圖片'
+        };
+
+        function formValues() {
+            var v = {};
+            $.each(FIELDS, function (i, k) { v[k] = $.trim($form.find('[name=' + k + ']').val() || ''); });
+            v.tool_id = v.tool_id.toUpperCase();
+            v.sponsor_id = editSponsor.value;
+            v.images = $.map(state.images, function (img) { return img.id; }).join(',');
+            return v;
+        }
+        function issueValues(issue) {
+            var v = {};
+            $.each(FIELDS, function (i, k) { v[k] = issue[k] === null || issue[k] === undefined ? '' : String(issue[k]); });
+            v.sponsor_id = String(issue.sponsor_id);
+            v.images = $.map(issue.images || [], function (img) { return img.id; }).join(',');
+            return v;
+        }
+        function displayValue(k, v, issue) {
+            if (k === 'model') { return CFG.models[v] || v; }
+            if (k === 'category') { return CFG.categories[v] || v; }
+            if (k === 'status') { return CFG.statuses[v] || v; }
+            if (k === 'sponsor_id') { return issue && String(issue.sponsor_id) === v ? issue.sponsor_name : (sponsorName[v] || v); }
+            if (k === 'images') { return v ? v.split(',').length + ' 張' : '0 張'; }
+            return v;
+        }
+
+        function detectModel(tool) {
+            var keys = $.map(CFG.models, function (v, k) { return k; });
+            keys.sort(function (a, b) { return b.length - a.length; });
+            tool = tool.toUpperCase();
+            for (var i = 0; i < keys.length; i++) {
+                if (tool.indexOf(keys[i]) >= 0) {
+                    return keys[i];
+                }
+            }
+            return '';
+        }
+
+        function openEditor(issue) {
+            var f = $form[0];
+            f.reset();
+            $error.hide();
+            $('#pi-stale').hide();
+            state.dirty = false;
+            state.images = [];
+            state.editing = issue;
+            if (issue) {
+                state.editingId = issue.id;
+                $('#pi-modal-title').text('> ISSUE #' + issue.id);
+                var v = issueValues(issue);
+                $.each(FIELDS, function (i, k) { $form.find('[name=' + k + ']').val(v[k]); });
+                $form.find('[name=id]').val(issue.id);
+                $form.find('[name=version]').val(issue.version);
+                editSponsor.set(issue.sponsor_id, issue.sponsor_name);
+                state.images = (issue.images || []).slice(0);
+                $('#pi-meta').text('建立：' + issue.created_by_name + ' ' + issue.created_at +
+                    ' ／ 最後修改：' + issue.updated_by_name + ' ' + issue.updated_at +
+                    (issue.closed_at ? ' ／ 結案：' + issue.closed_at : '') + ' ／ v' + issue.version);
+                $('#pi-delete').show();
+                renderHistory(issue.status_logs || []);
+            } else {
+                state.editingId = 0;
+                $('#pi-modal-title').text('> NEW ISSUE');
+                $form.find('[name=id]').val(0);
+                $form.find('[name=version]').val(0);
+                $form.find('[name=initial_date]').val(today());
+                $form.find('[name=status]').val('open');
+                $form.find('[name=model]').val(state.filter.model);
+                if (state.filter.cat.length === 1) {
+                    $form.find('[name=category]').val(state.filter.cat[0]);
+                }
+                editSponsor.set(sponsorName[CFG.me.id] ? CFG.me.id : '');
+                $('#pi-meta').text('');
+                $('#pi-delete').hide();
+                renderHistory([]);
+            }
+            state.original = formValues();
+            renderImages();
+            $modal.show();
+            $('body').addClass('pi-modal-open');
+            renderEditors();
+            $form.find('[name=tool_id]').focus();
+            state.lastActivity = nowMs();
+            if (state.paused) {
+                resume();
+            } else {
+                poll(true);   // 立刻讓別人看到「編輯中」
+            }
+        }
+
+        function renderHistory(logs) {
+            if (!logs.length) {
+                $('#pi-history').hide();
+                return;
+            }
+            var html = '';
+            $.each(logs, function (i, l) {
+                html += '<li>' + esc(l.changed_at) + ' · <b>' + esc(l.by_name) + '</b> · ' +
+                    (l.from_status ? statusTag(l.from_status) + ' → ' : '新增 ') + statusTag(l.to_status) + '</li>';
+            });
+            $('#pi-history-list').html(html);
+            $('#pi-history').show();
+        }
+
+        function release() {
+            $.post(CFG.urls.release);
+        }
+
+        function closeEditor(force) {
+            if (!force && state.dirty && !window.confirm('內容尚未儲存，確定要放棄修改？')) {
+                return;
+            }
+            $modal.hide();
+            $conflict.hide();
+            $('body').removeClass('pi-modal-open');
+            if (state.editingId) {
+                release();
+            }
+            state.editingId = 0;
+            state.editing = null;
+            state.dirty = false;
+            renderEditors();
+        }
+
+        function showError(msg) {
+            $error.html('&gt; ' + esc(msg)).show();
+            $modal.scrollTop(0);
+        }
+
+        $('#pi-new').on('click', function () { openEditor(null); });
+        $('#pi-cancel, #pi-cancel-x').on('click', function () { closeEditor(false); });
+        $modal.on('mousedown', function (e) {
+            if (e.target === this) {
+                closeEditor(false);
+            }
+        });
+        $(document).on('keydown', function (e) {
+            if (e.keyCode !== 27) {
+                return;
+            }
+            if ($conflict.is(':visible')) {
+                $conflict.hide();
+            } else if ($modal.is(':visible')) {
+                closeEditor(false);
+            }
+        });
+        $form.on('input change', 'input, select, textarea', function () {
+            state.dirty = true;
+        });
+        $form.on('input change', '[name=tool_id]', function () {
+            var m = detectModel(this.value);
+            if (m) {
+                $form.find('[name=model]').val(m);
+            }
+        });
+
+        function openById(id) {
+            $.get(CFG.urls.get, { id: id }).done(function (res) {
+                openEditor(res.issue);
+            }).fail(function (xhr) {
+                if (xhr.status !== 401) {
+                    window.alert(errorText(xhr));
+                    load();
+                }
+            });
+        }
+        $rows.on('click', '.pi-row', function (e) {
+            if ($(this).hasClass('pi-row-deleted') || $(e.target).closest('button, a').length) {
+                return;
+            }
+            openById($(this).data('id'));
+        });
+        $('#pi-stale-load').on('click', function () {
+            if (!state.dirty || window.confirm('載入最新內容會放棄你目前的修改，確定？')) {
+                openById(state.editingId);
+            }
+        });
+
+        function submit(overwrite) {
+            if (state.uploading > 0) {
+                showError('圖片還在上傳中，請稍候');
+                return;
+            }
+            var v = formValues();
+            if (!v.tool_id) { showError('機台必填'); return; }
+            if (!v.issue) { showError('Issue 描述必填'); return; }
+            if (!v.sponsor_id) { showError('請選擇 Sponsor'); return; }
+            var data = {
+                id: $form.find('[name=id]').val(),
+                version: $form.find('[name=version]').val(),
+                sponsor_id: v.sponsor_id,
+                image_ids: v.images
+            };
+            $.each(FIELDS, function (i, k) { data[k] = v[k]; });
+            if (overwrite && state.conflictIssue) {
+                data.version = state.conflictIssue.version;
+                data.overwrite = 1;
+            }
+            var $btn = $('#pi-save, #pi-conflict-overwrite').prop('disabled', true);
+            $.post(CFG.urls.save, data).done(function (res) {
+                state.rows[res.issue.id] = res.issue;
+                state.conflictIssue = null;
+                closeEditor(true);
+                render();
+            }).fail(function (xhr) {
+                var r = xhr.responseJSON || {};
+                if (xhr.status === 409 && r.reason === 'modified' && r.issue) {
+                    showConflict(r);
+                } else if (xhr.status === 409) {
+                    $conflict.hide();
+                    window.alert(r.error || '這筆 issue 已不存在');
+                    if (state.editingId) {
+                        delete state.rows[state.editingId];
+                    }
+                    closeEditor(true);
+                    render();
+                } else if (xhr.status !== 401) {
+                    $conflict.hide();
+                    showError(errorText(xhr));
+                }
+            }).always(function () {
+                $btn.prop('disabled', false);
+            });
+        }
+
+        /** 409：列出你的版本與最新版本不同的欄位，讓使用者選覆蓋 / 載入最新 / 取消 */
+        function showConflict(r) {
+            state.conflictIssue = r.issue;
+            state.rows[r.issue.id] = r.issue;
+            render();
+            var mine = formValues(), latest = issueValues(r.issue), html = '';
+            $.each(FIELDS.concat(['sponsor_id', 'images']), function (i, k) {
+                if (mine[k] !== latest[k]) {
+                    var changedByOther = state.original && state.original[k] !== latest[k];
+                    html += '<tr' + (changedByOther ? ' class="pi-diff-hot"' : '') + '><td>' + esc(FIELD_LABEL[k]) + '</td>' +
+                        '<td>' + nl2br(displayValue(k, mine[k], state.editing)) + '</td>' +
+                        '<td>' + nl2br(displayValue(k, latest[k], r.issue)) + '</td></tr>';
+                }
+            });
+            if (!html) {
+                html = '<tr><td colspan="3" class="dim">&gt; 內容與最新版本相同（對方可能只改了你沒改的地方又改回來）</td></tr>';
+            }
+            $('#pi-conflict-msg').text('⚠ ' + r.error);
+            $('#pi-conflict-rows').html(html);
+            $conflict.show();
+        }
+        $('#pi-conflict-overwrite').on('click', function () { submit(true); });
+        $('#pi-conflict-load').on('click', function () {
+            var latest = state.conflictIssue;
+            $conflict.hide();
+            state.conflictIssue = null;
+            if (latest) {
+                openEditor(latest);
+            }
+        });
+        $('#pi-conflict-cancel').on('click', function () { $conflict.hide(); });
+
+        $form.on('submit', function (e) {
+            e.preventDefault();
+            submit(false);
+        });
+
+        $('#pi-delete').on('click', function () {
+            var id = +$form.find('[name=id]').val();
+            if (!window.confirm('確定刪除 ISSUE #' + id + '？')) {
+                return;
+            }
+            $.post(CFG.urls['delete'], { id: id, version: $form.find('[name=version]').val() }).done(function () {
+                delete state.rows[id];
+                closeEditor(true);
+                render();
+            }).fail(function (xhr) {
+                var r = xhr.responseJSON || {};
+                if (xhr.status === 409 && r.reason === 'modified' && r.issue) {
+                    window.alert(r.error + '。\n已載入最新內容，請確認後再決定是否刪除。');
+                    state.rows[id] = r.issue;
+                    render();
+                    openEditor(r.issue);
+                } else if (xhr.status === 409) {
+                    window.alert(r.error);
+                    delete state.rows[id];
+                    closeEditor(true);
+                    render();
+                } else if (xhr.status !== 401) {
+                    showError(errorText(xhr));
+                }
+            });
+        });
+
+        $rows.on('click', '.pi-restore', function () {
+            var id = $(this).data('id'), r = state.rows[id];
+            if (!r || !window.confirm('還原 ISSUE #' + id + '？')) {
+                return;
+            }
+            $.post(CFG.urls.restore, { id: id, version: r.version }).done(function (res) {
+                state.rows[id] = res.issue;
+                render();
+            }).fail(function (xhr) {
+                if (xhr.status !== 401) {
+                    window.alert(errorText(xhr));
+                    load();
+                }
+            });
+        });
+
+        // ---------------- 圖片：貼上 / 拖曳 / 選檔 ----------------
+        function renderImages() {
+            var html = '';
+            $.each(state.images, function (i, img) {
+                html += '<div class="pi-thumb" data-index="' + i + '">' +
+                    '<a href="' + esc(img.url) + '" target="_blank" rel="noopener noreferrer" title="' + esc(img.name) + '">' +
+                    '<img src="' + esc(img.url) + '" alt="' + esc(img.name) + '"></a>' +
+                    '<button type="button" class="pi-thumb-del" title="移除">×</button></div>';
+            });
+            if (state.uploading) {
+                html += '<div class="pi-thumb pi-thumb-loading">UPLOADING ' + state.uploading + '...</div>';
+            }
+            $images.html(html);
+        }
+
+        function upload(file) {
+            if (!/^image\/(png|jpeg|gif)$/.test(file.type)) {
+                showError('只接受 PNG / JPG / GIF 圖片');
+                return;
+            }
+            if (file.size > CFG.maxImageMb * 1048576) {
+                showError('圖片超過 ' + CFG.maxImageMb + ' MB');
+                return;
+            }
+            if (state.images.length + state.uploading >= CFG.maxImages) {
+                showError('每筆 issue 最多 ' + CFG.maxImages + ' 張圖片');
+                return;
+            }
+            var fd = new window.FormData();
+            var d = new Date();
+            var ext = file.type === 'image/jpeg' ? 'jpg' : file.type.split('/')[1];
+            var name = file.name || ('paste_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' +
+                pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.' + ext);
+            if (file.name) {
+                fd.append('image', file);
+            } else {
+                fd.append('image', file, name);
+            }
+            state.uploading++;
+            renderImages();
+            $.ajax({
+                url: CFG.urls.upload,
+                type: 'POST',
+                data: fd,
+                processData: false,
+                contentType: false
+            }).done(function (res) {
+                state.images.push(res.image);
+                state.dirty = true;
+            }).fail(function (xhr) {
+                if (xhr.status !== 401) {
+                    showError(errorText(xhr, '圖片上傳失敗'));
+                }
+            }).always(function () {
+                state.uploading--;
+                renderImages();
+            });
+        }
+
+        function filesFrom(list) {
+            var out = [];
+            for (var i = 0; list && i < list.length; i++) {
+                out.push(list[i]);
+            }
+            return out;
+        }
+
+        // 整個編輯視窗都能貼上（含文字欄），只攔截圖片，文字照常貼上
+        $(document).on('paste', function (e) {
+            if (!$modal.is(':visible') || $conflict.is(':visible')) {
+                return;
+            }
+            var cd = e.originalEvent && e.originalEvent.clipboardData;
+            if (!cd || !cd.items) {
+                return;
+            }
+            var found = false;
+            for (var i = 0; i < cd.items.length; i++) {
+                if (cd.items[i].kind === 'file' && /^image\//.test(cd.items[i].type)) {
+                    var f = cd.items[i].getAsFile();
+                    if (f) {
+                        upload(f);
+                        found = true;
+                    }
+                }
+            }
+            if (found) {
+                e.preventDefault();
+            }
+        });
+
+        var $paste = $('#pi-paste');
+        $paste.on('dragover dragenter', function (e) {
+            e.preventDefault();
+            $paste.addClass('is-over');
+        }).on('dragleave drop', function () {
+            $paste.removeClass('is-over');
+        }).on('drop', function (e) {
+            e.preventDefault();
+            $.each(filesFrom(e.originalEvent.dataTransfer && e.originalEvent.dataTransfer.files), function (i, f) { upload(f); });
+        });
+        // 拖曳到視窗其他地方時不要讓瀏覽器直接開啟圖片
+        $modal.on('dragover drop', function (e) {
+            if (!$(e.target).closest('#pi-paste').length) {
+                e.preventDefault();
+            }
+        });
+        $('#pi-file').on('change', function () {
+            $.each(filesFrom(this.files), function (i, f) { upload(f); });
+            $(this).val('');
+        });
+        $images.on('click', '.pi-thumb-del', function () {
+            state.images.splice($(this).closest('.pi-thumb').data('index'), 1);
+            state.dirty = true;
+            renderImages();
+        });
+
+        // ---------------- 離開頁面 ----------------
+        $(window).on('beforeunload', function () {
+            if ($modal.is(':visible') && state.dirty) {
+                return '內容尚未儲存';
+            }
+        });
+        $(window).on('unload', function () {
+            // 清掉自己的「編輯中」；沒有 sendBeacon 的瀏覽器就等 presence_seconds 自然消失
+            if (state.editingId && window.navigator.sendBeacon && window.FormData) {
+                var fd = new window.FormData();
+                fd.append('_csrf', CFG.csrfToken);
+                window.navigator.sendBeacon(CFG.urls.release, fd);
+            }
+        });
+
+        // ---------------- IE11 警告 ----------------
+        if (IS_IE) {
+            $('#pi-paste-hint').text('> IE11 不支援貼上截圖，請把圖片拖曳到這裡，或');
+            if (store('sessionStorage', 'aisle.pi.ieWarned') !== '1') {
+                $('#pi-ie').show();
+            }
+            $('#pi-ie-ok').on('click', function () {
+                store('sessionStorage', 'aisle.pi.ieWarned', '1');
+                $('#pi-ie').hide();
+            });
+        }
+
+        // ---------------- 啟動 ----------------
+        readUrl();
+        syncFilterInputs();
+        render();
+        load();
+        setInterval(tick, CFG.pollSeconds * 1000);
+    });
+})(window.jQuery);
+#@@@ FILE sql/migrations/20261110_pending_issue.sql sha1=5968d5ce20ff57f112e5643b1b2080e41540d598 base=- mode=644 enc=text nl=1
+-- =====================================================================
+-- Pending Issue Control Table（modules/pending_issue）
+-- 伺服器手動執行一次：mysql -u <帳號> -p aisle < sql/migrations/20261110_pending_issue.sql
+-- 全部是 CREATE TABLE IF NOT EXISTS，重複執行不會影響既有資料
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- Issue 主表
+--   model     : 機型代碼（config/pending_issue.ini 的 [models]，例 PAN / PAP / POV）
+--   category  : 分類代碼（[categories]，例 hl / tool_select / aging_parts / others）
+--   status    : open / monitor / close（[status]）
+--   sponsor_id: AISLE 使用者
+--   version   : 樂觀鎖。每次修改 +1，存檔時帶回讀取當下的 version，不一致回 409
+--   刪除採軟刪除（deleted_at），只有 ADMIN 能看到與還原
+--   代碼刻意不用 ENUM：新增機型 / 分類只改 ini，不必 ALTER TABLE
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issues` (
+  `id`                INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `tool_id`           VARCHAR(64)   NOT NULL COMMENT '機台代號',
+  `model`             VARCHAR(16)   NOT NULL COMMENT '機型代碼',
+  `category`          VARCHAR(16)   NOT NULL COMMENT '分類代碼',
+  `issue`             TEXT          NOT NULL COMMENT 'Issue 描述',
+  `initial_date`      DATE          NOT NULL,
+  `status`            VARCHAR(16)   NOT NULL DEFAULT 'open' COMMENT 'open / monitor / close',
+  `status_changed_by` INT UNSIGNED  NULL DEFAULT NULL COMMENT '最後改狀態的使用者',
+  `status_changed_at` DATETIME      NULL DEFAULT NULL,
+  `sponsor_id`        INT UNSIGNED  NOT NULL COMMENT 'Sponsor（AISLE 使用者）',
+  `checkpoint_date`   DATE          NULL DEFAULT NULL,
+  `remark`            TEXT          NULL,
+  `closed_at`         DATETIME      NULL DEFAULT NULL,
+  `version`           INT UNSIGNED  NOT NULL DEFAULT 1 COMMENT '樂觀鎖版本',
+  `created_by`        INT UNSIGNED  NULL DEFAULT NULL,
+  `updated_by`        INT UNSIGNED  NULL DEFAULT NULL,
+  `deleted_by`        INT UNSIGNED  NULL DEFAULT NULL,
+  `created_at`        DATETIME      NOT NULL,
+  -- 由程式寫入（MariaDB 5.5 一張表只能有一個自動更新的 TIMESTAMP），輪詢同步依此判斷變動
+  `updated_at`        DATETIME      NOT NULL,
+  `deleted_at`        DATETIME      NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pi_filter` (`deleted_at`, `model`, `category`, `status`),
+  KEY `idx_pi_tool` (`tool_id`),
+  KEY `idx_pi_sponsor` (`sponsor_id`),
+  KEY `idx_pi_updated` (`updated_at`, `id`),
+  KEY `idx_pi_checkpoint` (`checkpoint_date`),
+  CONSTRAINT `fk_pi_sponsor` FOREIGN KEY (`sponsor_id`)
+    REFERENCES `users` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_status_by` FOREIGN KEY (`status_changed_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_created_by` FOREIGN KEY (`created_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_updated_by` FOREIGN KEY (`updated_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_deleted_by` FOREIGN KEY (`deleted_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue Control Table';
+
+-- ---------------------------------------------------------------------
+-- 狀態變更紀錄：新增時記 NULL → open，之後每次狀態改變記一筆（誰、何時）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_status_logs` (
+  `id`           INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `issue_id`     INT UNSIGNED  NOT NULL,
+  `from_status`  VARCHAR(16)   NULL DEFAULT NULL,
+  `to_status`    VARCHAR(16)   NOT NULL,
+  `changed_by`   INT UNSIGNED  NULL DEFAULT NULL,
+  `changed_at`   DATETIME      NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pisl_issue` (`issue_id`, `changed_at`),
+  CONSTRAINT `fk_pisl_issue` FOREIGN KEY (`issue_id`)
+    REFERENCES `pending_issues` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pisl_user` FOREIGN KEY (`changed_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 狀態變更紀錄';
+
+-- ---------------------------------------------------------------------
+-- Issue 圖片：檔案存在 storage/uploads/pending_issue/<年月>/，這裡只記路徑
+--   貼上 / 拖曳 / 選檔時先上傳（issue_id 為 NULL），按儲存才綁定到 issue；
+--   超過一天仍未綁定的暫存圖，會在下次有人上傳時清除
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_images` (
+  `id`            INT UNSIGNED      NOT NULL AUTO_INCREMENT,
+  `issue_id`      INT UNSIGNED      NULL DEFAULT NULL,
+  `file_path`     VARCHAR(191)      NOT NULL COMMENT '相對於 storage/uploads/',
+  `original_name` VARCHAR(191)      NOT NULL DEFAULT '',
+  `mime`          VARCHAR(32)       NOT NULL,
+  `size`          INT UNSIGNED      NOT NULL,
+  `width`         SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `height`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `uploaded_by`   INT UNSIGNED      NULL DEFAULT NULL,
+  `created_at`    DATETIME          NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pii_issue` (`issue_id`, `created_at`),
+  CONSTRAINT `fk_pii_issue` FOREIGN KEY (`issue_id`)
+    REFERENCES `pending_issues` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pii_user` FOREIGN KEY (`uploaded_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 圖片';
+
+-- ---------------------------------------------------------------------
+-- 誰正在編輯哪一筆（編輯視窗開著時隨輪詢更新，超過 presence_seconds 沒更新視為離開）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_presence` (
+  `issue_id`  INT UNSIGNED  NOT NULL,
+  `user_id`   INT UNSIGNED  NOT NULL,
+  `seen_at`   DATETIME      NOT NULL,
+  PRIMARY KEY (`issue_id`, `user_id`),
+  KEY `idx_pip_user` (`user_id`),
+  KEY `idx_pip_seen` (`seen_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 編輯中狀態';
+#@@@ FILE sql/schema.sql sha1=37a2f3d6a2e9901637bb6a7c8c738862434cb04d base=155ba6309a7ff34c4b84598c148bb69f1ce1ac7d mode=644 enc=text nl=1
+-- =====================================================================
+-- AISLE 資料庫結構 (MariaDB 5.5 / 10.x 皆可)
+-- 字元集：utf8mb4；若 MariaDB < 5.5.3 不支援 utf8mb4，請全文取代為 utf8
+-- 注意：InnoDB 舊版索引上限 767 bytes，utf8mb4 的 VARCHAR 索引欄位請 <= 191
+-- =====================================================================
+
+CREATE DATABASE IF NOT EXISTS `aisle`
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE `aisle`;
+
+-- ---------------------------------------------------------------------
+-- 使用者
+--   password_hash : bcrypt 雜湊 ($2y$...，固定 60 字元)，
+--                   保留 255 長度以便日後換演算法
+--   role          : 對應 config/permissions.ini 的 [roles] (EE / PE / ADMIN)
+--                   刻意不用 ENUM，新增角色時只改 INI 不必 ALTER TABLE
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `users` (
+  `id`                   INT UNSIGNED      NOT NULL AUTO_INCREMENT,
+  `account`              VARCHAR(64)       NOT NULL COMMENT '登入帳號',
+  `password_hash`        VARCHAR(255)      NOT NULL COMMENT 'bcrypt 雜湊',
+  `display_name`         VARCHAR(100)      NOT NULL DEFAULT '',
+  `email`                VARCHAR(191)      NULL DEFAULT NULL,
+  `role`                 VARCHAR(16)       NOT NULL DEFAULT 'EE' COMMENT 'EE / PE / ADMIN',
+  `is_active`            TINYINT(1)        NOT NULL DEFAULT 1,
+  `must_change_password` TINYINT(1)        NOT NULL DEFAULT 0,
+  `failed_attempts`      SMALLINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '連續登入失敗次數',
+  `locked_until`         DATETIME          NULL DEFAULT NULL COMMENT '鎖定到期時間',
+  `last_login_at`        DATETIME          NULL DEFAULT NULL,
+  `last_login_ip`        VARCHAR(45)       NULL DEFAULT NULL COMMENT '可容納 IPv6',
+  `created_at`           DATETIME          NOT NULL,
+  -- MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 CURRENT_TIMESTAMP，因此 created_at 用 DATETIME 由程式寫入
+  `updated_at`           TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_users_account` (`account`),
+  KEY `idx_users_role` (`role`),
+  KEY `idx_users_active` (`is_active`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='系統使用者';
+
+-- ---------------------------------------------------------------------
+-- 登入紀錄 (成功與失敗都記錄，供稽核與暴力破解偵測)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `login_logs` (
+  `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id`     INT UNSIGNED    NULL DEFAULT NULL COMMENT '帳號不存在時為 NULL',
+  `account`     VARCHAR(64)     NOT NULL,
+  `success`     TINYINT(1)      NOT NULL,
+  `reason`      VARCHAR(32)     NOT NULL DEFAULT '' COMMENT 'ok / bad_password / no_user / locked / inactive',
+  `ip`          VARCHAR(45)     NOT NULL DEFAULT '',
+  `user_agent`  VARCHAR(255)    NOT NULL DEFAULT '',
+  `created_at`  DATETIME        NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_login_logs_user` (`user_id`, `created_at`),
+  KEY `idx_login_logs_ip` (`ip`, `created_at`),
+  CONSTRAINT `fk_login_logs_user` FOREIGN KEY (`user_id`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登入紀錄';
+
+-- ---------------------------------------------------------------------
+-- 操作稽核 (各模組寫入，例如：匯出報表、修改設定)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `audit_logs` (
+  `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id`     INT UNSIGNED    NULL DEFAULT NULL,
+  `module`      VARCHAR(64)     NOT NULL,
+  `action`      VARCHAR(64)     NOT NULL,
+  `detail`      TEXT            NULL COMMENT 'JSON 字串',
+  `ip`          VARCHAR(45)     NOT NULL DEFAULT '',
+  `created_at`  DATETIME        NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_module` (`module`, `action`, `created_at`),
+  KEY `idx_audit_user` (`user_id`, `created_at`),
+  CONSTRAINT `fk_audit_logs_user` FOREIGN KEY (`user_id`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作稽核';
+
+-- =====================================================================
+-- Pending Issue Control Table（與 sql/migrations/20261110_pending_issue.sql 相同）
+-- =====================================================================
+-- ---------------------------------------------------------------------
+-- Issue 主表
+--   model     : 機型代碼（config/pending_issue.ini 的 [models]，例 PAN / PAP / POV）
+--   category  : 分類代碼（[categories]，例 hl / tool_select / aging_parts / others）
+--   status    : open / monitor / close（[status]）
+--   sponsor_id: AISLE 使用者
+--   version   : 樂觀鎖。每次修改 +1，存檔時帶回讀取當下的 version，不一致回 409
+--   刪除採軟刪除（deleted_at），只有 ADMIN 能看到與還原
+--   代碼刻意不用 ENUM：新增機型 / 分類只改 ini，不必 ALTER TABLE
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issues` (
+  `id`                INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `tool_id`           VARCHAR(64)   NOT NULL COMMENT '機台代號',
+  `model`             VARCHAR(16)   NOT NULL COMMENT '機型代碼',
+  `category`          VARCHAR(16)   NOT NULL COMMENT '分類代碼',
+  `issue`             TEXT          NOT NULL COMMENT 'Issue 描述',
+  `initial_date`      DATE          NOT NULL,
+  `status`            VARCHAR(16)   NOT NULL DEFAULT 'open' COMMENT 'open / monitor / close',
+  `status_changed_by` INT UNSIGNED  NULL DEFAULT NULL COMMENT '最後改狀態的使用者',
+  `status_changed_at` DATETIME      NULL DEFAULT NULL,
+  `sponsor_id`        INT UNSIGNED  NOT NULL COMMENT 'Sponsor（AISLE 使用者）',
+  `checkpoint_date`   DATE          NULL DEFAULT NULL,
+  `remark`            TEXT          NULL,
+  `closed_at`         DATETIME      NULL DEFAULT NULL,
+  `version`           INT UNSIGNED  NOT NULL DEFAULT 1 COMMENT '樂觀鎖版本',
+  `created_by`        INT UNSIGNED  NULL DEFAULT NULL,
+  `updated_by`        INT UNSIGNED  NULL DEFAULT NULL,
+  `deleted_by`        INT UNSIGNED  NULL DEFAULT NULL,
+  `created_at`        DATETIME      NOT NULL,
+  -- 由程式寫入（MariaDB 5.5 一張表只能有一個自動更新的 TIMESTAMP），輪詢同步依此判斷變動
+  `updated_at`        DATETIME      NOT NULL,
+  `deleted_at`        DATETIME      NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pi_filter` (`deleted_at`, `model`, `category`, `status`),
+  KEY `idx_pi_tool` (`tool_id`),
+  KEY `idx_pi_sponsor` (`sponsor_id`),
+  KEY `idx_pi_updated` (`updated_at`, `id`),
+  KEY `idx_pi_checkpoint` (`checkpoint_date`),
+  CONSTRAINT `fk_pi_sponsor` FOREIGN KEY (`sponsor_id`)
+    REFERENCES `users` (`id`) ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_status_by` FOREIGN KEY (`status_changed_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_created_by` FOREIGN KEY (`created_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_updated_by` FOREIGN KEY (`updated_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pi_deleted_by` FOREIGN KEY (`deleted_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue Control Table';
+
+-- ---------------------------------------------------------------------
+-- 狀態變更紀錄：新增時記 NULL → open，之後每次狀態改變記一筆（誰、何時）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_status_logs` (
+  `id`           INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `issue_id`     INT UNSIGNED  NOT NULL,
+  `from_status`  VARCHAR(16)   NULL DEFAULT NULL,
+  `to_status`    VARCHAR(16)   NOT NULL,
+  `changed_by`   INT UNSIGNED  NULL DEFAULT NULL,
+  `changed_at`   DATETIME      NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pisl_issue` (`issue_id`, `changed_at`),
+  CONSTRAINT `fk_pisl_issue` FOREIGN KEY (`issue_id`)
+    REFERENCES `pending_issues` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pisl_user` FOREIGN KEY (`changed_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 狀態變更紀錄';
+
+-- ---------------------------------------------------------------------
+-- Issue 圖片：檔案存在 storage/uploads/pending_issue/<年月>/，這裡只記路徑
+--   貼上 / 拖曳 / 選檔時先上傳（issue_id 為 NULL），按儲存才綁定到 issue；
+--   超過一天仍未綁定的暫存圖，會在下次有人上傳時清除
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_images` (
+  `id`            INT UNSIGNED      NOT NULL AUTO_INCREMENT,
+  `issue_id`      INT UNSIGNED      NULL DEFAULT NULL,
+  `file_path`     VARCHAR(191)      NOT NULL COMMENT '相對於 storage/uploads/',
+  `original_name` VARCHAR(191)      NOT NULL DEFAULT '',
+  `mime`          VARCHAR(32)       NOT NULL,
+  `size`          INT UNSIGNED      NOT NULL,
+  `width`         SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `height`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  `uploaded_by`   INT UNSIGNED      NULL DEFAULT NULL,
+  `created_at`    DATETIME          NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_pii_issue` (`issue_id`, `created_at`),
+  CONSTRAINT `fk_pii_issue` FOREIGN KEY (`issue_id`)
+    REFERENCES `pending_issues` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pii_user` FOREIGN KEY (`uploaded_by`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 圖片';
+
+-- ---------------------------------------------------------------------
+-- 誰正在編輯哪一筆（編輯視窗開著時隨輪詢更新，超過 presence_seconds 沒更新視為離開）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `pending_issue_presence` (
+  `issue_id`  INT UNSIGNED  NOT NULL,
+  `user_id`   INT UNSIGNED  NOT NULL,
+  `seen_at`   DATETIME      NOT NULL,
+  PRIMARY KEY (`issue_id`, `user_id`),
+  KEY `idx_pip_user` (`user_id`),
+  KEY `idx_pip_seen` (`seen_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pending Issue 編輯中狀態';
+
+-- ---------------------------------------------------------------------
+-- 建立應用程式專用帳號 (依實際環境修改密碼與來源主機後再執行)
+-- ---------------------------------------------------------------------
+-- CREATE USER 'aisle_app'@'localhost' IDENTIFIED BY '請改成強密碼';
+-- GRANT SELECT, INSERT, UPDATE, DELETE ON `aisle`.* TO 'aisle_app'@'localhost';
+-- FLUSH PRIVILEGES;
+#@@@ FILE storage/uploads/.gitkeep sha1=da39a3ee5e6b4b0d3255bfef95601890afd80709 base=- mode=644 enc=text nl=1
+#@@@ END count=13

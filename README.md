@@ -563,11 +563,11 @@ class BSLrChart extends ChartSource
 
 ## 11. Pending Issue Control Table（`?m=pending_issue`）
 
-追蹤各機台的 pending issue。只有 **EE** 能使用（查詢、新增、編輯、刪除、匯出），**ADMIN** 全部可以，PE 看不到選單、直接開網址會 403。
+追蹤各機台的 pending issue。只有 **EE** 能使用（查詢、新增、編輯、匯出，**不能刪除**），**ADMIN** 全部可以（含刪除、看已刪除、還原），PE 看不到選單、直接開網址會 403。
 
 | 檔案 | 用途 |
 |---|---|
-| `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.trash` / `action.restore` = `"ADMIN"`（看已刪除、還原） |
+| `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.delete` / `action.trash` / `action.restore` = `"ADMIN"`（刪除、看已刪除、還原） |
 | `config/pending_issue.ini` | 機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
 | `modules/pending_issue/` | controller + view |
 | `public/assets/js/pending_issue.js` | 表格、篩選、Sponsor 元件、貼圖、輪詢、衝突視窗 |
@@ -584,7 +584,7 @@ class BSLrChart extends ChartSource
 - **Sponsor**：點 ▼ 展開清單，或直接打字篩選（比對帳號與顯示名稱、不分大小寫），↑↓ / Enter / Esc 操作；只能選清單裡的人（`[sponsor] roles` 的啟用帳號）
 - **狀態紀錄**：每次狀態改變都寫進 `pending_issue_status_logs`（誰、何時、從哪個狀態），表格顯示最後改狀態的人，編輯視窗有完整歷程
 - **圖片**：編輯視窗中 Ctrl+V 貼上截圖、拖曳或選檔；只收 PNG / JPG / GIF（以檔案內容判斷）。圖片經 `?a=image` 檢查權限後才輸出：未存檔的暫存圖只有上傳者、已刪除 issue 的圖只有 ADMIN 看得到
-- **軟刪除**：刪除只標記 `deleted_at`；ADMIN 勾「顯示已刪除」後可以還原
+- **軟刪除（只有 ADMIN）**：刪除只標記 `deleted_at`；EE 的編輯視窗沒有刪除按鈕，直接呼叫也會 403。ADMIN 勾「顯示已刪除」後可以還原
 - **匯出 CSV**：匯出目前篩選與排序的結果（UTF-8 BOM，Excel 直接開）；`[export] enabled = Off` 時按鈕隱藏、網址回 404
 - **IE11**：開啟頁面時跳出警告視窗（IE11 無法貼上截圖，拖曳與選檔可用）
 

@@ -178,3 +178,45 @@ body.theme-light .pi-diff tr.pi-diff-hot td { color: #b26a00; }
     body.theme-light .sidebar { border-bottom-color: #b9e3c3; }
     body.theme-light .sidebar li.active a { border-bottom-color: #008f11; }
 }
+
+/* ---------- 機台借機與 PM 排程看板（tool_board） ---------- */
+body.theme-light .tb-mode { color: #fff; }
+body.theme-light .tb-online { color: #b26a00; }
+body.theme-light .tb-legend { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.9); }
+body.theme-light .tb-legend-row b { color: #2e6b3c; }
+body.theme-light .tb-wrap { border-color: #7fbf8e; background: #fff; }
+body.theme-light .tb-grid th,
+body.theme-light .tb-grid td { border-right-color: #d6eedc; border-bottom-color: #d6eedc; }
+body.theme-light .tb-grid thead th { background: #e3f6e8; color: #2e6b3c; }
+body.theme-light .tb-head-date th small { color: #4f8a5c; }
+body.theme-light .tb-head-avail th { color: #00591a; }
+body.theme-light .tb-grid thead th.tb-corner { color: #00591a; }
+body.theme-light .tb-grid thead th.tb-wkend { color: #7aa886; }
+body.theme-light .tb-grid thead th.tb-month { border-left-color: #00801a; }
+body.theme-light .tb-grid thead th.tb-today { background: #00801a; color: #fff; box-shadow: inset 2px 0 #00591a, inset -2px 0 #00591a; }
+body.theme-light .tb-grid thead th.tb-today small { color: #fff; }
+body.theme-light .tb-grid thead th.tb-av-warn { background: #ffd54f; color: #000; }
+body.theme-light .tb-grid thead th.tb-av-alert { background: #c62828; color: #fff; }
+body.theme-light .tb-grid tbody th.tb-tool { background: #f2fbf4; color: #00591a; }
+body.theme-light .tb-grid tbody tr:hover th.tb-tool { background: #d6eedc; }
+body.theme-light .tb-lane { background-image: linear-gradient(to right, #d6eedc 1px, transparent 1px); }
+body.theme-light .tb-bg-past { background: rgba(0, 60, 20, 0.06); background-image: repeating-linear-gradient(-45deg, rgba(0, 100, 30, 0.06) 0, rgba(0, 100, 30, 0.06) 2px, transparent 2px, transparent 8px); }
+body.theme-light .tb-bg-wkend { background: rgba(0, 100, 30, 0.05); }
+body.theme-light .tb-bg-today { background: rgba(0, 168, 50, 0.1); border-color: #00801a; }
+body.theme-light .tb-pm-label { color: #b26a00; }
+body.theme-light .tb-pm-done { border-color: #00801a; }
+body.theme-light .tb-pm-done .tb-pm-label { color: #00801a; }
+body.theme-light .tb-lock-tag { background: #fff8e1; color: #b26a00; }
+body.theme-light .tb-locked .tb-act-main { outline-color: #b26a00; }
+body.theme-light .tb-dragging .tb-act-main { box-shadow: 0 2px 10px rgba(0, 100, 30, 0.5); }
+body.theme-light .tb-drag-tip { border-color: #00801a; background: #fff; color: #00591a; }
+body.theme-light .tb-drag-tip.is-bad { border-color: #c62828; color: #c62828; }
+body.theme-light .tb-menu { border-color: #008f11; background: #fff; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.2); }
+body.theme-light .tb-menu-item:hover { background: #00801a; color: #fff; }
+body.theme-light .tb-menu-item.is-danger { color: #c62828; }
+body.theme-light .tb-menu-item.is-danger:hover { background: #c62828; color: #fff; }
+body.theme-light .tb-menu-info { color: #4f8a5c; border-bottom-color: #b9e3c3; }
+body.theme-light .tb-menu-sep { border-top-color: #b9e3c3; }
+body.theme-light .tb-return { color: #b26a00; }
+body.theme-light .tb-toast { border-color: #00801a; background: #fff; color: #00591a; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.25); }
+body.theme-light .tb-toast.is-error { border-color: #c62828; color: #c62828; }

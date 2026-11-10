@@ -17,6 +17,10 @@
   - 圖表（route = module:charts 的頁面）：charts/<名稱>.ini 存在且格式正確、
     source = php 時 charts/<名稱>.php 存在且有 <名稱>Chart 類別、
     charts/ 底下沒有頁面使用的 chart（警告）
+  - 借機 / PM 看板（有 [page.tool_board] 時）：config/tool_board.ini 與每個機型的
+    config/tool_board/<機型>.ini 存在且格式正確、顏色是 Hex、機台沒有重複列在多個機型、
+    每個機型至少一個 [wip.*]、[editors] 帳號是否在 [ee_accounts]（警告）、
+    可用率公式檔存在、PM JSON 檔可解析（單引號格式只警告）
   - 列出每個身份可用的頁面
 
 用法：python scripts/python/check_config.py
@@ -57,12 +61,12 @@ def split_list(value):
     return [v.strip() for v in unquote(value).split(',') if v.strip()]
 
 
-def read_array(section_name, key):
+def read_array(section_name, key, path=None):
     """account[] 是 PHP 陣列語法，ConfigParser 遇到重複 key 只留最後一個，所以逐行讀"""
     values = []
     section = None
     pattern = re.compile(r'^' + re.escape(key) + r'\[\]\s*=')
-    with open(INI) as fp:
+    with open(path or INI) as fp:
         for line in fp:
             line = line.strip()
             if line.startswith('['):
@@ -184,6 +188,134 @@ def check_chart(name, errors, warnings):
                 errors.append('charts/%s.php 裡找不到 class %sChart extends ChartSource' % (name, name))
             if '尚未實作' in code:
                 warnings.append('charts/%s.php 似乎還沒寫好 SQL（仍有「尚未實作」），但 ini 的 source = php' % name)
+
+
+RE_HEX = re.compile(r'^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$')
+RE_TOOL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$')
+RE_CODE = re.compile(r'^[a-z][a-z0-9_]{0,31}$')
+
+
+def check_tool_board(ee_accounts, errors, warnings):
+    """借機 / PM 看板設定"""
+    shared_file = os.path.join(ROOT, 'config', 'tool_board.ini')
+    label = 'config/tool_board.ini'
+    if not os.path.isfile(shared_file):
+        errors.append('找不到 %s' % label)
+        return
+    shared = RawConfigParser()
+    try:
+        with open(shared_file) as fp:
+            shared.readfp(fp)
+    except Exception as e:  # noqa
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def sget(parser, section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    models = [m.upper() for m in shared.options('models')] if shared.has_section('models') else []
+    if not models:
+        errors.append('%s 的 [models] 沒有任何機型' % label)
+
+    def check_categories(parser, where):
+        codes = []
+        for section in parser.sections():
+            if not section.startswith('category.'):
+                continue
+            code = section[len('category.'):]
+            codes.append(code)
+            if not RE_CODE.match(code):
+                errors.append('%s [%s] 類別代碼只能用小寫英數字與底線' % (where, section))
+            color = sget(parser, section, 'color')
+            if color and not RE_HEX.match(color):
+                errors.append('%s [%s] color "%s" 不是 Hex 色號（例 "#E67E22"）' % (where, section, color))
+        return codes
+
+    categories = check_categories(shared, label)
+    if not categories:
+        errors.append('%s 沒有任何 [category.<代碼>]' % label)
+    pm_category = sget(shared, 'pm', 'category') or 'pm'
+    if pm_category not in categories:
+        warnings.append('%s [pm] category "%s" 不是已定義的類別' % (label, pm_category))
+
+    formula = (sget(shared, 'availability', 'formula') or 'default').lower()
+    if formula != 'default':
+        camel = ''.join(w.capitalize() for w in formula.split('_'))
+        if not os.path.isfile(os.path.join(MODULES, 'tool_board', 'formulas', camel + '.php')):
+            errors.append('%s [availability] formula "%s" 找不到 modules/tool_board/formulas/%s.php' % (label, formula, camel))
+
+    pm_path = sget(shared, 'pm', 'json_path')
+    if pm_path:
+        if not os.path.isfile(pm_path):
+            warnings.append('%s [pm] json_path 檔案不存在：%s（看板會顯示警告，其他功能正常）' % (label, pm_path))
+        else:
+            import json
+            import ast
+            with open(pm_path) as fp:
+                text = fp.read()
+            try:
+                json.loads(text)
+            except ValueError:
+                try:
+                    ast.literal_eval(text)
+                    warnings.append('PM 檔 %s 不是標準 JSON（單引號），看板會自動轉換；請產生端改用 json.dump' % pm_path)
+                except Exception:  # noqa
+                    errors.append('PM 檔 %s 無法解析' % pm_path)
+
+    owner = {}
+    defaults_wip = [(c, sget(shared, 'category.' + c, 'default_wip')) for c in categories]
+    for m in models:
+        rel = 'config/tool_board/%s.ini' % m
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            errors.append('找不到機型設定檔 %s' % rel)
+            continue
+        parser = RawConfigParser()
+        try:
+            with open(path) as fp:
+                parser.readfp(fp)
+        except Exception as e:  # noqa
+            errors.append('%s 解析失敗：%s' % (rel, e))
+            continue
+        tools = read_array('tools', 'tool', path)
+        if not tools:
+            warnings.append('%s 的 [tools] 沒有任何機台' % rel)
+        for t in tools:
+            if not RE_TOOL.match(t):
+                errors.append('%s 機台代號格式錯誤：%s' % (rel, t))
+                continue
+            key = t.upper()
+            if key in owner and owner[key] != m:
+                errors.append('機台 %s 同時列在 %s 與 %s' % (key, owner[key], m))
+            elif key in owner:
+                warnings.append('%s 機台重複：%s' % (rel, key))
+            owner[key] = m
+        editors = read_array('editors', 'account', path)
+        if not editors:
+            warnings.append('%s 的 [editors] 沒有任何帳號，這個機型只有 ADMIN 能編輯' % rel)
+        for a in editors:
+            if not RE_ACCOUNT.match(a):
+                errors.append('%s [editors] 帳號格式錯誤：%s' % (rel, a))
+            elif a.lower() not in ee_accounts:
+                warnings.append('%s [editors] %s 不在 [ee_accounts]，若不是 EE 帳號將無法編輯' % (rel, a))
+        wips = []
+        for section in parser.sections():
+            if section.startswith('wip.'):
+                code = section[len('wip.'):]
+                wips.append(code)
+                if not RE_CODE.match(code):
+                    errors.append('%s [%s] WIP 代碼只能用小寫英數字與底線' % (rel, section))
+                color = sget(parser, section, 'text_color')
+                if color and not RE_HEX.match(color):
+                    errors.append('%s [%s] text_color "%s" 不是 Hex 色號' % (rel, section, color))
+        if not wips:
+            errors.append('%s 沒有任何 [wip.<代碼>]（WIP 處理方式）' % rel)
+        check_categories(parser, rel)
+        for cat, dw in defaults_wip:
+            if dw and dw not in wips:
+                warnings.append('%s 沒有 [wip.%s]，類別 %s 的 default_wip 在這個機型改選第一個' % (rel, dw, cat))
+        print('== 借機看板 %s：機台 %d 台、可編輯 %s、WIP %s ==' % (
+            m, len(tools), ', '.join(editors) or '-', ', '.join(wips) or '-'))
 
 
 def main():
@@ -313,6 +445,9 @@ def main():
         if account.lower() in seen:
             warnings.append('[ee_accounts] 帳號重複：%s' % account)
         seen.add(account.lower())
+
+    if 'tool_board' in pages:
+        check_tool_board(seen, errors, warnings)
 
     print('== 身份可用頁面 ==')
     for role in roles:

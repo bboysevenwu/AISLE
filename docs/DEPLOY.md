@@ -140,7 +140,7 @@ chown -R apache:apache /var/www/html/aisle/storage
 chmod -R 775 storage
 ```
 
-`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用，`storage/uploads` 存 Pending Issue 的圖片（程式會自動建立 `pending_issue/<年月>/` 子資料夾）。
+`storage/logs` 要讓 Web Server 寫入 PHP 錯誤紀錄，`storage/backups` 給備份腳本使用，`storage/uploads` 存 Pending Issue 的圖片（程式會自動建立 `pending_issue/<年月>/` 子資料夾），`storage/cache` 存借機看板的 PM JSON 解析快取。
 
 ## 11. 設定 Apache
 
@@ -284,6 +284,27 @@ crontab -e
 3. 確認 `php.ini`：`file_uploads = On`，`upload_max_filesize`、`post_max_size` 大於 `config/pending_issue.ini` 的 `max_mb`（預設 5 MB，建議設 8M）
 4. `config/pending_issue.ini`：依需要調整機型、分類、Sponsor 身份、匯出開關；`idle_seconds` 要小於 `app.ini` 的 `session_idle`
 5. `python scripts/python/check_config.py`，再以 EE 帳號開啟「Pending Issue // CONTROL TABLE」
+
+## 17-2.（選用）啟用機台借機與 PM 排程看板
+
+1. 建立資料表（只需一次，重複執行不影響既有資料）：
+   ```bash
+   mysql -u root -p aisle < sql/migrations/20261111_tool_board.sql
+   ```
+2. 讓 PM 解析快取資料夾可寫入：
+   ```bash
+   mkdir -p storage/cache
+   chown -R apache:apache storage/cache
+   chmod -R 775 storage/cache
+   ```
+3. 每個機型的設定檔 `config/tool_board/PAN.ini`、`PAP.ini`、`POV.ini`：
+   - `[tools]` 換成實際機台（`tool[] = "APAN01"`，一行一台，同一台不能列在兩個機型）
+   - `[editors]` 填可以編輯這個機型的 EE 帳號（`account[] = "neo"`）；ADMIN 不必列
+   - `[wip.<代碼>]` 依機型需要增減 WIP 處理方式
+4. `config/tool_board.ini`：
+   - `[pm] json_path` 填 PM JSON 檔在主機上的絕對路徑（Apache 要能讀），空白 = 不顯示 PM
+   - 依需要調整類別顏色、可用率門檻；`[sync] idle_seconds` 要小於 `app.ini` 的 `session_idle`（程式也會自動調小）
+5. `python scripts/python/check_config.py`，再以 EE 帳號開啟「借機 / PM 排程 // TOOL BOARD」
 
 ## 18. 不能 git pull 時的更新方式（單檔更新）
 

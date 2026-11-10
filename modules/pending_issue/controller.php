@@ -1,13 +1,13 @@
 <?php
 /**
- * Pending Issue Control Table（config.ini：EE 與 ADMIN）
+ * Pending Issue Control Table（config.ini：EE 與 ADMIN；刪除 / 看已刪除 / 還原只有 ADMIN）
  * 機型 / 分類 / 狀態 / Sponsor 等設定在 config/pending_issue.ini
  *
  *   index    頁面（表格、篩選、編輯視窗都由 pending_issue.js 呼叫下列 JSON 動作）
  *   list     GET  全部未刪除的 issue（trash=1 且有 action.trash 權限時含已刪除），篩選在前端做
  *   get      GET  單筆完整資料（含圖片、狀態歷程）
  *   save     POST 新增 / 修改；以 version 做樂觀鎖，別人先改過時回 409，不覆蓋
- *   delete   POST 軟刪除（同樣檢查 version）
+ *   delete   POST 軟刪除（同樣檢查 version；action.delete，預設只有 ADMIN）
  *   restore  POST 還原軟刪除（action.restore，預設只有 ADMIN）
  *   upload   POST 上傳一張圖片（貼上 / 拖曳 / 選檔），存到 storage/uploads/pending_issue/<年月>/
  *   image    GET  輸出圖片（storage 無法從網址直接讀取，一律經過這裡檢查權限）
@@ -43,6 +43,7 @@ class PendingIssueController extends Controller
                 'statuses'        => $cfg['statuses'],
                 'sponsors'        => $this->sponsorList(),
                 'me'              => array('id' => (int) $this->user['id'], 'name' => $this->user['display_name']),
+                'canDelete'       => $this->can('delete'),
                 'canTrash'        => $this->can('trash'),
                 'canRestore'      => $this->can('restore'),
                 'exportEnabled'   => $cfg['export'],

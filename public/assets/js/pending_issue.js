@@ -810,7 +810,7 @@
                 $('#pi-meta').text('建立：' + issue.created_by_name + ' ' + issue.created_at +
                     ' ／ 最後修改：' + issue.updated_by_name + ' ' + issue.updated_at +
                     (issue.closed_at ? ' ／ 結案：' + issue.closed_at : '') + ' ／ v' + issue.version);
-                $('#pi-delete').show();
+                $('#pi-delete').toggle(!!CFG.canDelete);   // 刪除只有 ADMIN（config.ini action.delete）
                 renderHistory(issue.status_logs || []);
             } else {
                 state.editingId = 0;

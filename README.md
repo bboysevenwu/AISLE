@@ -21,7 +21,9 @@ AISLE/
 ├── config/
 │   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
 │   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
-│   └── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
+│   ├── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
+│   ├── tool_board.ini         # 借機 / PM 看板共用設定：機型、類別顏色、可用率、PM JSON 路徑（見第 12 節）
+│   └── tool_board/<機型>.ini  # 借機 / PM 看板各機型：機台清單、可編輯成員、WIP 處理方式
 ├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
 │   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
 │   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
@@ -49,6 +51,7 @@ AISLE/
 │   ├── pe_recipe/             # 只有 PE
 │   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
 │   ├── pending_issue/         # Pending Issue Control Table，只有 EE（見第 11 節）
+│   ├── tool_board/            # 機台借機與 PM 排程看板，EE 編輯 / PE 唯讀（見第 12 節）
 │   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
 │       ├── controller.php     #   class AdminUsersController extends Controller
 │       └── views/index.php    #   該模組的畫面
@@ -595,3 +598,73 @@ class BSLrChart extends ChartSource
 - 閒置 `idle_seconds`（預設 300）秒沒操作，或分頁切到背景，就暫停輪詢（右上角顯示「⏸ 已暫停同步」），讓登入依 `session_idle` 照常逾時；有操作時立即恢復。不設人數上限
 
 ![pending issue](docs/screenshots/pending_issue.png)
+
+## 12. 機台借機與 PM 排程看板（`?m=tool_board`）
+
+Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN) / 2000 (PAP) / YSM (POV)**，每個機型分開維護與設定；左欄 Tool ID，右邊是今天前 3 天到後 60 天（共 64 天）的日格子，第一列是該機型每日預估可用率。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.tool_board]` | 頁面登記；EE、PE 都在 `[access]`；`action.save` / `action.move` / `action.delete` = `"EE"` |
+| `config/tool_board.ini` | 共用：機型清單、時間視窗、格寬、預設起頭時間、Action 類別（名稱 / Hex 顏色 / 是否算停機 / 預設時數 / 預設 WIP）、可用率公式與門檻、PM JSON 路徑、輪詢秒數 |
+| `config/tool_board/<機型>.ini` | 各機型：`[tools]` 機台清單、`[editors]` 可編輯的 EE 帳號、`[wip.<代碼>]` WIP 處理方式（名稱 / 字色 / 粗體）；也可覆蓋共用的 `[category.*]`、`[availability]` |
+| `modules/tool_board/` | controller、設定讀取（BoardConfig）、可用率（Availability）、PM 讀取（PmSource）、view |
+| `modules/tool_board/formulas/` | （選用）自訂可用率公式，一個公式一個檔 |
+| `public/assets/js/tool_board.js` | 看板、右鍵選單、表單、拖曳、輪詢、衝突視窗 |
+| `sql/migrations/20261111_tool_board.sql` | 建表（`tool_board_actions`、`tool_board_locks`、`tool_board_action_log`、`tool_board_presence`） |
+| `storage/cache/` | PM JSON 解析快取（檔案改變才重新解析） |
+
+**權限**
+
+| 身份 | 看 | 新增 / 修改 / 拖曳 / 刪除 |
+|---|---|---|
+| ADMIN | 全部機型 | 全部機型 |
+| EE（列在該機型 `[editors]`） | 全部機型 | 只有列名的機型（頁籤上有 ✎） |
+| EE（沒列名）、PE | 全部機型 | 唯讀（雙擊色塊可檢視） |
+
+後端每個寫入動作都會檢查，不只是隱藏按鈕。
+
+**操作**
+
+- 在格子上按右鍵 →「新增 Action」：類別、WIP 處理方式（單選，選項來自目前機型的 `[wip.*]`）、開始 / 結束（日期 + 時:分，新增時預帶點的那天 `default_start_time`，可自行調整；改開始時間時結束時間跟著平移、時長不變，手動改過結束就不再平移）、是否需要 Monitor（時數，快捷 2h / 4h）、是否需要 Pilot（時數，快捷 12h / 24h）、備註
+- 色塊右鍵：編輯 / 複製 / 刪除；雙擊色塊 = 編輯；編輯視窗下方有異動紀錄（誰、何時、新增 / 修改 / 拖曳）
+- **拖曳**：拖色塊中間 = 整段搬移；拖左右邊緣 = 改開始或結束（色塊太窄時只能整段搬移）。預設以「天」對齊（保留原本的時分），按住 **Shift** 以 1 小時對齊；拖曳時旁邊顯示即時起訖，重疊會變紅、放開後還原
+- 開始時間最早只能到今天往前 3 天（`days_before`），方便補登實際時間；再更早的不能新增或修改
+
+**畫法**
+
+- 色塊背景色 = 類別的 `color`；文字色 = WIP 的 `text_color`（例 Purge WIP 紅字粗體）
+- 有 Monitor / Pilot 時，色塊上顯示 `Mon: 4h | Pilot: 12h`（太窄時 `M4 P12`），並在 Action 結束後接著畫 Monitor 尾巴（深色斜線）、再畫 Pilot 尾巴（淡色斜線）
+- 今天整欄醒目底色加粗框，紅色直線是「現在」；過去的日子加斜線底紋
+- 同一台**不允許時間重疊**，判斷時包含 Monitor / Pilot 尾巴（伺服器檢查）
+
+**每日預估可用率**
+
+- 預設：`Σ(每台當天可用時數) / (該機型機台數 × 24h) × 100%`；停機時段 = `counts_down = On` 的類別的 Action 本體 ＋ Monitor 尾巴（`count_monitor`，預設算）＋ Pilot 尾巴（`count_pilot`，預設不算，因為 Pilot 有在跑貨）
+- 低於 `warn_below`（90）黃底、低於 `alert_below`（80）紅底；滑鼠移上去顯示可用時數
+- 換公式：在 `modules/tool_board/formulas/` 新增 `<名稱>.php`（`class <名稱>Availability extends AvailabilityFormula`），設定 `formula = "<名稱>"`，範例見該資料夾的 README.txt；機型檔可以各自指定
+
+**PM 射程**
+
+- `config/tool_board.ini` `[pm] json_path` 指定一個 JSON 檔（三個機型共用，各機型只顯示自己的機台）：
+  ```json
+  {"APAN01": {"PM":     {"window_start_date": "2026-06-01 09:30", "first_due": "2026-06-10 09:30", "due_date": "2026-06-17 09:30"},
+              "AMC_PM": {"window_start_date": "2026-07-01 09:30", "first_due": "2026-07-10 09:30", "due_date": "2026-07-17 09:30"}}}
+  ```
+- 不匯入資料庫：每次讀取比對檔案修改時間與大小，有變才重新解析，下一次輪詢就更新所有人的畫面
+- 產生端請用 Python `json.dump` 輸出；若是單引號（Python dict 印法，含 `u'..'`、`True/False/None`）也會自動轉換，但畫面會提示
+- 格式錯誤的項目略過，畫面顯示略過筆數（原因只有 ADMIN 看得到）；檔案不存在或整個壞掉時看板照常運作，只顯示警告
+- 畫法：射程（window_start_date → due_date）淡色斜線底帶、到點日 ▼ 橘線、最後到期日 ! 紅線；射程內已有 PM 類別的 Action → 綠色（已排），已到點未排 → 橘框，已過最後到期日未排 → 紅色閃爍
+- 在射程上按右鍵「依此 PM 新增 Action」：類別帶 PM、開始時間 = 到點日、記下 PM 類型
+
+**多人同時操作**（不需要 WebSocket，沿用 Pending Issue 的做法）
+
+- 樂觀鎖：每筆有 `version`，存檔 / 拖曳 / 刪除時比對；別人先改過 → 409，視窗列出「你的版本 / 最新版本」，可選 **覆蓋（用我的版本）**、**使用最新版本** 或取消
+- 重疊檢查在交易內先鎖住該機台（`tool_board_locks`），兩個人同時把不同 Action 排進同一段時間時，後到的會被擋下
+- 每 `poll_seconds`（預設 5）秒輪詢：同步別人的新增 / 修改 / 拖曳 / 刪除、可用率、PM 檔更新；顯示同機型的線上使用者，以及「🔒 某某 編輯中 / 拖曳中」
+- 閒置 `idle_seconds` 或分頁在背景時暫停輪詢，讓登入照常逾時
+- IE11 開啟時跳出警告（拖曳在 IE11 無法正常使用）
+
+![tool board](docs/screenshots/tool_board.png)
+
+![tool board form](docs/screenshots/tool_board_form.png)

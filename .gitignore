@@ -2,9 +2,11 @@ config/app.ini
 storage/logs/*
 storage/backups/*
 storage/uploads/*
+storage/cache/*
 !storage/logs/.gitkeep
 !storage/backups/.gitkeep
 !storage/uploads/.gitkeep
+!storage/cache/.gitkeep
 .DS_Store
 public/assets/vendor/*.js
 

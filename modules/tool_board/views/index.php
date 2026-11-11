@@ -8,6 +8,8 @@
 <div class="alert alert-error">&gt; 設定錯誤：<?php echo e($error); ?></div>
 <?php endif; ?>
 
+<!-- tb-root：全螢幕時放大這一整塊；右鍵選單、表單、衝突視窗都放在裡面，全螢幕時才看得到 -->
+<div class="tb-root" id="tb-root">
 <div class="pi-tabs" id="tb-tabs" role="tablist">
 <?php foreach ($models as $m): ?>
     <a href="#" class="pi-tab" data-model="<?php echo e($m['key']); ?>"><?php echo e($m['label']); ?>
@@ -18,7 +20,10 @@
 <div class="panel tb-panel">
     <div class="panel-head">&gt; <span id="tb-title">TOOL BOARD</span>
         <span class="tb-mode" id="tb-mode"></span>
-        <span class="pi-live" id="tb-live" title="多人同步狀態">● LIVE</span>
+        <span class="tb-head-right">
+            <span class="pi-live" id="tb-live" title="多人同步狀態">● LIVE</span>
+            <button type="button" class="btn btn-sm tb-fs-btn" id="tb-fs" title="看板全螢幕（快捷鍵 F）">[ ⛶ 全螢幕 ]</button>
+        </span>
     </div>
     <div class="panel-body">
         <div class="tb-toolbar">
@@ -85,7 +90,19 @@
                         </div>
                     </div>
                 </div>
-                <p class="dim tb-duration" id="tb-duration"></p>
+                <div class="tb-span">
+                    <label for="tb-f-span">時長（小時）// HOURS *</label>
+                    <div class="tb-span-row">
+                        <input type="number" id="tb-f-span" name="span_hours" min="0.5" max="2160" step="0.5" inputmode="decimal" title="輸入小時數，結束時間自動換算">
+                        <span class="tb-span-unit">h</span>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="4">4h</button>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="8">8h</button>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="12">12h</button>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="24">24h</button>
+                        <span class="dim tb-duration" id="tb-duration"></span>
+                    </div>
+                    <p class="text-red tb-span-err" id="tb-span-err" style="display:none"></p>
+                </div>
 
                 <label>WIP 處理方式 // WIP MODE *</label>
                 <div class="pi-checks tb-wip" id="tb-f-wip"></div>
@@ -162,6 +179,7 @@
 </div>
 
 <div class="tb-toast" id="tb-toast" style="display:none"></div>
+</div><!-- /tb-root -->
 
 <script>
 window.TOOL_BOARD = <?php echo js($config); ?>;

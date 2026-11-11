@@ -663,11 +663,11 @@ div.tb-pm-due b { color: #ff3b3b; left: 1px; font-size: 11px; }
 .tb-dragging .tb-act-main { box-shadow: 0 0 10px #00ff41; }
 .tb-bad .tb-act-main { outline: 2px solid #ff3b3b; outline-offset: -2px; box-shadow: 0 0 10px #ff3b3b; }
 body.tb-is-dragging, body.tb-is-dragging * { cursor: grabbing !important; user-select: none; }
-.tb-drag-tip { position: absolute; z-index: 50; padding: 3px 8px; border: 1px solid #00ff41; background: #000; color: #00ff41; font-size: 12px; white-space: nowrap; pointer-events: none; }
+.tb-drag-tip { position: fixed; z-index: 50; padding: 3px 8px; border: 1px solid #00ff41; background: #000; color: #00ff41; font-size: 12px; white-space: nowrap; pointer-events: none; }
 .tb-drag-tip.is-bad { border-color: #ff3b3b; color: #ff3b3b; }
 
 /* 右鍵選單 */
-.tb-menu { position: absolute; z-index: 40; min-width: 200px; margin: 0; padding: 4px 0; list-style: none; border: 1px solid #00ff41; background: #000; box-shadow: 0 0 14px rgba(0, 255, 65, 0.35); font-size: 14px; }
+.tb-menu { position: fixed; z-index: 40; min-width: 200px; margin: 0; padding: 4px 0; list-style: none; border: 1px solid #00ff41; background: #000; box-shadow: 0 0 14px rgba(0, 255, 65, 0.35); font-size: 14px; }
 .tb-menu-item { padding: 5px 14px; cursor: pointer; }
 .tb-menu-item:hover { background: #00b82e; color: #000; }
 .tb-menu-item.is-danger { color: #ff3b3b; }
@@ -701,3 +701,39 @@ body.tb-is-dragging, body.tb-is-dragging * { cursor: grabbing !important; user-s
 /* Pending Issue：唯讀的編輯視窗 */
 .pi-readonly input:disabled, .pi-readonly select:disabled, .pi-readonly textarea:disabled { opacity: 0.85; cursor: default; }
 .pi-readonly .pi-combo-btn:disabled { cursor: default; opacity: 0.5; }
+
+/* 借機看板：時長欄位、全螢幕 */
+.tb-span { margin-bottom: 10px; }
+.tb-span-row { display: flex; flex-wrap: wrap; align-items: center; }
+.tb-span-row input { width: 110px; display: inline-block; }
+.tb-span-unit { margin: 0 6px 0 4px; }
+.tb-span-row .tb-span-quick { margin-right: 4px; }
+.tb-span-row .tb-duration { margin: 0 0 0 8px; }
+.tb-span-err { margin: 4px 0 0; font-size: 13px; }
+.tb-head-right { float: right; margin: -3px 0; }
+.tb-head-right .pi-live { float: none; margin-right: 10px; }
+.tb-fs-btn { border-color: #000; color: #000; }
+.tb-fs-btn:hover { background: #000; color: #00ff41; box-shadow: none; }
+.tb-root.tb-full {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 30;
+    overflow: auto;
+    padding: 10px 14px;
+    background: #000;
+}
+.tb-root.tb-full-native { width: 100%; height: 100%; }
+.tb-root.tb-full .tb-panel { margin-bottom: 0; }
+body.tb-body-full { overflow: hidden; }
+/* 時長、Monitor / Pilot 時數輸入框：套 Matrix 樣式 */
+.tb-span input[type=number], .tb-hours input[type=number], .tb-dt input[type=time] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.tb-hours input[type=number]:disabled { opacity: 0.35; }

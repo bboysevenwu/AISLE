@@ -46,7 +46,7 @@
     function duration(msLen) {
         var h = Math.round(msLen / HOUR * 10) / 10;
         var days = Math.floor(h / 24), rest = Math.round((h - days * 24) * 10) / 10;
-        return (days ? days + ' 天 ' : '') + (rest || !days ? rest + ' 小時' : '');
+        return days ? days + ' 天' + (rest ? ' ' + rest + ' 小時' : '') : rest + ' 小時';
     }
     function errorText(xhr, fallback) {
         var r = xhr && xhr.responseJSON;
@@ -473,8 +473,9 @@
         });
         $menu.html(h.join('')).css({ left: 0, top: 0 }).show();
         var w = $menu.outerWidth(), ht = $menu.outerHeight();
-        var left = Math.min(e.pageX, $(window).scrollLeft() + $(window).width() - w - 8);
-        var top = Math.min(e.pageY, $(window).scrollTop() + $(window).height() - ht - 8);
+        // position: fixed（全螢幕時也正確）
+        var left = Math.max(4, Math.min(e.clientX, $(window).width() - w - 8));
+        var top = Math.max(4, Math.min(e.clientY, $(window).height() - ht - 8));
         $menu.css({ left: left, top: top });
         $menu.off('click').on('click', '.tb-menu-item', function () {
             var it = items[+$(this).attr('data-i')];
@@ -588,7 +589,7 @@
         closeMenu();
         var ro = !canEdit();
         var a = mode === 'new' ? null : data;
-        state.modal = { mode: mode, id: mode === 'edit' ? a.id : 0, endTouched: false, wipTouched: mode !== 'new', original: null };
+        state.modal = { mode: mode, id: mode === 'edit' ? a.id : 0, wipTouched: mode !== 'new', original: null };
         $('#tb-error, #tb-stale, #tb-editors').hide();
         $('#tb-history').hide();
         $('#tb-history-list').empty();
@@ -630,6 +631,7 @@
         $('#tb-meta').text(mode === 'edit' ? '建立：' + a.created_by_name + ' ' + String(a.created_at).substring(0, 16) +
             '　最後修改：' + a.updated_by_name + ' ' + String(a.updated_at).substring(0, 16) : '');
         syncHours();
+        spanFromRange();
         updateInfo();
         renderEditorsNote();
         state.modal.lastStart = formStart();
@@ -678,7 +680,7 @@
             $('#tb-duration, #tb-return').text('');
             return;
         }
-        $('#tb-duration').text(e > s ? '時長：' + duration(e - s) : '');
+        $('#tb-duration').text(e > s ? '= ' + duration(e - s) : '');
         var mon = f('need_monitor').prop('checked') ? parseFloat(f('monitor_hours').val()) || 0 : 0;
         var pil = f('need_pilot').prop('checked') ? parseFloat(f('pilot_hours').val()) || 0 : 0;
         var parts = [];
@@ -723,14 +725,34 @@
         });
     }
 
+    // ---------------- 開始 / 時長 / 結束 連動 ----------------
+    // 改時長 → 結束 = 開始 + 時長；改結束 → 重算時長；改開始 → 結束跟著平移、時長不變
+    var SPAN_MAX = 2160;
+    function fmtHours(h) { return String(Math.round(h * 100) / 100); }
+    function spanFromRange() {
+        var s = formStart(), e = formEnd();
+        $('#tb-span-err').hide();
+        f('span_hours').val(!isNaN(s) && !isNaN(e) && e > s ? fmtHours((e - s) / HOUR) : '');
+    }
+    function endFromSpan() {
+        var raw = $.trim(f('span_hours').val()), h = parseFloat(raw), s = formStart();
+        if (raw === '' || isNaN(h) || h <= 0 || h > SPAN_MAX) {
+            $('#tb-span-err').text('> 時長需為大於 0、最多 ' + SPAN_MAX + ' 的小時數（可有小數，例 1.5）').show();
+            return;
+        }
+        $('#tb-span-err').hide();
+        if (!isNaN(s)) {
+            setEnd(s + Math.round(h * HOUR / 60000) * 60000);
+        }
+    }
+
     $form.on('change input', '[name=start_date], [name=start_time]', function () {
-        // 改開始時間：結束時間跟著平移、時長不變（手動改過結束時間後就不再平移）
         var m = state.modal;
         if (!m) {
             return;
         }
         var s = formStart();
-        if (!m.endTouched && !isNaN(s) && m.lastStart !== undefined && !isNaN(m.lastStart)) {
+        if (!isNaN(s) && m.lastStart !== undefined && !isNaN(m.lastStart)) {
             var e = formEnd();
             if (!isNaN(e)) {
                 setEnd(e + (s - m.lastStart));
@@ -743,17 +765,19 @@
             state.modal.lastStart = formStart();
         }
     }).on('change input', '[name=end_date], [name=end_time]', function () {
-        if (state.modal) {
-            state.modal.endTouched = true;
-        }
+        spanFromRange();
+        updateInfo();
+    }).on('input change', '[name=span_hours]', function () {
+        endFromSpan();
         updateInfo();
     }).on('change', '[name=category]', function () {
         var m = state.modal, c = catOf(this.value);
         if (!m || !c) {
             return;
         }
-        if (m.mode === 'new' && !m.endTouched) {
-            setEnd(formStart() + c.default_hours * HOUR);
+        if (m.mode === 'new') {
+            f('span_hours').val(fmtHours(c.default_hours));
+            endFromSpan();
         }
         if (!m.wipTouched) {
             fillWip(defaultWip(c.code));
@@ -772,6 +796,11 @@
         updateInfo();
     }).on('input change', '[name=monitor_hours], [name=pilot_hours]', updateInfo);
 
+    $form.on('click', '.tb-span-quick', function () {
+        f('span_hours').val($(this).attr('data-h'));
+        endFromSpan();
+        updateInfo();
+    });
     $form.on('click', '.tb-quick', function () {
         var $t = $('#' + $(this).attr('data-target'));
         $t.val($(this).attr('data-h'));
@@ -806,6 +835,9 @@
     }
 
     function save(payload) {
+        if ($('#tb-span-err').is(':visible')) {
+            return showFormError('時長（小時）格式不正確');
+        }
         if (!payload.wip_mode) {
             return showFormError('請勾選 WIP 處理方式');
         }
@@ -1070,7 +1102,7 @@
         g.$act.children('.tb-tail-pil').css('left', mainW + monW);
         $tip.text(short(s) + ' → ' + short(en) + (g.tail ? '（尾巴至 ' + short(en + g.tail) + '）' : '') +
             (g.bad ? '　✕ 與其他 Action 重疊' : '') + (e.shiftKey ? '　[小時]' : '　[天]，按住 Shift 以小時對齊'))
-            .toggleClass('is-bad', g.bad).css({ left: e.pageX + 14, top: e.pageY + 16 }).show();
+            .toggleClass('is-bad', g.bad).css({ left: e.clientX + 14, top: e.clientY + 16 }).show();
         // 拖到邊緣自動捲動
         var wl = $wrap.offset().left, wr = wl + $wrap.innerWidth();
         if (e.pageX > wr - 40) {
@@ -1310,6 +1342,87 @@
             navigator.sendBeacon(CFG.urls.release, fd);
         }
     });
+
+    // ==================================================================
+    // 全螢幕 / 恢復
+    //   優先用瀏覽器全螢幕 API；瀏覽器不允許時改成「頁面內最大化」（蓋滿瀏覽器視窗）
+    //   右鍵選單、表單、衝突視窗都在 #tb-root 裡面，全螢幕時一樣看得到
+    // ==================================================================
+    var $root = $('#tb-root'), rootEl = $root[0];
+    var FS_TEXT = { off: '[ ⛶ 全螢幕 ]', on: '[ 🗗 恢復 ]' };
+    function fsElement() {
+        return document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+    }
+    function isFull() { return $root.hasClass('tb-full'); }
+    function fitWrap() {
+        if (isFull()) {
+            var top = $wrap.offset().top - $(window).scrollTop();
+            $wrap.css('max-height', Math.max(200, $(window).height() - top - 16) + 'px');
+        } else {
+            $wrap.css('max-height', '');
+        }
+    }
+    function setFull(on, native) {
+        $root.toggleClass('tb-full', on).toggleClass('tb-full-native', on && !!native);
+        $('body').toggleClass('tb-body-full', on);
+        $('#tb-fs').text(on ? FS_TEXT.on : FS_TEXT.off).attr('title', on ? '恢復正常大小（Esc）' : '看板全螢幕（快捷鍵 F）');
+        closeMenu();
+        setTimeout(fitWrap, 0);
+    }
+    function enterFull() {
+        var req = rootEl.requestFullscreen || rootEl.webkitRequestFullscreen || rootEl.msRequestFullscreen;
+        if (!req) {
+            setFull(true, false);
+            return;
+        }
+        try {
+            var p = req.call(rootEl);
+            if (p && p.then) {
+                p.then(null, function () { setFull(true, false); });   // 被瀏覽器或政策擋下：頁面內最大化
+            }
+        } catch (err) {
+            setFull(true, false);
+        }
+    }
+    function exitFull() {
+        if (fsElement()) {
+            var ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+            if (ex) {
+                ex.call(document);
+                return;
+            }
+        }
+        setFull(false);
+    }
+    function toggleFull() {
+        if (isFull()) {
+            exitFull();
+        } else {
+            enterFull();
+        }
+    }
+    $(document).on('fullscreenchange webkitfullscreenchange MSFullscreenChange', function () {
+        var el = fsElement();
+        if (el === rootEl) {
+            setFull(true, true);
+        } else if (!el && $root.hasClass('tb-full-native')) {
+            setFull(false);
+        }
+    });
+    $('#tb-fs').on('click', toggleFull);
+    $(document).on('keydown', function (e) {
+        if (e.ctrlKey || e.altKey || e.metaKey || $(e.target).is('input, textarea, select') ||
+            $modal.is(':visible') || $conflict.is(':visible')) {
+            return;
+        }
+        if ((e.key === 'f' || e.key === 'F' || e.keyCode === 70) && !e.shiftKey) {
+            e.preventDefault();
+            toggleFull();
+        } else if (e.keyCode === 27 && isFull() && !fsElement() && !$menu.is(':visible')) {
+            setFull(false);   // 頁面內最大化用 Esc 恢復（瀏覽器全螢幕的 Esc 由瀏覽器處理）
+        }
+    });
+    $(window).on('resize', fitWrap);
 
     // ==================================================================
     // 其他操作

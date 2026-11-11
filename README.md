@@ -626,9 +626,10 @@ Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN
 
 **操作**
 
-- 在格子上按右鍵 →「新增 Action」：類別、WIP 處理方式（單選，選項來自目前機型的 `[wip.*]`）、開始 / 結束（日期 + 時:分，新增時預帶點的那天 `default_start_time`，可自行調整；改開始時間時結束時間跟著平移、時長不變，手動改過結束就不再平移）、是否需要 Monitor（時數，快捷 2h / 4h）、是否需要 Pilot（時數，快捷 12h / 24h）、備註
+- 在格子上按右鍵 →「新增 Action」：類別、WIP 處理方式（單選，選項來自目前機型的 `[wip.*]`）、開始 / 結束（日期 + 時:分，新增時預帶點的那天 `default_start_time`，可自行調整；改開始時間時結束時間跟著平移、時長不變）、**時長（小時）**（直接 key in 小時數，可有小數如 1.5，結束時間自動換算；快捷 4h / 8h / 12h / 24h；反過來改結束時間，時長也會跟著更新；新增時換類別會帶入該類別的 `default_hours`）、是否需要 Monitor（時數，快捷 2h / 4h）、是否需要 Pilot（時數，快捷 12h / 24h）、備註
 - 色塊右鍵：編輯 / 複製 / 刪除；雙擊色塊 = 編輯；編輯視窗下方有異動紀錄（誰、何時、新增 / 修改 / 拖曳）
 - **拖曳**：拖色塊中間 = 整段搬移；拖左右邊緣 = 改開始或結束（色塊太窄時只能整段搬移）。預設以「天」對齊（保留原本的時分），按住 **Shift** 以 1 小時對齊；拖曳時旁邊顯示即時起訖，重疊會變紅、放開後還原
+- **全螢幕**：看板標題列右邊 `[ ⛶ 全螢幕 ]`（或在頁面上按 **F**）把頁籤 + 看板放大到整個螢幕，右鍵選單、表單都照常可用；按 `[ 🗗 恢復 ]`、Esc 或再按 F 回到原本大小。瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗
 - 開始時間最早只能到今天往前 3 天（`days_before`），方便補登實際時間；再更早的不能新增或修改
 
 **畫法**
@@ -668,3 +669,5 @@ Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN
 ![tool board](docs/screenshots/tool_board.png)
 
 ![tool board form](docs/screenshots/tool_board_form.png)
+
+![tool board fullscreen](docs/screenshots/tool_board_fullscreen.png)

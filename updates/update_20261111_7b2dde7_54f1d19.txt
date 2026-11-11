@@ -1,0 +1,3300 @@
+#AISLE-UPDATE v1
+# AISLE single-file update. Apply on the server:
+#   python scripts/python/apply_update.py <this file>          (preview)
+#   python scripts/python/apply_update.py <this file> --apply  (apply)
+#@ from=7b2dde7e0bbd8bdca0655a7ce4470eab9643392a
+#@ to=54f1d1947073978e34ff8bc2fc814e1928f93d4f
+#@ created=2026-11-11 14:42:22
+#@ note=tool_board：看板全螢幕切換（按鈕 / F 鍵）+ Action 表單時長（小時）欄位（PR #21）。純前端，不需 SQL、不需改設定檔
+#@@@ FILE README.md sha1=b30c599d324edd104313d8f76a15ec42915a0b29 base=eeff0e011ab4a26e55518d43ccea0e5a576905d3 mode=644 enc=text nl=1
+# AISLE 系統架構
+
+多功能、模組化的內部網頁系統。依「身份」(EE / PE) 決定每位使用者能看到哪些功能頁面，介面採用駭客任務 (The Matrix) 綠色終端機風格。
+
+| 層級 | 技術 | 備註 |
+|---|---|---|
+| 後端 | PHP 5.4 | 不使用 5.5+ 語法；資料庫一律 PDO prepared statement |
+| 資料庫 | MariaDB 5.5 / 10.x | InnoDB、utf8mb4 |
+| 輔助腳本 | Python 2.7、Bash | 權限檢查、建帳號、備份、產生模組 |
+| 前端 | HTML5、jQuery 1.12.4、原生 Canvas | 不需要 Node / 建置工具 |
+
+---
+
+## 1. 資料夾結構
+
+```
+AISLE/
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
+├── .gitignore
+├── README.md
+├── config/
+│   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
+│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   ├── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
+│   ├── tool_board.ini         # 借機 / PM 看板共用設定：機型、類別顏色、可用率、PM JSON 路徑（見第 12 節）
+│   └── tool_board/<機型>.ini  # 借機 / PM 看板各機型：機台清單、可編輯成員、WIP 處理方式
+├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
+│   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
+│   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
+├── core/                      # 框架核心（一般開發不需修改）
+│   ├── bootstrap.php          # 載入類別、設定、Session
+│   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
+│   ├── App.php                # 路由：index.php?m=<頁面>&a=<動作>，依 config.ini 的 route 載入
+│   ├── Acl.php                # 讀 config.ini，判斷權限、產生選單
+│   ├── Auth.php               # 登入 / 登出 / 失敗鎖定 / 閒置登出
+│   ├── Registration.php       # 註冊驗證、依 EE 名單判定身份
+│   ├── guard.php              # 頁面內細部判斷 require_role() / has_role() / csrf_field() …
+│   ├── password_compat.php    # PHP 5.4 補上 password_hash() / password_verify()
+│   ├── Password.php           # 包裝 password_hash()，成本讀 app.ini
+│   ├── Security.php           # 安全亂數、常數時間比較、CSRF
+│   ├── Database.php           # PDO 單例 + 查詢捷徑
+│   ├── Controller.php         # 模組 Controller 基底類別
+│   ├── View.php               # 純 PHP 樣板
+│   └── helpers.php            # e() js() url() asset() audit() 等
+├── modules/                   # 功能模組（route = "module:<資料夾>"）
+│   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
+│   ├── dashboard/             # EE + PE
+│   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── profile/               # EE + PE（改密碼）
+│   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
+│   ├── pe_recipe/             # 只有 PE
+│   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
+│   ├── pending_issue/         # Pending Issue Control Table，只有 EE（見第 11 節）
+│   ├── tool_board/            # 機台借機與 PM 排程看板，EE 編輯 / PE 唯讀（見第 12 節）
+│   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
+│       ├── controller.php     #   class AdminUsersController extends Controller
+│       └── views/index.php    #   該模組的畫面
+├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
+├── templates/
+│   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
+│   ├── error.php
+│   └── auth/                  # 登入、註冊頁面樣板
+├── public/                    # ★ 唯一對外的目錄
+│   ├── index.php              # 功能模組入口
+│   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
+│   ├── register.php           # 註冊（含帳號即時檢查）
+│   ├── logout.php             # 登出（需 CSRF token）
+│   ├── legacy/pe_notice.php   # 獨立頁面範例（route = "public/..."），第一行 require auth_check.php
+│   ├── .htaccess
+│   └── assets/
+│       ├── css/matrix.css     # 駭客任務主題
+│       ├── css/matrix-light.css # 淺色版（body.theme-light 時覆寫顏色）
+│       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
+│       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
+│       ├── js/charts.js       # 圖表頁的 ECharts 繪圖（所有圖表共用）
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
+├── scripts/
+│   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
+│   └── shell/
+│       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
+│       ├── create_user.sh     # 建立使用者（互動輸入密碼）
+│       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── new_chart.sh       # 由範本產生新圖表 charts/<名稱>.ini + .php（見第 10 節）
+│       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
+├── sql/
+│   ├── schema.sql             # 建表
+│   └── seed.sql               # 初始管理員
+├── storage/
+│   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
+│   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
+└── docs/screenshots/          # 介面截圖
+```
+
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
+
+---
+
+## 2. 資料庫
+
+`sql/schema.sql` 建立三張表：
+
+| 資料表 | 用途 |
+|---|---|
+| `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
+| `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
+| `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+
+設計重點：
+
+- **`role` 用 VARCHAR 而非 ENUM**：新增身份只要改 `config.ini`，不必 `ALTER TABLE`。
+- **`password_hash` 留 255 長度**：目前 bcrypt 固定 60 字元，保留未來更換演算法的空間。
+- **`created_at` 用 DATETIME 由程式寫入**：MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 `CURRENT_TIMESTAMP`，這個位置留給 `updated_at`。
+- 有索引的 VARCHAR 欄位長度 ≤ 191，避免舊版 InnoDB 在 utf8mb4 下超過 767 bytes 索引上限。
+
+### 密碼雜湊（PHP 5.4 的做法）
+
+`password_hash()` / `password_verify()` 是 PHP 5.5 才有的函式。`core/password_compat.php` 在函式不存在時補上同名函式：以 `crypt()` 搭配 `$2y$` bcrypt（PHP ≥ 5.3.7 支援），鹽來自 `openssl_random_pseudo_bytes`，驗證時使用常數時間比較。因此程式碼照標準 API 寫 `password_hash($pw, PASSWORD_BCRYPT)`，在 PHP 5.4 與 5.5+ 都能執行，雜湊格式也完全相同；日後升級 PHP 只要刪掉這個檔案，舊密碼不需重設。
+
+---
+
+## 3. 身份 → 頁面權限與路由（`config/config.ini` + `core/auth_check.php`）
+
+### config.ini
+
+```ini
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
+ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
+
+; ★ 頁面與路由
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
+action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
+```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
+
+`route` 有三種寫法：
+
+| route | 程式位置 | 網址 | 適合 |
+|---|---|---|---|
+| `module:<資料夾>` | `modules/<資料夾>/controller.php` | `index.php?m=<代號>&a=<動作>` | 有多個動作、AJAX 的功能 |
+| `pages/xxx.php` | `pages/xxx.php` | `index.php?m=<代號>` | 單純頁面，不用寫 Controller，自動套用版面 |
+| `public/xxx.php` | `public/xxx.php` | 直接開啟該檔案 | 既有網站的舊頁面，只需在第一行加一行 require |
+
+### auth_check.php：所有頁面共用同一套檢查
+
+```
+使用者開啟頁面
+  ├─ index.php?m=xxx  →  App 路由 ──────────┐
+  └─ public/legacy/xxx.php（第一行 require）─┤
+                                             ▼
+                              core/auth_check.php
+                    1. 未登入           → 導向 login.php（AJAX 回 401）
+                    2. 頁面未登記在 config.ini → 403
+                    3. 首次登入未改密碼 → 導向個人設定
+                    4. 身份不在 [access] 清單、或不符 action.* → 403
+                                             ▼
+                          通過 → 依 route 載入頁面程式
+```
+
+既有頁面接上權限只要在第一行加入（依檔案位置調整 `../`）：
+
+```php
+<?php require_once dirname(__FILE__) . '/../../core/auth_check.php';
+// 通過檢查後才會執行到這裡；可用 $AUTH_USER、$AUTH_PAGE
+```
+
+auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出頁面代號，所以頁面本身不用寫自己的代號或身份。檔案若沒登記在 config.ini，即使加了 require 也一律拒絕，避免漏設權限的頁面被看到。獨立頁面送出 POST 時會檢查 CSRF，舊表單請加上 `<?php echo csrf_field(); ?>`；若一時無法修改，可把 `[settings] direct_page_csrf` 設為 `Off`。
+
+權限一律在伺服器端檢查，隱藏選單只是介面效果；直接輸入網址也會得到 403。目前範例的結果：
+
+| 頁面 | EE | PE | ADMIN |
+|---|:-:|:-:|:-:|
+| 主控台 dashboard | ✓ | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
+| 個人設定 profile | ✓ | ✓ | ✓ |
+| 設備狀態 ee_equipment | ✓ | | ✓ |
+| 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
+| 製程配方 pe_recipe | | ✓ | ✓ |
+| 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 › M1BF m1bf（module:charts） | ✓ | ✓ | ✓ |
+| 使用者管理 admin_users | | | ✓ |
+
+修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
+
+---
+
+## 4. 註冊、登入、登出與權限檢查
+
+### 流程
+
+| 檔案 | 方法 | 行為 |
+|---|---|---|
+| `public/register.php` | GET | 註冊頁 |
+| | GET `?check_account=xxx`（AJAX） | 回傳帳號是否可用 |
+| | POST | 驗證 → 依 EE 名單判定身份 → 寫入 `users`，並在 `audit_logs` 記錄身份來源 |
+| `public/login.php` | GET / POST | 驗證帳密，成功後 `session_regenerate_id()` 並把使用者與身份寫入 `$_SESSION['user']` |
+| `public/logout.php` | POST（或 `?_csrf=`） | 清除 Session 與 Cookie，導回 `login.php?bye=1` |
+
+登入與註冊表單由 `js/auth.js` 以 jQuery 做即時驗證，並用 `$.ajax` 非同步送出，伺服器回 JSON。瀏覽器關閉 JavaScript 時表單照常以一般 POST 送出，伺服器端也會做完整驗證。
+
+### 註冊時的身份判定（`config.ini` 的 `[register]` 與 `[ee_accounts]`）
+
+註冊表單只填帳號、顯示名稱與密碼。身份在註冊當下依 INI 名單判定，直接寫入 `users.role`：
+
+```ini
+[register]
+enabled          = On
+require_approval = Off     ; On = 註冊後需管理員啟用
+listed_role      = "EE"    ; 名單上的帳號
+unlisted_role    = "PE"    ; 名單外的帳號；設為 "" 則名單外不能註冊
+
+[ee_accounts]              ; EE 正面表列，一行一個帳號，不分大小寫
+account[] = "neo"
+account[] = "trinity"
+```
+
+- 名單只在註冊時讀取。之後增減名單，不會改變已經註冊的人的身份，要調整請直接改資料庫的 `users.role`。
+- ADMIN 永遠無法經由註冊取得；`listed_role`、`unlisted_role` 若設成 superuser 角色會被忽略。
+- `audit_logs` 會記錄每個帳號的身份來源（`ee_accounts` 或 `unlisted_role`）。
+- 改完名單可以執行 `python scripts/python/check_config.py`，它會列出名單內容，並檢查帳號格式與重複。
+
+### 共用權限檢查函式（`core/guard.php`）
+
+```php
+require_login();                    // 未登入 → 導向 login.php；AJAX 回 401
+require_role('PE');                 // 身份不符 → 403（ADMIN 一律通過）
+require_role('EE,PE');              // 多個身份用逗號
+if (has_role('EE,PE')) { ... }      // 只判斷、不中止
+if (can_access('shared_report', 'export')) { ... }   // 依 [access] 與 [page.xxx] 判斷
+echo csrf_field();                  // 表單的 CSRF 隱藏欄位
+current_user();  current_role();  is_logged_in();
+```
+
+頁面層級的權限由 `auth_check.php` 處理；這些函式用在頁面內更細的判斷，例如只對某身份顯示某個按鈕。
+
+---
+
+## 5. 新增功能頁面
+
+只需要改 config.ini，核心程式（`core/`）不用動：
+
+1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
+2. 在 `[access]` 把頁面代號加進能使用它的身份
+3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
+
+例：新增一個 EE、PE 都能看的聯絡人頁面
+
+```ini
+[access]
+EE = "dashboard, ..., team_contacts"
+PE = "dashboard, ..., team_contacts"
+
+[page.team_contacts]
+title = "聯絡人 // CONTACTS"
+route = "pages/team_contacts.php"
+order = 60
+```
+
+需要多個動作或 AJAX 時用模組，腳本會產生程式骨架並自動完成上面第 2、3 步：
+
+```bash
+# 產生 modules/ee_alarm/，加入 EE、PE 的 [access] 清單並新增 [page.ee_alarm]
+bash scripts/shell/new_module.sh ee_alarm "EE,PE" "警報中心 // ALARMS" 35
+```
+
+產生的骨架：
+
+```php
+<?php
+class EeAlarmController extends Controller
+{
+    public function indexAction()          // index.php?m=ee_alarm
+    {
+        $this->render('index', array('message' => '...'));
+    }
+
+    public function listAction()           // index.php?m=ee_alarm&a=list
+    {
+        $rows = Database::fetchAll('SELECT ... WHERE x = ?', array($x));
+        $this->json(array('ok' => true, 'rows' => $rows));
+    }
+}
+```
+
+Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作')`、`isPost()`、`input()`、`query()`、`flash()`。View 中輸出變數一律用 `e($var)`；要放進 `<script>` 用 `js($var)`。
+
+---
+
+## 6. 安全機制
+
+- bcrypt 密碼雜湊，提高 `bcrypt_cost` 後使用者下次登入自動升級雜湊
+- 連續失敗 5 次鎖定 15 分鐘（`app.ini` 可調），帳號不存在時也執行一次 bcrypt，避免從回應時間猜出帳號
+- 登入成功 `session_regenerate_id()`，閒置 30 分鐘自動登出，Cookie 設 HttpOnly
+- 所有 POST（含 jQuery AJAX，透過 `X-CSRF-Token` 標頭）都檢查 CSRF token；登出也需要 token，避免被外部連結強制登出
+- 註冊無法取得 ADMIN 身份；可開啟 `require_approval` 讓新帳號需管理員啟用，或把 `unlisted_role` 設為空字串只開放名單內帳號註冊
+- 首次登入或被管理員重設密碼後強制改密碼
+- 所有 SQL 使用 PDO prepared statement，`ATTR_EMULATE_PREPARES = false`
+
+---
+
+## 7. PHP 5.4 相容規範
+
+可以用：`array()` 與 `[]` 短陣列、closure、`http_response_code()`、`JSON_UNESCAPED_UNICODE`、`session_status()`。
+
+不能用：
+
+| 不能用 | 版本 | 替代寫法 |
+|---|---|---|
+| `password_hash()` / `password_verify()` | 5.5 | 已由 `core/password_compat.php` 補上，可直接使用 |
+| `finally`、`yield`、`::class`、`array_column()`、`empty(函式())` | 5.5 | try/catch、迴圈、字串類別名稱、先存變數 |
+| `hash_equals()`、`...$args`、`const` 運算式 | 5.6 | `Security::equals()` |
+| `??`、`<=>`、純量 type hint、回傳型別、`random_bytes()` | 7.0 | `array_get()`、`Security::randomBytes()` |
+| `?->`、`match`、`fn() =>` | 8.0 | 一般寫法 |
+
+---
+
+## 8. 部署步驟
+
+完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
+
+1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
+2. `git clone -b main` 到 `/var/www/html/aisle/`
+3. `mysql -u root -p < sql/schema.sql`
+4. 建立 `aisle_app` 資料庫帳號
+5. `mysql -u root -p < sql/seed.sql`
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
+7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
+8. `python scripts/python/check_config.py`
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
+10. 目錄權限（storage 可寫）
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
+13. `admin` / `Neo@Zion2026` 首次登入並改密碼
+14. 註冊測試帳號，驗證 EE / PE 權限
+15.（選用）接入既有舊頁面
+16. 設定每日備份 crontab
+
+---
+
+## 9. 駭客任務主題
+
+| 元素 | 檔案 | 說明 |
+|---|---|---|
+| 數位雨背景 | `js/matrix-rain.js` | Canvas 半形片假名雨，約 20fps；系統設定「減少動態」時改為靜態畫面 |
+| CRT 掃描線 | `css/matrix.css` `.crt-overlay` | 全畫面細橫線疊層 |
+| 終端機面板 | `.panel` `.terminal` | 綠框黑底、亮綠標題列 |
+| 打字機效果 | `AISLE.typewriter()` | 登入頁標語、主控台訊息 |
+| 標題故障效果 | `.glitch` | 滑鼠移上時文字抖動 |
+| 狀態燈 | `.led-run/idle/down` | 綠、暗綠、閃爍紅 |
+| 身份徽章 | `.role-EE/PE/ADMIN` | EE 亮綠、PE 薄荷綠、ADMIN 紅藥丸 |
+
+色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
+
+截圖見 `docs/screenshots/`。
+
+### 風格切換（深色 / 淺色）
+
+上方列（登入、註冊頁在右上角）有 `[ ☀ 淺色 ]` / `[ ☾ 深色 ]` 按鈕，可在「駭客任務」與「淺色底的駭客任務」之間切換，不用重新整理。
+
+| 項目 | 說明 |
+|---|---|
+| 預設 | 深色（駭客任務） |
+| 記憶方式 | cookie `aisle_theme`（`light` / 沒有＝深色），path 為 `base_url` + `/`，一年；每台電腦各自記憶，不寫資料庫 |
+| 套用 | PHP 的 `current_theme()` 讀 cookie，`templates/layout.php` 輸出時就在 `<html>`、`<body>` 加上 `theme-light`，換頁不會閃爍 |
+| 樣式 | `css/matrix-light.css` 全部是 `body.theme-light ...` 覆寫規則，`matrix.css` 本身不變 |
+| 數位雨 / 圖表 | `matrix-rain.js` 依 body class 換色；`charts.js` 收到 `aisle:theme` 事件後換配色並用快取重畫 |
+
+淺色版色票：`#f2fbf4` 底色、`#00591a` 主文字、`#008f11` 強調、`#2e6b3c` 次要文字、`#c62828` 警示紅。
+新頁面請不要在 HTML 寫死顏色（`style="color:..."`），改用 class，淺色版才會跟著變。
+
+---
+
+## 10. 圖表（charts）
+
+多張圖表（BSLr、M1BF、CDM、BMMF…）共用同一個模組 `modules/charts`，每張圖表是選單「圖表 // CHARTS」底下的一頁。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+每張圖表只由兩個同名檔案定義，新增圖表不需要改任何程式：
+
+| 檔案 | 內容 |
+|---|---|
+| `charts/<名稱>.ini` | 畫什麼、怎麼畫：`[page]` 整頁設定、`[plot.<代號>]` 每組圖 |
+| `charts/<名稱>.php` | 部署者寫 SQL，整理成資料格式（`class <名稱>Chart extends ChartSource`） |
+| `config/config.ini` | `[page.<小寫名稱>]`，`route = "module:charts"`、`group = "charts"`；哪些身份看得到寫在 `[access]` |
+
+頁面代號 = 圖表名稱轉小寫：`[page.bslr]` → `charts/BSLr.ini`、`charts/BSLr.php`，網址 `index.php?m=bslr`。
+
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（快捷按鈕由 `quick_days` 設定）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選（`model.<機型>`）；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
+
+### 新增一張圖表
+
+```bash
+bash scripts/shell/new_chart.sh CDM      # 建立 charts/CDM.ini、charts/CDM.php，並印出 config.ini 要貼的區段
+```
+
+1. 編輯 `charts/CDM.ini` 的 `[plot.xxx]`；此時 `source = sample`，用範例資料就能看到完整畫面
+2. 編輯 `charts/CDM.php` 寫 `tools()`、`series()` 的 SQL，寫好把 ini 改成 `source = php`
+3. 把腳本印出的 `[page.cdm]` 貼進 `config/config.ini`，並把 `cdm` 加到 `[access]` 要看得到的身份
+4. `python scripts/python/check_config.py` 檢查
+
+### 設定檔：`charts/<名稱>.ini`
+
+```ini
+[page]
+source       = php          ; php = 用 <名稱>.php 查資料庫；sample = 內建範例資料
+default_days = 60           ; 預設顯示最近幾天
+max_days     = 366          ; 一次最多查幾天
+quick_days   = "7, 30, 90"  ; 快速區間按鈕
+model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
+model.2000   = "PAP"
+
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
+[plot.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+ymin   = 0                         ; Y 軸下限（三張圖共用）
+ymax   = 6                         ; Y 軸上限（三張圖共用）
+newest_ymax = 5                    ; 只改最新值排排站的上限
+upper_oos = 5                      ; spec 線（可留空 = 不畫）
+upper_ooc = 4.5
+lower_ooc = 1
+lower_oos = 0.5
+
+[plot.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
+```
+
+- 每個 `[plot.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
+
+### 資料來源：`charts/<名稱>.php`
+
+```php
+<?php
+class BSLrChart extends ChartSource
+{
+    public function tools()
+    {
+        $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM bslr_x_data');
+        $tools = array();
+        foreach ($rows as $r) {
+            $tools[] = $r['tool_id'];
+        }
+        return $tools;
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $where = 'tool_id IN (' . $this->in($tools) . ')
+                  AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        $bind  = array_merge($tools, array($start, $end));
+
+        // 長表（tool_id, data_time, param, value）
+        $a = self::pivot($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+               FROM bslr_x_data WHERE ' . $where, $bind), 'tool_id', 'd', 'param', 'value');
+
+        // 寬表，欄位 c1 / c2 對應參數 BSLr_Y_C1 / BSLr_Y_C2
+        $b = self::wide($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+               FROM bslr_y_summary WHERE ' . $where, $bind),
+            'tool_id', 'd', array('BSLr_Y_C1' => 'c1', 'BSLr_Y_C2' => 'c2'));
+
+        return self::merge($a, $b);   // 不同 table 的結果依機台 + 時間合併
+    }
+}
+```
+
+| 工具（`modules/charts/ChartSource.php`） | 用途 |
+|---|---|
+| `$this->fetchAll($sql, $bind)` | prepared statement 查詢，值一律用 `?` 綁定 |
+| `$this->in($list)` | 產生 `IN (...)` 用的 `?,?,?` |
+| `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
+| `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
+| `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+| `$this->machineOf($tool)` / `$this->machinesOf($tools)` / `$this->toolOf($machine)` | tool_id 與 machine_id 互換（要先實作 `machines()`） |
+| `self::table($name)` | 組出來的 table 名稱（例 `'M1BF_' . $machineId`）檢查後加反引號；table 名稱不能用 `?` 綁定，一定要經過它 |
+
+**table 用 machine_id 時**（例 table `M1BF_HP23`，`HP23` 是 `APAN01` 的 machine_id）：在 `<名稱>.php` 實作 `machines()`，回傳 `array('APAN01' => 'HP23', ...)`（可寫死或從對照表查）。實作後 `tools()` 可以省略（預設用 `machines()` 的 tool_id），`series()` 回傳的 key 也可以直接是 machine_id，controller 會自動換成 tool_id；網頁上的機台名稱一律是 tool_id。範例見 `charts/_template.php` 的寫法 4（每台一個 table）、寫法 5（machine_id 欄位）。
+
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
+
+### 資料格式與載入
+
+後端 `index.php?m=<頁面代號>&a=tbt&start=&end=` 回傳區間內全部機台、ini 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 選用 `"Url": [...]`（與 `Date` 等長）：單台機台趨勢圖點擊數據點會在瀏覽器新分頁開啟該時間點的網址，tooltip 會提示「點擊數據點開啟連結」，資料表多一欄 URL。只接受 `http://`、`https://` 或 `/` 開頭的網址（其他如 `javascript:` 一律忽略）；`pivot()` / `wide()` 最後多給網址欄位名稱即可產生，`merge()` 會保留。沒有 `Url` 時與原本相同
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視
+- 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
+
+![charts](docs/screenshots/charts.png)
+
+## 11. Pending Issue Control Table（`?m=pending_issue`）
+
+追蹤各機台的 pending issue。只有 **EE** 能進入：所有 EE 都能查詢、匯出；**新增、編輯（含上傳圖片）只限列在 `config/pending_issue.ini` `[editors]` 的 EE 帳號**，其他 EE 打開 issue 是唯讀；**刪除只有 ADMIN**。**ADMIN** 全部可以（含刪除、看已刪除、還原），PE 看不到選單、直接開網址會 403。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.delete` / `action.trash` / `action.restore` = `"ADMIN"`（刪除、看已刪除、還原） |
+| `config/pending_issue.ini` | 可新增 / 編輯的 EE 帳號（`[editors]`）、機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
+| `modules/pending_issue/` | controller + view |
+| `public/assets/js/pending_issue.js` | 表格、篩選、Sponsor 元件、貼圖、輪詢、衝突視窗 |
+| `sql/migrations/20261110_pending_issue.sql` | 建表（`pending_issues`、`pending_issue_status_logs`、`pending_issue_images`、`pending_issue_presence`） |
+| `storage/uploads/pending_issue/<年月>/` | 圖片檔（網址無法直接讀取） |
+
+**欄位**：機台（必填，機型依代號自動判定，例 `APAN01` → 1980 (PAN)）、機型、分類（PE/YED HL / 選機表 / Aging parts / Others）、Issue 描述（必填）、Initial date、狀態（Open / Monitor / Close）、Sponsor（AISLE 使用者）、Check point date、Remark、圖片。
+
+**畫面**
+
+- 上方機型頁籤（括號內是未結案筆數），下方是分類 × 狀態統計，點數字直接套用篩選
+- 篩選：Issue 狀態（多選，預設 Open + Monitor）、分類（多選）、機台、Sponsor、關鍵字、只看 Check point 逾期；條件寫在網址上，重新整理或分享網址都會保留
+- 點欄位標題排序（第三次點回預設：Open → Monitor → Close、Check point 早的在前）；Check point 已過且未 Close 顯示紅字「逾期 N 天」
+- **Sponsor**：點 ▼ 展開清單，或直接打字篩選（比對帳號與顯示名稱、不分大小寫），↑↓ / Enter / Esc 操作；只能選清單裡的人（`[sponsor] roles` 的啟用帳號）
+- **狀態紀錄**：每次狀態改變都寫進 `pending_issue_status_logs`（誰、何時、從哪個狀態），表格顯示最後改狀態的人，編輯視窗有完整歷程
+- **圖片**：編輯視窗中 Ctrl+V 貼上截圖、拖曳或選檔；只收 PNG / JPG / GIF（以檔案內容判斷）。圖片經 `?a=image` 檢查權限後才輸出：未存檔的暫存圖只有上傳者、已刪除 issue 的圖只有 ADMIN 看得到
+- **軟刪除（只有 ADMIN）**：刪除只標記 `deleted_at`；EE 的編輯視窗沒有刪除按鈕，直接呼叫也會 403。ADMIN 勾「顯示已刪除」後可以還原
+- **匯出 CSV**：匯出目前篩選與排序的結果（UTF-8 BOM，Excel 直接開）；`[export] enabled = Off` 時按鈕隱藏、網址回 404
+- **IE11**：開啟頁面時跳出警告視窗（IE11 無法貼上截圖，拖曳與選檔可用）
+
+**多人同時操作**
+
+- 樂觀鎖：每筆有 `version`，存檔時比對。別人先存過 → 回 409，視窗列出「你的版本 / 最新版本」不同的欄位，可選 **覆蓋（用我的版本）**、**載入最新** 或取消。覆蓋時仍會比對版本，不會蓋掉自己沒看過的第三人修改
+- 每 `poll_seconds`（預設 10）秒輪詢一次，同步別人的新增 / 修改 / 刪除，並顯示「某某 編輯中」；別人改了你正在編輯的那筆，視窗上方會立刻提示
+- 閒置 `idle_seconds`（預設 300）秒沒操作，或分頁切到背景，就暫停輪詢（右上角顯示「⏸ 已暫停同步」），讓登入依 `session_idle` 照常逾時；有操作時立即恢復。不設人數上限
+
+![pending issue](docs/screenshots/pending_issue.png)
+
+## 12. 機台借機與 PM 排程看板（`?m=tool_board`）
+
+Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN) / 2000 (PAP) / YSM (POV)**，每個機型分開維護與設定；左欄 Tool ID，右邊是今天前 3 天到後 60 天（共 64 天）的日格子，第一列是該機型每日預估可用率。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.tool_board]` | 頁面登記；EE、PE 都在 `[access]`；`action.save` / `action.move` / `action.delete` = `"EE"` |
+| `config/tool_board.ini` | 共用：機型清單、時間視窗、格寬、預設起頭時間、Action 類別（名稱 / Hex 顏色 / 是否算停機 / 預設時數 / 預設 WIP）、可用率公式與門檻、PM JSON 路徑、輪詢秒數 |
+| `config/tool_board/<機型>.ini` | 各機型：`[tools]` 機台清單、`[editors]` 可編輯的 EE 帳號、`[wip.<代碼>]` WIP 處理方式（名稱 / 字色 / 粗體）；也可覆蓋共用的 `[category.*]`、`[availability]` |
+| `modules/tool_board/` | controller、設定讀取（BoardConfig）、可用率（Availability）、PM 讀取（PmSource）、view |
+| `modules/tool_board/formulas/` | （選用）自訂可用率公式，一個公式一個檔 |
+| `public/assets/js/tool_board.js` | 看板、右鍵選單、表單、拖曳、輪詢、衝突視窗 |
+| `sql/migrations/20261111_tool_board.sql` | 建表（`tool_board_actions`、`tool_board_locks`、`tool_board_action_log`、`tool_board_presence`） |
+| `storage/cache/` | PM JSON 解析快取（檔案改變才重新解析） |
+
+**權限**
+
+| 身份 | 看 | 新增 / 修改 / 拖曳 / 刪除 |
+|---|---|---|
+| ADMIN | 全部機型 | 全部機型 |
+| EE（列在該機型 `[editors]`） | 全部機型 | 只有列名的機型（頁籤上有 ✎） |
+| EE（沒列名）、PE | 全部機型 | 唯讀（雙擊色塊可檢視） |
+
+後端每個寫入動作都會檢查，不只是隱藏按鈕。
+
+**操作**
+
+- 在格子上按右鍵 →「新增 Action」：類別、WIP 處理方式（單選，選項來自目前機型的 `[wip.*]`）、開始 / 結束（日期 + 時:分，新增時預帶點的那天 `default_start_time`，可自行調整；改開始時間時結束時間跟著平移、時長不變）、**時長（小時）**（直接 key in 小時數，可有小數如 1.5，結束時間自動換算；快捷 4h / 8h / 12h / 24h；反過來改結束時間，時長也會跟著更新；新增時換類別會帶入該類別的 `default_hours`）、是否需要 Monitor（時數，快捷 2h / 4h）、是否需要 Pilot（時數，快捷 12h / 24h）、備註
+- 色塊右鍵：編輯 / 複製 / 刪除；雙擊色塊 = 編輯；編輯視窗下方有異動紀錄（誰、何時、新增 / 修改 / 拖曳）
+- **拖曳**：拖色塊中間 = 整段搬移；拖左右邊緣 = 改開始或結束（色塊太窄時只能整段搬移）。預設以「天」對齊（保留原本的時分），按住 **Shift** 以 1 小時對齊；拖曳時旁邊顯示即時起訖，重疊會變紅、放開後還原
+- **全螢幕**：看板標題列右邊 `[ ⛶ 全螢幕 ]`（或在頁面上按 **F**）把頁籤 + 看板放大到整個螢幕，右鍵選單、表單都照常可用；按 `[ 🗗 恢復 ]`、Esc 或再按 F 回到原本大小。瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗
+- 開始時間最早只能到今天往前 3 天（`days_before`），方便補登實際時間；再更早的不能新增或修改
+
+**畫法**
+
+- 色塊背景色 = 類別的 `color`；文字色 = WIP 的 `text_color`（例 Purge WIP 紅字粗體）
+- 有 Monitor / Pilot 時，色塊上顯示 `Mon: 4h | Pilot: 12h`（太窄時 `M4 P12`），並在 Action 結束後接著畫 Monitor 尾巴（深色斜線）、再畫 Pilot 尾巴（淡色斜線）
+- 今天整欄醒目底色加粗框，紅色直線是「現在」；過去的日子加斜線底紋
+- 同一台**不允許時間重疊**，判斷時包含 Monitor / Pilot 尾巴（伺服器檢查）
+
+**每日預估可用率**
+
+- 預設：`Σ(每台當天可用時數) / (該機型機台數 × 24h) × 100%`；停機時段 = `counts_down = On` 的類別的 Action 本體 ＋ Monitor 尾巴（`count_monitor`，預設算）＋ Pilot 尾巴（`count_pilot`，預設不算，因為 Pilot 有在跑貨）
+- 低於 `warn_below`（90）黃底、低於 `alert_below`（80）紅底；滑鼠移上去顯示可用時數
+- 換公式：在 `modules/tool_board/formulas/` 新增 `<名稱>.php`（`class <名稱>Availability extends AvailabilityFormula`），設定 `formula = "<名稱>"`，範例見該資料夾的 README.txt；機型檔可以各自指定
+
+**PM 射程**
+
+- `config/tool_board.ini` `[pm] json_path` 指定一個 JSON 檔（三個機型共用，各機型只顯示自己的機台）：
+  ```json
+  {"APAN01": {"PM":     {"window_start_date": "2026-06-01 09:30", "first_due": "2026-06-10 09:30", "due_date": "2026-06-17 09:30"},
+              "AMC_PM": {"window_start_date": "2026-07-01 09:30", "first_due": "2026-07-10 09:30", "due_date": "2026-07-17 09:30"}}}
+  ```
+- 不匯入資料庫：每次讀取比對檔案修改時間與大小，有變才重新解析，下一次輪詢就更新所有人的畫面
+- 產生端請用 Python `json.dump` 輸出；若是單引號（Python dict 印法，含 `u'..'`、`True/False/None`）也會自動轉換，但畫面會提示
+- 格式錯誤的項目略過，畫面顯示略過筆數（原因只有 ADMIN 看得到）；檔案不存在或整個壞掉時看板照常運作，只顯示警告
+- 畫法：射程（window_start_date → due_date）淡色斜線底帶、到點日 ▼ 橘線、最後到期日 ! 紅線；射程內已有 PM 類別的 Action → 綠色（已排），已到點未排 → 橘框，已過最後到期日未排 → 紅色閃爍
+- 在射程上按右鍵「依此 PM 新增 Action」：類別帶 PM、開始時間 = 到點日、記下 PM 類型
+
+**多人同時操作**（不需要 WebSocket，沿用 Pending Issue 的做法）
+
+- 樂觀鎖：每筆有 `version`，存檔 / 拖曳 / 刪除時比對；別人先改過 → 409，視窗列出「你的版本 / 最新版本」，可選 **覆蓋（用我的版本）**、**使用最新版本** 或取消
+- 重疊檢查在交易內先鎖住該機台（`tool_board_locks`），兩個人同時把不同 Action 排進同一段時間時，後到的會被擋下
+- 每 `poll_seconds`（預設 5）秒輪詢：同步別人的新增 / 修改 / 拖曳 / 刪除、可用率、PM 檔更新；顯示同機型的線上使用者，以及「🔒 某某 編輯中 / 拖曳中」
+- 閒置 `idle_seconds` 或分頁在背景時暫停輪詢，讓登入照常逾時
+- IE11 開啟時跳出警告（拖曳在 IE11 無法正常使用）
+
+![tool board](docs/screenshots/tool_board.png)
+
+![tool board form](docs/screenshots/tool_board_form.png)
+
+![tool board fullscreen](docs/screenshots/tool_board_fullscreen.png)
+#@@@ FILE modules/tool_board/views/index.php sha1=1cc3ae9eae7d11649ee469c556ea693e75e3a4fc base=098f8959e2fcc072dc1e102fb5981cfbc9990a65 mode=644 enc=text nl=1
+<?php
+/**
+ * 機台借機與 PM 排程看板
+ * 可用變數：$error（設定錯誤）、$models（機型頁籤）、$config（給 JS 的設定）
+ */
+?>
+<?php if ($error !== ''): ?>
+<div class="alert alert-error">&gt; 設定錯誤：<?php echo e($error); ?></div>
+<?php endif; ?>
+
+<!-- tb-root：全螢幕時放大這一整塊；右鍵選單、表單、衝突視窗都放在裡面，全螢幕時才看得到 -->
+<div class="tb-root" id="tb-root">
+<div class="pi-tabs" id="tb-tabs" role="tablist">
+<?php foreach ($models as $m): ?>
+    <a href="#" class="pi-tab" data-model="<?php echo e($m['key']); ?>"><?php echo e($m['label']); ?>
+        <span class="tb-tab-mode"><?php echo $m['error'] !== '' ? '⚠' : ($m['canEdit'] ? '✎' : ''); ?></span></a>
+<?php endforeach; ?>
+</div>
+
+<div class="panel tb-panel">
+    <div class="panel-head">&gt; <span id="tb-title">TOOL BOARD</span>
+        <span class="tb-mode" id="tb-mode"></span>
+        <span class="tb-head-right">
+            <span class="pi-live" id="tb-live" title="多人同步狀態">● LIVE</span>
+            <button type="button" class="btn btn-sm tb-fs-btn" id="tb-fs" title="看板全螢幕（快捷鍵 F）">[ ⛶ 全螢幕 ]</button>
+        </span>
+    </div>
+    <div class="panel-body">
+        <div class="tb-toolbar">
+            <input type="text" id="tb-search" class="tb-search" placeholder="搜尋 Tool ID" autocomplete="off">
+            <span class="tb-online" id="tb-online"></span>
+            <a href="#" class="tb-legend-btn" id="tb-legend-btn">[ 圖例 ]</a>
+            <span class="tb-help dim" id="tb-help"></span>
+        </div>
+        <div class="tb-legend" id="tb-legend" style="display:none"></div>
+        <div class="alert pi-warn tb-pm-msg" id="tb-pm-msg" style="display:none"></div>
+        <div class="tb-wrap" id="tb-wrap">
+            <div class="dim tb-loading">&gt; LOADING...</div>
+        </div>
+        <noscript><p class="text-red">&gt; 此頁面需要啟用 JavaScript</p></noscript>
+    </div>
+</div>
+
+<!-- 右鍵選單 -->
+<ul class="tb-menu" id="tb-menu" style="display:none"></ul>
+
+<!-- 拖曳中的時間提示 -->
+<div class="tb-drag-tip" id="tb-drag-tip" style="display:none"></div>
+
+<!-- 新增 / 編輯 Action -->
+<div class="pi-modal" id="tb-modal" style="display:none">
+    <div class="pi-dialog pi-dialog-sm panel">
+        <div class="panel-head"><span id="tb-modal-title">&gt; NEW ACTION</span>
+            <button type="button" class="pi-close" id="tb-cancel-x" title="關閉">×</button>
+        </div>
+        <div class="panel-body">
+            <div class="alert alert-error" id="tb-error" style="display:none"></div>
+            <div class="alert pi-warn" id="tb-editors" style="display:none"></div>
+            <div class="alert pi-warn" id="tb-stale" style="display:none">
+                <span id="tb-stale-text"></span>
+                <button type="button" class="btn btn-sm" id="tb-stale-load">[ 載入最新 ]</button>
+            </div>
+            <form id="tb-form" autocomplete="off" onsubmit="return false;">
+                <input type="hidden" name="id" value="0">
+                <input type="hidden" name="version" value="0">
+                <input type="hidden" name="pm_type" value="">
+                <div class="pi-form-grid">
+                    <div>
+                        <label for="tb-f-tool">機台 // TOOL</label>
+                        <input type="text" id="tb-f-tool" name="tool_id" readonly>
+                    </div>
+                    <div>
+                        <label for="tb-f-category">Action 類別 // CATEGORY *</label>
+                        <select id="tb-f-category" name="category"></select>
+                    </div>
+                </div>
+                <div class="pi-form-grid">
+                    <div>
+                        <label for="tb-f-sdate">開始 // START *</label>
+                        <div class="tb-dt">
+                            <input type="date" id="tb-f-sdate" name="start_date" required>
+                            <input type="time" id="tb-f-stime" name="start_time" step="1800" required>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="tb-f-edate">結束 // END *</label>
+                        <div class="tb-dt">
+                            <input type="date" id="tb-f-edate" name="end_date" required>
+                            <input type="time" id="tb-f-etime" name="end_time" step="1800" required>
+                        </div>
+                    </div>
+                </div>
+                <div class="tb-span">
+                    <label for="tb-f-span">時長（小時）// HOURS *</label>
+                    <div class="tb-span-row">
+                        <input type="number" id="tb-f-span" name="span_hours" min="0.5" max="2160" step="0.5" inputmode="decimal" title="輸入小時數，結束時間自動換算">
+                        <span class="tb-span-unit">h</span>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="4">4h</button>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="8">8h</button>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="12">12h</button>
+                        <button type="button" class="btn btn-sm btn-ghost tb-span-quick" data-h="24">24h</button>
+                        <span class="dim tb-duration" id="tb-duration"></span>
+                    </div>
+                    <p class="text-red tb-span-err" id="tb-span-err" style="display:none"></p>
+                </div>
+
+                <label>WIP 處理方式 // WIP MODE *</label>
+                <div class="pi-checks tb-wip" id="tb-f-wip"></div>
+
+                <div class="pi-form-grid">
+                    <div>
+                        <label class="pi-check"><input type="checkbox" name="need_monitor" value="1" id="tb-f-mon"> 需要 Monitor</label>
+                        <div class="tb-hours" id="tb-mon-box">
+                            <input type="number" name="monitor_hours" id="tb-f-monh" min="0.5" max="999" step="0.5" placeholder="時數"> h
+                            <button type="button" class="btn btn-sm btn-ghost tb-quick" data-target="tb-f-monh" data-h="2">2h</button>
+                            <button type="button" class="btn btn-sm btn-ghost tb-quick" data-target="tb-f-monh" data-h="4">4h</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="pi-check"><input type="checkbox" name="need_pilot" value="1" id="tb-f-pilot"> 需要 Pilot（試產）</label>
+                        <div class="tb-hours" id="tb-pilot-box">
+                            <input type="number" name="pilot_hours" id="tb-f-pilh" min="0.5" max="999" step="0.5" placeholder="時數"> h
+                            <button type="button" class="btn btn-sm btn-ghost tb-quick" data-target="tb-f-pilh" data-h="12">12h</button>
+                            <button type="button" class="btn btn-sm btn-ghost tb-quick" data-target="tb-f-pilh" data-h="24">24h</button>
+                        </div>
+                    </div>
+                </div>
+                <p class="tb-return" id="tb-return"></p>
+
+                <label for="tb-f-remark">備註 // REMARK</label>
+                <textarea id="tb-f-remark" name="remark" rows="2" maxlength="500" placeholder="例：借機人、單號"></textarea>
+
+                <div class="pi-history" id="tb-history" style="display:none">
+                    <label>異動紀錄 // HISTORY</label>
+                    <ol id="tb-history-list"></ol>
+                </div>
+                <p class="dim pi-meta" id="tb-meta"></p>
+                <div class="pi-actions">
+                    <button type="submit" class="btn" id="tb-save">[ 儲存 ]</button>
+                    <button type="button" class="btn btn-ghost" id="tb-cancel">[ 取消 ]</button>
+                    <button type="button" class="btn btn-red pi-del" id="tb-delete" style="display:none">[ 刪除 ]</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 存檔 / 拖曳衝突（409） -->
+<div class="pi-modal pi-modal-top" id="tb-conflict" style="display:none">
+    <div class="pi-dialog pi-dialog-sm panel">
+        <div class="panel-head">&gt; ⚠ CONFLICT</div>
+        <div class="panel-body">
+            <p id="tb-conflict-msg"></p>
+            <table class="table pi-diff">
+                <thead><tr><th>欄位</th><th>你的版本</th><th>最新版本</th></tr></thead>
+                <tbody id="tb-conflict-rows"></tbody>
+            </table>
+            <div class="pi-actions">
+                <button type="button" class="btn btn-red" id="tb-conflict-overwrite" title="用你的內容覆蓋最新版本">[ 覆蓋（用我的版本） ]</button>
+                <button type="button" class="btn" id="tb-conflict-load" title="放棄你的修改，使用最新內容">[ 使用最新版本 ]</button>
+                <button type="button" class="btn btn-ghost" id="tb-conflict-cancel">[ 取消 ]</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- IE11 警告 -->
+<div class="pi-modal pi-modal-top" id="tb-ie" style="display:none">
+    <div class="pi-dialog pi-dialog-sm panel">
+        <div class="panel-head">&gt; ⚠ BROWSER WARNING</div>
+        <div class="panel-body">
+            <p>偵測到 <b>Internet Explorer 11</b>。</p>
+            <p>這個看板在 IE11 上<b>無法正常拖曳與顯示</b>，請改用 <b>Chrome</b> 或 <b>Edge</b> 開啟。</p>
+            <div class="pi-actions">
+                <button type="button" class="btn" id="tb-ie-ok">[ 我知道了 ]</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="tb-toast" id="tb-toast" style="display:none"></div>
+</div><!-- /tb-root -->
+
+<script>
+window.TOOL_BOARD = <?php echo js($config); ?>;
+</script>
+<script src="<?php echo e(asset('js/tool_board.js')); ?>"></script>
+#@@@ FILE public/assets/css/matrix-light.css sha1=19c30bbec5a541e5d584bf28b7239f9960f5b731 base=b56f8efae87f1978666c4318334519398b2ba5cf mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme（淺色版）
+   body 加上 theme-light 時才生效，只覆寫 matrix.css 的顏色，不動版面。
+   一樣不用 CSS 變數，以相容較舊的瀏覽器。
+   底色   #f2fbf4   淡綠白
+   主文字 #00591a   深綠（淺底上亮綠看不清楚，改用深綠）
+   強調   #008f11   綠（邊框、按鈕）
+   輔助   #2e6b3c   暗綠灰（次要文字）
+   線條   #b9e3c3   淡綠（分隔線）
+   警示   #c62828   紅
+   ===================================================================== */
+
+html.theme-light { background: #f2fbf4; }
+body.theme-light { background: #f2fbf4; color: #00591a; }
+
+body.theme-light a { color: #00801a; }
+body.theme-light a:hover { color: #003d12; text-shadow: none; text-decoration: underline; }
+body.theme-light ::selection { background: #008f11; color: #fff; }
+
+/* ---------- 背景 ---------- */
+body.theme-light #matrix-rain { opacity: 0.22; }
+body.theme-light.is-guest #matrix-rain { opacity: 0.45; }
+body.theme-light .crt-overlay {
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 80, 20, 0) 0px,
+        rgba(0, 80, 20, 0) 2px,
+        rgba(0, 80, 20, 0.04) 3px
+    );
+}
+
+/* ---------- 頂部列 / 選單 ---------- */
+body.theme-light .topbar {
+    border-bottom-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 10px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .brand { text-shadow: none; }
+body.theme-light #clock { color: #2e6b3c; }
+
+body.theme-light .sidebar { border-right-color: #b9e3c3; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .nav-title,
+body.theme-light .nav-icon,
+body.theme-light .nav-caret { color: #2e6b3c; }
+body.theme-light .sidebar li a:hover { background: #e3f6e8; border-left-color: #7fbf8e; }
+body.theme-light .sidebar li.active a { background: #c9ebd2; border-left-color: #008f11; text-shadow: none; font-weight: bold; }
+body.theme-light .sidebar .nav-group-toggle { color: #00591a; }
+body.theme-light .nav-group.has-active > .nav-group-toggle { color: #00591a; text-shadow: none; font-weight: bold; }
+
+/* ---------- 標題 ---------- */
+body.theme-light .page-title { text-shadow: none; }
+body.theme-light .glitch:hover::before { color: #00a832; }
+body.theme-light .glitch:hover::after  { color: #7fbf8e; }
+
+/* ---------- 面板 ---------- */
+body.theme-light .panel {
+    border-color: #00a832;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 1px 6px rgba(0, 100, 30, 0.12);
+}
+body.theme-light .panel-head { border-bottom-color: #00801a; color: #fff; background: #00801a; }
+body.theme-light .card-link { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .card-link:hover { border-color: #008f11; box-shadow: 0 2px 12px rgba(0, 143, 17, 0.25); }
+
+/* ---------- 表格 ---------- */
+body.theme-light .table th,
+body.theme-light .table td { border-bottom-color: #cfe9d6; }
+body.theme-light .table th { color: #2e6b3c; }
+body.theme-light .table tbody tr:hover { background: #e3f6e8; }
+
+/* ---------- 表單 ---------- */
+body.theme-light label { color: #2e6b3c; }
+body.theme-light label.label-bright { color: #00591a; }
+body.theme-light input[type=text],
+body.theme-light input[type=password],
+body.theme-light input[type=email],
+body.theme-light input[type=date],
+body.theme-light select,
+body.theme-light textarea {
+    border-color: #7fbf8e;
+    background: #fff;
+    color: #00591a;
+    color-scheme: light;
+}
+body.theme-light input:focus,
+body.theme-light select:focus,
+body.theme-light textarea:focus { border-color: #008f11; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+
+body.theme-light .btn { border-color: #008f11; color: #00591a; }
+body.theme-light .btn:hover { background: #008f11; color: #fff; box-shadow: 0 0 8px rgba(0, 143, 17, 0.4); }
+body.theme-light .btn-ghost { border-color: transparent; }
+body.theme-light .btn-ghost:hover { border-color: #008f11; }
+body.theme-light .btn-red { border-color: #c62828; color: #c62828; }
+body.theme-light .btn-red:hover { background: #c62828; color: #fff; box-shadow: 0 0 8px rgba(198, 40, 40, 0.4); }
+body.theme-light .theme-toggle-float { background: rgba(255, 255, 255, 0.9); }
+
+/* ---------- 訊息 ---------- */
+body.theme-light .alert { border-color: #008f11; background: #e3f6e8; }
+body.theme-light .alert-error { border-color: #c62828; color: #c62828; background: #fdecec; }
+body.theme-light .text-red { color: #c62828; }
+body.theme-light .dim { color: #2e6b3c; }
+
+/* ---------- 角色徽章 / 狀態燈 ---------- */
+body.theme-light .role-badge { border-color: #00801a; }
+body.theme-light .role-EE    { color: #00801a; border-color: #00801a; }
+body.theme-light .role-PE    { color: #00796b; border-color: #00796b; }
+body.theme-light .role-ADMIN { color: #c62828; border-color: #c62828; }
+body.theme-light .led-run  { background: #00b82e; box-shadow: 0 0 6px rgba(0, 184, 46, 0.6); }
+body.theme-light .led-idle { background: #8fbf9a; }
+body.theme-light .led-down { background: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.6); }
+
+/* ---------- 登入 / 註冊頁 ---------- */
+body.theme-light .login-box .logo { text-shadow: 0 0 6px rgba(0, 143, 17, 0.35); }
+body.theme-light .login-box .tagline { color: #2e6b3c; }
+
+/* ---------- 表單驗證 ---------- */
+body.theme-light .field-error { color: #c62828; }
+body.theme-light input.is-invalid,
+body.theme-light select.is-invalid { border-color: #c62828; box-shadow: 0 0 6px rgba(198, 40, 40, 0.3); }
+body.theme-light input.is-valid { border-color: #008f11; }
+body.theme-light .hint { color: #00801a; }
+body.theme-light .hint.text-red { color: #c62828; }
+body.theme-light .meter { background: #d6eedc; }
+body.theme-light .meter span { background: #00a832; box-shadow: none; }
+body.theme-light .meter span.weak { background: #c62828; box-shadow: none; }
+
+/* ---------- charts 圖表頁 ---------- */
+body.theme-light .cd-box-head { border-bottom-color: #b9e3c3; }
+
+/* ---------- Pending Issue Control Table ---------- */
+body.theme-light .pi-tabs { border-bottom-color: #00a832; }
+body.theme-light .pi-tab { border-color: #7fbf8e; border-bottom-color: transparent; color: #2e6b3c; background: rgba(255, 255, 255, 0.85); }
+body.theme-light .pi-tab:hover { color: #00591a; }
+body.theme-light .pi-tab.active { color: #fff; background: #00801a; border-color: #00801a; }
+body.theme-light .pi-sum-card { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.9); }
+body.theme-light .pi-sum-card:hover { border-color: #008f11; }
+body.theme-light .pi-st-open { color: #c62828; text-shadow: none; }
+body.theme-light .pi-st-monitor { color: #b26a00; }
+body.theme-light .pi-st-close { color: #2e6b3c; }
+body.theme-light .pi-live { color: #fff; }
+body.theme-light .pi-live.is-error { color: #c62828; background: #fff; }
+body.theme-light .pi-head-btn { border-color: #fff; color: #fff; }
+body.theme-light .pi-head-btn:hover { background: #fff; color: #00801a; }
+body.theme-light label.pi-check { color: #00591a; }
+body.theme-light label.pi-check-open,
+body.theme-light label.pi-check-trash { color: #c62828; }
+body.theme-light label.pi-check-monitor { color: #b26a00; }
+body.theme-light label.pi-check-close { color: #2e6b3c; }
+body.theme-light .pi-combo-btn { border-left-color: #7fbf8e; color: #00591a; }
+body.theme-light .pi-combo-list { border-color: #008f11; background: #fff; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.2); }
+body.theme-light .pi-combo-list li.is-active { background: #00801a; color: #fff; }
+body.theme-light .pi-combo-list li.is-active .dim { color: #d6eedc; }
+body.theme-light .pi-table th[data-sort]:hover,
+body.theme-light .pi-table th.is-sorted { color: #00591a; }
+body.theme-light .pi-row-close td { color: #5c8a68; }
+body.theme-light .pi-remark { color: #2e6b3c; }
+body.theme-light .pi-by,
+body.theme-light .pi-imgcount { color: #2e6b3c; }
+body.theme-light .pi-overdue { color: #c62828 !important; }
+body.theme-light .pi-who { color: #b26a00; }
+body.theme-light .pi-tag-open { color: #c62828; border-color: #c62828; }
+body.theme-light .pi-tag-monitor { color: #b26a00; border-color: #b26a00; }
+body.theme-light .pi-tag-close { color: #2e6b3c; border-color: #2e6b3c; }
+body.theme-light .pi-modal { background: rgba(0, 40, 10, 0.45); }
+body.theme-light .pi-dialog { background: #fff; box-shadow: 0 4px 24px rgba(0, 60, 20, 0.35); }
+body.theme-light .pi-close { color: #fff; }
+body.theme-light .pi-warn { border-color: #b26a00; color: #b26a00; background: #fff6e0; }
+body.theme-light .pi-paste { border-color: #7fbf8e; color: #2e6b3c; }
+body.theme-light .pi-paste:focus,
+body.theme-light .pi-paste.is-over { border-color: #008f11; color: #00591a; box-shadow: 0 0 6px rgba(0, 143, 17, 0.3); }
+body.theme-light label.pi-file { color: #00801a; }
+body.theme-light .pi-thumb { border-color: #7fbf8e; background: #e3f6e8; }
+body.theme-light .pi-thumb-del { border-color: #c62828; background: #fff; color: #c62828; }
+body.theme-light .pi-diff tr.pi-diff-hot td { color: #b26a00; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    body.theme-light .sidebar { border-bottom-color: #b9e3c3; }
+    body.theme-light .sidebar li.active a { border-bottom-color: #008f11; }
+}
+
+/* ---------- 機台借機與 PM 排程看板（tool_board） ---------- */
+body.theme-light .tb-mode { color: #fff; }
+body.theme-light .tb-online { color: #b26a00; }
+body.theme-light .tb-legend { border-color: #7fbf8e; background: rgba(255, 255, 255, 0.9); }
+body.theme-light .tb-legend-row b { color: #2e6b3c; }
+body.theme-light .tb-wrap { border-color: #7fbf8e; background: #fff; }
+body.theme-light .tb-grid th,
+body.theme-light .tb-grid td { border-right-color: #d6eedc; border-bottom-color: #d6eedc; }
+body.theme-light .tb-grid thead th { background: #e3f6e8; color: #2e6b3c; }
+body.theme-light .tb-head-date th small { color: #4f8a5c; }
+body.theme-light .tb-head-avail th { color: #00591a; }
+body.theme-light .tb-grid thead th.tb-corner { color: #00591a; }
+body.theme-light .tb-grid thead th.tb-wkend { color: #7aa886; }
+body.theme-light .tb-grid thead th.tb-month { border-left-color: #00801a; }
+body.theme-light .tb-grid thead th.tb-today { background: #00801a; color: #fff; box-shadow: inset 2px 0 #00591a, inset -2px 0 #00591a; }
+body.theme-light .tb-grid thead th.tb-today small { color: #fff; }
+body.theme-light .tb-grid thead th.tb-av-warn { background: #ffd54f; color: #000; }
+body.theme-light .tb-grid thead th.tb-av-alert { background: #c62828; color: #fff; }
+body.theme-light .tb-grid tbody th.tb-tool { background: #f2fbf4; color: #00591a; }
+body.theme-light .tb-grid tbody tr:hover th.tb-tool { background: #d6eedc; }
+body.theme-light .tb-lane { background-image: linear-gradient(to right, #d6eedc 1px, transparent 1px); }
+body.theme-light .tb-bg-past { background: rgba(0, 60, 20, 0.06); background-image: repeating-linear-gradient(-45deg, rgba(0, 100, 30, 0.06) 0, rgba(0, 100, 30, 0.06) 2px, transparent 2px, transparent 8px); }
+body.theme-light .tb-bg-wkend { background: rgba(0, 100, 30, 0.05); }
+body.theme-light .tb-bg-today { background: rgba(0, 168, 50, 0.1); border-color: #00801a; }
+body.theme-light .tb-pm-label { color: #b26a00; }
+body.theme-light .tb-pm-done { border-color: #00801a; }
+body.theme-light .tb-pm-done .tb-pm-label { color: #00801a; }
+body.theme-light .tb-lock-tag { background: #fff8e1; color: #b26a00; }
+body.theme-light .tb-locked .tb-act-main { outline-color: #b26a00; }
+body.theme-light .tb-dragging .tb-act-main { box-shadow: 0 2px 10px rgba(0, 100, 30, 0.5); }
+body.theme-light .tb-drag-tip { border-color: #00801a; background: #fff; color: #00591a; }
+body.theme-light .tb-drag-tip.is-bad { border-color: #c62828; color: #c62828; }
+body.theme-light .tb-menu { border-color: #008f11; background: #fff; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.2); }
+body.theme-light .tb-menu-item:hover { background: #00801a; color: #fff; }
+body.theme-light .tb-menu-item.is-danger { color: #c62828; }
+body.theme-light .tb-menu-item.is-danger:hover { background: #c62828; color: #fff; }
+body.theme-light .tb-menu-info { color: #4f8a5c; border-bottom-color: #b9e3c3; }
+body.theme-light .tb-menu-sep { border-top-color: #b9e3c3; }
+body.theme-light .tb-return { color: #b26a00; }
+body.theme-light .tb-toast { border-color: #00801a; background: #fff; color: #00591a; box-shadow: 0 2px 10px rgba(0, 100, 30, 0.25); }
+body.theme-light .tb-toast.is-error { border-color: #c62828; color: #c62828; }
+body.theme-light .tb-fs-btn { border-color: #fff; color: #fff; }
+body.theme-light .tb-fs-btn:hover { background: #fff; color: #00801a; }
+body.theme-light .tb-root.tb-full { background: #f2fbf4; }
+body.theme-light .tb-span input[type=number],
+body.theme-light .tb-hours input[type=number],
+body.theme-light .tb-dt input[type=time] { border-color: #7fbf8e; background: #fff; color: #00591a; color-scheme: light; }
+#@@@ FILE public/assets/css/matrix.css sha1=2407d203840604e18ad071530d4dc2122b54fd54 base=d6e5dad31e84b51cbb534be445c5bfea8c9b1707 mode=644 enc=text nl=1
+/* =====================================================================
+   AISLE :: Matrix Theme
+   綠色磷光終端機風格。刻意不用 CSS 變數，以相容較舊的瀏覽器。
+   主色   #00ff41   亮綠（文字、邊框）
+   次色   #00b82e   中綠
+   暗色   #008f11   暗綠（輔助文字）
+   深底   #001a07   面板底色
+   警示   #ff3b3b   紅藥丸
+   ===================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: #000;
+    color: #00ff41;
+    font-family: "Share Tech Mono", "Consolas", "Courier New", "Microsoft JhengHei", monospace;
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+a { color: #00ff41; text-decoration: none; }
+a:hover { color: #b6ffc8; text-shadow: 0 0 8px #00ff41; }
+
+::selection { background: #00ff41; color: #000; }
+
+/* ---------- 背景：數位雨與 CRT 掃描線 ---------- */
+#matrix-rain {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+    opacity: 0.18;
+    pointer-events: none;
+}
+body.is-guest #matrix-rain { opacity: 0.55; }
+
+.crt-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.25) 3px
+    );
+}
+
+/* ---------- 頂部列 ---------- */
+.topbar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid #00b82e;
+    background: rgba(0, 10, 3, 0.92);
+    box-shadow: 0 0 18px rgba(0, 255, 65, 0.25);
+}
+.brand {
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 6px;
+    text-shadow: 0 0 10px #00ff41;
+}
+.topbar-status > * { margin-left: 12px; vertical-align: middle; }
+#clock { color: #008f11; }
+
+.cursor { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 主框架 ---------- */
+.shell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    min-height: calc(100vh - 52px);
+}
+.sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid #003b00;
+    background: rgba(0, 10, 3, 0.85);
+    padding: 16px 0;
+}
+.nav-title {
+    padding: 0 20px 10px;
+    color: #008f11;
+    font-size: 12px;
+    letter-spacing: 2px;
+}
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li a {
+    display: block;
+    padding: 9px 20px;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sidebar li a:hover { background: #001a07; border-left-color: #008f11; }
+.sidebar li.active a {
+    background: #002a0b;
+    border-left-color: #00ff41;
+    text-shadow: 0 0 8px #00ff41;
+}
+.nav-icon { display: inline-block; width: 18px; color: #008f11; }
+
+/* 選單分類（config.ini 的 [group.xxx]），可收折；沒有 JS 時一律展開 */
+.sidebar .nav-group-toggle { position: relative; padding-right: 34px; color: #00ff41; }
+.nav-group.has-active > .nav-group-toggle { color: #00ff41; text-shadow: 0 0 6px #00ff41; }
+.nav-caret { position: absolute; right: 6px; top: 9px; color: #008f11; }
+.nav-caret:before { content: "[-]"; }
+.js .nav-group:not(.open) .nav-caret:before { content: "[+]"; }
+.js .nav-group:not(.open) > .nav-children { display: none; }
+.sidebar .nav-children li a { padding-left: 38px; font-size: 0.95em; }
+
+.main {
+    flex: 1;
+    min-width: 0;
+    padding: 24px 32px;
+}
+.guest {
+    position: relative;
+    z-index: 2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+/* ---------- 標題 glitch ---------- */
+.page-title {
+    position: relative;
+    margin: 0 0 20px;
+    font-size: 24px;
+    letter-spacing: 3px;
+    text-shadow: 0 0 12px #00ff41;
+}
+.glitch::before,
+.glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    overflow: hidden;
+    opacity: 0;
+}
+.glitch:hover::before { opacity: 0.8; color: #b6ffc8; animation: glitch 0.3s infinite; }
+.glitch:hover::after  { opacity: 0.6; color: #008f11; animation: glitch 0.3s infinite reverse; }
+@keyframes glitch {
+    0%   { clip: rect(0, 9999px, 6px, 0);   transform: translate(-2px, 0); }
+    50%  { clip: rect(12px, 9999px, 20px, 0); transform: translate(2px, 0); }
+    100% { clip: rect(4px, 9999px, 14px, 0);  transform: translate(-1px, 0); }
+}
+
+/* ---------- 面板 / 終端機 ---------- */
+.panel {
+    border: 1px solid #00b82e;
+    background: rgba(0, 20, 6, 0.88);
+    box-shadow: 0 0 12px rgba(0, 255, 65, 0.15), inset 0 0 20px rgba(0, 255, 65, 0.05);
+    margin-bottom: 20px;
+}
+.panel-head {
+    padding: 8px 14px;
+    border-bottom: 1px solid #003b00;
+    color: #000;
+    background: #00b82e;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+.panel-body { padding: 14px; }
+.panel-head-aside { float: right; font-weight: normal; }
+.terminal .panel-body { font-size: 14px; }
+.terminal .line { white-space: pre-wrap; margin: 0; }
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0 -10px;
+}
+.grid > .col {
+    flex: 1 1 260px;
+    padding: 0 10px;
+}
+
+.card-link {
+    display: block;
+    padding: 18px;
+    border: 1px dashed #008f11;
+    margin-bottom: 20px;
+    background: rgba(0, 20, 6, 0.7);
+    transition: all 0.15s;
+}
+.card-link:hover {
+    border-style: solid;
+    border-color: #00ff41;
+    box-shadow: 0 0 16px rgba(0, 255, 65, 0.4);
+}
+.card-link .big { font-size: 28px; display: block; }
+
+/* ---------- 表格 ---------- */
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #003b00;
+    text-align: left;
+}
+.table th { color: #008f11; font-weight: normal; letter-spacing: 1px; }
+.table tbody tr:hover { background: #002a0b; }
+
+/* ---------- 表單 ---------- */
+label { display: block; margin: 12px 0 4px; color: #008f11; font-size: 13px; letter-spacing: 1px; }
+input[type=text], input[type=password], input[type=email], select, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+}
+input:focus, select:focus, textarea:focus {
+    border-color: #00ff41;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+.inline { display: inline; }
+
+.btn {
+    display: inline-block;
+    padding: 7px 16px;
+    border: 1px solid #00ff41;
+    background: transparent;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 14px;
+    letter-spacing: 1px;
+    cursor: pointer;
+}
+.btn:hover { background: #00ff41; color: #000; text-shadow: none; box-shadow: 0 0 14px #00ff41; }
+.btn-ghost { border-color: transparent; }
+.btn-ghost:hover { border-color: #00ff41; }
+.btn-sm { padding: 3px 8px; font-size: 13px; }
+.btn-red { border-color: #ff3b3b; color: #ff3b3b; }
+.btn-red:hover { background: #ff3b3b; color: #000; box-shadow: 0 0 14px #ff3b3b; }
+
+/* ---------- 訊息 ---------- */
+.alert {
+    padding: 10px 14px;
+    margin-bottom: 18px;
+    border: 1px solid #00ff41;
+    background: rgba(0, 40, 10, 0.9);
+}
+.alert-error { border-color: #ff3b3b; color: #ff3b3b; background: rgba(40, 0, 0, 0.85); }
+.text-red { color: #ff3b3b; }
+.dim { color: #008f11; }
+label.label-bright { color: #00ff41; }
+
+/* ---------- 角色徽章 ---------- */
+.role-badge {
+    display: inline-block;
+    padding: 0 8px;
+    border: 1px solid #00ff41;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+.role-EE    { color: #00ff41; border-color: #00ff41; }
+.role-PE    { color: #7dffb0; border-color: #7dffb0; }
+.role-ADMIN { color: #ff3b3b; border-color: #ff3b3b; }
+
+/* 狀態燈 */
+.led { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.led-run   { background: #00ff41; box-shadow: 0 0 8px #00ff41; }
+.led-idle  { background: #008f11; }
+.led-down  { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation: blink 0.8s steps(1) infinite; }
+
+/* ---------- 登入頁 ---------- */
+.login-box {
+    width: 380px;
+    max-width: 100%;
+}
+.login-box .logo {
+    text-align: center;
+    font-size: 40px;
+    letter-spacing: 14px;
+    margin-bottom: 4px;
+    text-shadow: 0 0 18px #00ff41, 0 0 4px #00ff41;
+}
+.login-box .tagline { text-align: center; color: #008f11; margin-bottom: 20px; min-height: 1.6em; }
+.login-box .btn { width: 100%; margin-top: 18px; padding: 10px; }
+
+/* ---------- 表單驗證 ---------- */
+.field-error { min-height: 1.2em; color: #ff3b3b; font-size: 13px; margin-top: 2px; }
+input.is-invalid, select.is-invalid { border-color: #ff3b3b; box-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+input.is-valid { border-color: #00ff41; }
+.hint { float: right; color: #00ff41; letter-spacing: 1px; }
+.hint.text-red { color: #ff3b3b; }
+.meter { height: 3px; background: #001a07; margin-top: 4px; }
+.meter span { display: block; height: 100%; width: 0; background: #00ff41; box-shadow: 0 0 6px #00ff41; transition: width 0.2s; }
+.meter span.weak { background: #ff3b3b; box-shadow: 0 0 6px #ff3b3b; }
+.btn:disabled { opacity: 0.6; cursor: wait; }
+.form-foot { margin: 14px 0 0; text-align: center; }
+.register-box { width: 440px; }
+
+/* ---------- 風格切換按鈕（沒有 JavaScript 時隱藏） ---------- */
+.theme-toggle { display: none; }
+.js .theme-toggle { display: inline-block; }
+.theme-toggle-float { position: fixed; top: 12px; right: 16px; z-index: 3; background: rgba(0, 10, 3, 0.85); }
+
+/* ---------- charts 圖表頁（modules/charts） ---------- */
+input[type=date] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.cd-filters { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.cd-field { padding: 0 8px; }
+.cd-field select { width: auto; min-width: 140px; }
+.cd-quick .btn { margin-right: 4px; }
+.cd-msg { min-height: 1em; margin: 8px 0 0; }
+.cd-note { margin: 4px 0 0; font-size: 13px; }
+.cd-sub { margin: 0 0 8px; font-size: 13px; }
+.cd-sub select { width: auto; margin: 0 10px 0 6px; padding: 4px 8px; }
+.cd-sub label.inline { margin: 0; }
+.cd-boxes-grid { display: flex; flex-wrap: wrap; padding: 14px 4px; }
+.cd-boxes-grid > .cd-box { flex: 1 1 460px; min-width: 0; padding: 0 10px; }
+.cd-box { margin-bottom: 18px; }
+.cd-box:last-child { margin-bottom: 0; }
+.cd-box-head { border-bottom: 1px dashed #003b00; padding-bottom: 4px; margin-bottom: 6px; }
+.cd-box-head b { letter-spacing: 1px; }
+.cd-box-info { font-size: 13px; margin-left: 8px; }
+.cd-box-tools { float: right; }
+.cd-box-tools .btn { padding: 0 6px; margin-left: 4px; font-size: 12px; }
+.cd-chart { height: 320px; }
+.cd-chart-tall { height: 440px; }
+.cd-table { display: none; max-height: 320px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
+
+/* ---------- 手機版 ---------- */
+@media (max-width: 760px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: 0; border-bottom: 1px solid #003b00; padding: 8px 0; }
+    .sidebar ul { display: flex; overflow-x: auto; }
+    .sidebar li a { border-left: 0; border-bottom: 2px solid transparent; padding: 6px 12px; }
+    .sidebar li.active a { border-bottom-color: #00ff41; }
+    .nav-title { display: none; }
+    .sidebar .nav-group { display: flex; }
+    .sidebar .nav-children { display: flex; }
+    .sidebar .nav-children li a { padding-left: 12px; }
+    .sidebar .nav-group-toggle { padding-right: 12px; }
+    .nav-caret { position: static; margin-left: 4px; }
+    .main { padding: 16px; }
+    .hide-sm { display: none; }
+    .topbar { padding: 8px 16px; }
+    .topbar-status > * { margin-left: 6px; }
+    .table { font-size: 13px; }
+    .cd-box-tools { float: none; display: block; margin-top: 4px; }
+    .cd-chart-tall { height: 380px; }
+}
+
+/* =====================================================================
+   Pending Issue Control Table（modules/pending_issue）
+   狀態色：Open 紅、Monitor 黃、Close 暗綠
+   ===================================================================== */
+.pi-tabs { display: flex; flex-wrap: wrap; margin-bottom: 12px; border-bottom: 1px solid #008f11; }
+.pi-tab {
+    padding: 8px 16px;
+    margin: 0 4px -1px 0;
+    border: 1px solid #008f11;
+    border-bottom-color: transparent;
+    color: #008f11;
+    letter-spacing: 1px;
+    background: rgba(0, 20, 6, 0.6);
+}
+.pi-tab:hover { color: #00ff41; text-decoration: none; }
+.pi-tab.active { color: #000; background: #00b82e; border-color: #00b82e; font-weight: bold; }
+.pi-tab-n { font-size: 12px; }
+
+.pi-summary { display: flex; flex-wrap: wrap; margin: 0 -6px 12px; }
+.pi-sum-card {
+    flex: 1 1 210px;
+    margin: 0 6px 10px;
+    padding: 10px 12px;
+    border: 1px dashed #008f11;
+    background: rgba(0, 20, 6, 0.8);
+}
+.pi-sum-card:hover { border-style: solid; border-color: #00ff41; }
+.pi-sum-title { display: block; letter-spacing: 2px; margin-bottom: 6px; }
+.pi-sum-counts { display: flex; }
+.pi-st { flex: 1 1 0; display: block; text-decoration: none; }
+.pi-st:hover { text-decoration: none; opacity: 0.8; }
+.pi-st small { display: block; font-size: 11px; letter-spacing: 1px; }
+.pi-st b { font-size: 22px; font-weight: normal; }
+.pi-st-open { color: #ff3b3b; text-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+.pi-st-monitor { color: #e6ff3b; }
+.pi-st-close { color: #008f11; }
+
+.pi-live { float: right; font-weight: normal; font-size: 12px; color: #000; }
+.pi-live.is-paused { opacity: 0.7; }
+.pi-live.is-error { color: #ff3b3b; background: #000; padding: 0 6px; }
+.pi-head-btns { float: right; margin: -3px 0; }
+.pi-head-btn { margin-left: 8px; border-color: #000; color: #000; }
+.pi-head-btn:hover { background: #000; color: #00ff41; box-shadow: none; }
+
+.pi-filter { display: flex; flex-wrap: wrap; align-items: flex-end; margin: -12px -8px 0; }
+.pi-f { flex: 1 1 180px; padding: 0 8px; }
+.pi-f-wide { flex: 2 1 280px; }
+.pi-f-btns { flex: 1 1 100%; padding-top: 8px; }
+.pi-checks { padding: 6px 0; }
+label.pi-check { display: inline-block; margin: 0 14px 4px 0; color: #00ff41; font-size: 14px; letter-spacing: 0; cursor: pointer; white-space: nowrap; }
+label.pi-check-open { color: #ff3b3b; }
+label.pi-check-monitor { color: #e6ff3b; }
+label.pi-check-close { color: #008f11; }
+label.pi-check-trash { color: #ff3b3b; }
+
+/* Sponsor 下拉 + 輸入篩選 */
+.pi-combo { position: relative; }
+.pi-combo-input { padding-right: 34px !important; }
+.pi-combo-btn {
+    position: absolute;
+    top: 1px; right: 1px; bottom: 1px;
+    width: 30px;
+    border: 0;
+    border-left: 1px solid #008f11;
+    background: transparent;
+    color: #00ff41;
+    cursor: pointer;
+    font-size: 11px;
+}
+.pi-combo-list {
+    position: absolute;
+    left: 0; right: 0;
+    top: 100%;
+    z-index: 30;
+    max-height: 240px;
+    overflow-y: auto;
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid #00ff41;
+    background: #000;
+    box-shadow: 0 0 14px rgba(0, 255, 65, 0.35);
+}
+.pi-combo-list li { padding: 6px 10px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-combo-list li.is-active { background: #00b82e; color: #000; }
+.pi-combo-list li.is-active .dim { color: #003b00; }
+.pi-combo-list li.is-selected { font-weight: bold; }
+.pi-combo-list li.pi-combo-empty { cursor: default; }
+.pi-combo-list mark { background: transparent; color: inherit; text-decoration: underline; font-weight: bold; }
+
+.pi-table-wrap { overflow-x: auto; }
+.pi-table { font-size: 14px; }
+.pi-table td { vertical-align: top; }
+.pi-table th[data-sort] { cursor: pointer; white-space: nowrap; user-select: none; }
+.pi-table th[data-sort]:hover { color: #00ff41; }
+.pi-table th.is-sorted { color: #00ff41; }
+.pi-table th.is-sorted[data-dir=asc]:after { content: " ▲"; font-size: 10px; }
+.pi-table th.is-sorted[data-dir=desc]:after { content: " ▼"; font-size: 10px; }
+.pi-row { cursor: pointer; }
+.pi-row-close td { color: #008f11; }
+.pi-row-deleted { cursor: default; opacity: 0.6; }
+.pi-row-deleted td { text-decoration: line-through; }
+.pi-row-deleted td:last-child { text-decoration: none; }
+.pi-tool { white-space: nowrap; font-weight: bold; }
+.pi-issue { min-width: 220px; max-width: 420px; }
+.pi-remark { min-width: 140px; max-width: 280px; font-size: 13px; color: #7dffb0; }
+.pi-clip { max-height: 7.5em; overflow: hidden; word-break: break-word; }
+.pi-nowrap { white-space: nowrap; }
+.pi-by { display: block; font-size: 11px; color: #008f11; margin-top: 2px; }
+.pi-overdue { color: #ff3b3b !important; font-weight: bold; }
+.pi-overdue small { display: block; font-size: 11px; font-weight: normal; }
+.pi-imgcount { color: #008f11; font-size: 12px; margin-right: 6px; }
+.pi-who { display: inline-block; color: #e6ff3b; font-size: 12px; animation: blink 1.6s steps(1) infinite; }
+.pi-restore { margin-top: 4px; text-decoration: none; }
+
+.pi-tag { display: inline-block; padding: 0 6px; border: 1px solid; font-size: 12px; letter-spacing: 1px; }
+.pi-tag-open { color: #ff3b3b; border-color: #ff3b3b; }
+.pi-tag-monitor { color: #e6ff3b; border-color: #e6ff3b; }
+.pi-tag-close { color: #008f11; border-color: #008f11; }
+
+/* 編輯視窗 / 衝突視窗 / IE11 警告 */
+body.pi-modal-open { overflow: hidden; }
+.pi-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.8);
+    overflow-y: auto;
+    padding: 30px 16px;
+}
+.pi-modal-top { z-index: 20; padding-top: 80px; }
+.pi-dialog { max-width: 900px; margin: 0 auto; background: #000; box-shadow: 0 0 30px rgba(0, 255, 65, 0.35); }
+.pi-dialog-sm { max-width: 640px; }
+.pi-close { float: right; border: 0; background: transparent; color: #000; font-size: 20px; line-height: 1; cursor: pointer; }
+.pi-form-grid { display: flex; flex-wrap: wrap; margin: 0 -8px; }
+.pi-form-grid > div { flex: 1 1 250px; padding: 0 8px; }
+.pi-dialog textarea { resize: vertical; }
+.pi-warn { border-color: #e6ff3b; color: #e6ff3b; }
+.pi-warn .btn { margin-left: 8px; }
+.pi-paste { padding: 14px; border: 1px dashed #008f11; color: #008f11; text-align: center; outline: none; }
+.pi-paste:focus, .pi-paste.is-over { border-color: #00ff41; color: #00ff41; box-shadow: 0 0 10px rgba(0, 255, 65, 0.4); }
+label.pi-file { display: inline; margin: 0; color: #00ff41; text-decoration: underline; cursor: pointer; font-size: inherit; }
+label.pi-file input { display: none; }
+.pi-images { display: flex; flex-wrap: wrap; margin: 8px -5px 0; }
+.pi-thumb { position: relative; width: 140px; height: 105px; margin: 5px; border: 1px solid #008f11; background: #001a07; overflow: hidden; }
+.pi-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pi-thumb-loading { display: flex; align-items: center; justify-content: center; font-size: 12px; animation: blink 1s steps(1) infinite; }
+.pi-thumb-del {
+    position: absolute;
+    top: 2px; right: 2px;
+    width: 22px; height: 22px;
+    border: 1px solid #ff3b3b;
+    background: #000;
+    color: #ff3b3b;
+    cursor: pointer;
+    line-height: 1;
+}
+.pi-history ol { margin: 0; padding-left: 22px; font-size: 13px; }
+.pi-history li { margin: 3px 0; }
+.pi-meta { font-size: 12px; margin: 14px 0 0; }
+.pi-actions { margin-top: 14px; }
+.pi-actions .btn { margin: 0 6px 6px 0; }
+.pi-del { float: right; }
+.pi-diff { font-size: 13px; margin: 10px 0; }
+.pi-diff td { vertical-align: top; word-break: break-word; }
+.pi-diff tr.pi-diff-hot td { color: #e6ff3b; }
+
+@media (max-width: 760px) {
+    .pi-modal { padding: 0; }
+    .pi-modal-top { padding-top: 20px; }
+    .pi-st b { font-size: 18px; }
+    .pi-head-btns { float: none; display: block; margin: 6px 0 0; }
+    .pi-head-btn { margin: 0 8px 0 0; }
+}
+
+/* ---------- 機台借機與 PM 排程看板（tool_board） ---------- */
+.tb-tab-mode { font-size: 12px; }
+.tb-mode { margin-left: 10px; font-weight: normal; font-size: 12px; color: #000; }
+.tb-mode.is-ro { opacity: 0.75; }
+.tb-panel .panel-body { padding: 10px; }
+.tb-toolbar { display: flex; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.tb-toolbar > * { margin: 0 14px 4px 0; }
+input.tb-search { width: 180px; padding: 4px 8px; }
+.tb-online { color: #e6ff3b; font-size: 13px; }
+.tb-help { font-size: 12px; }
+.tb-legend { margin: 0 0 8px; padding: 6px 10px; border: 1px dashed #008f11; font-size: 13px; }
+.tb-legend-row { margin: 2px 0; }
+.tb-legend-row b { margin-right: 8px; color: #00b82e; font-weight: normal; }
+.tb-legend-row b.tb-lg-first { color: #ff9f1a; margin: 0 2px 0 10px; }
+.tb-legend-row b.tb-lg-due { color: #ff3b3b; margin: 0 2px 0 10px; }
+.tb-sw { display: inline-block; width: 16px; height: 12px; margin: 0 4px 0 10px; vertical-align: middle; border: 1px solid rgba(255, 255, 255, 0.3); }
+.tb-sw.tb-sw-mon, .tb-sw.tb-sw-pil { background-color: #3A7BD5; }
+.tb-sw.tb-sw-mon { background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.45) 0, rgba(0, 0, 0, 0.45) 3px, transparent 3px, transparent 6px); opacity: 0.8; }
+.tb-sw.tb-sw-pil { background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.45) 0, rgba(0, 0, 0, 0.45) 3px, transparent 3px, transparent 6px); opacity: 0.45; }
+.tb-wip-sample { display: inline-block; margin: 0 10px; padding: 0 6px; background: #333; }
+.tb-pm-msg { font-size: 13px; }
+.tb-pm-msg details { display: inline-block; margin-left: 8px; }
+.tb-pm-msg ul { margin: 4px 0; padding-left: 20px; }
+
+.tb-wrap { position: relative; overflow: auto; max-height: calc(100vh - 250px); min-height: 200px; border: 1px solid #008f11; background: #000; }
+.tb-loading { padding: 20px; }
+.tb-grid { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; }
+.tb-grid th, .tb-grid td { padding: 0; border-right: 1px solid rgba(0, 143, 17, 0.35); border-bottom: 1px solid rgba(0, 143, 17, 0.35); }
+.tb-grid thead th { position: sticky; z-index: 4; background: #001a07; color: #00b82e; font-weight: normal; text-align: center; white-space: nowrap; }
+.tb-head-date th { top: 0; height: 36px; line-height: 1.2; }
+.tb-head-date th small { display: block; font-size: 10px; color: #008f11; }
+.tb-head-avail th { top: 36px; height: 24px; line-height: 24px; color: #00ff41; }
+.tb-grid thead th.tb-corner { left: 0; z-index: 6; text-align: left; padding-left: 8px; color: #00ff41; letter-spacing: 1px; }
+.tb-grid thead th.tb-wkend { color: #4f9b5d; }
+.tb-grid thead th.tb-past { opacity: 0.6; }
+.tb-grid thead th.tb-month { border-left: 2px solid #00b82e; }
+.tb-grid thead th.tb-today { background: #00b82e; color: #000; font-weight: bold; box-shadow: inset 2px 0 #00ff41, inset -2px 0 #00ff41; }
+.tb-grid thead th.tb-today small { color: #000; }
+.tb-av { font-variant-numeric: tabular-nums; }
+.tb-grid thead th.tb-av-warn { color: #000; background: #e6ff3b; }
+.tb-grid thead th.tb-av-alert { color: #fff; background: #c62828; }
+.tb-grid tbody th.tb-tool { position: sticky; left: 0; z-index: 3; background: #001a07; color: #00ff41; text-align: left; padding: 0 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-grid tbody tr:hover th.tb-tool { background: #003b0f; }
+.tb-empty { padding: 16px !important; }
+.tb-lane-td { position: relative; }
+.tb-lane {
+    position: relative;
+    height: 34px;
+    overflow: hidden;
+    background-image: linear-gradient(to right, rgba(0, 143, 17, 0.35) 1px, transparent 1px);
+    background-repeat: repeat-x;
+}
+.tb-bg { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+.tb-bg-past { background: rgba(0, 0, 0, 0.45); background-image: repeating-linear-gradient(-45deg, rgba(0, 143, 17, 0.08) 0, rgba(0, 143, 17, 0.08) 2px, transparent 2px, transparent 8px); }
+.tb-bg-wkend { background: rgba(0, 143, 17, 0.08); }
+.tb-bg-today { background: rgba(0, 255, 65, 0.1); border-left: 2px solid #00ff41; border-right: 2px solid #00ff41; }
+.tb-now { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #ff3b3b; z-index: 4; pointer-events: none; }
+
+/* PM 射程 */
+.tb-pm {
+    position: absolute;
+    z-index: 1;
+    box-sizing: border-box;
+    border: 1px dashed #ff9f1a;
+    background: rgba(255, 159, 26, 0.12);
+    background-image: repeating-linear-gradient(45deg, rgba(255, 159, 26, 0.18) 0, rgba(255, 159, 26, 0.18) 3px, transparent 3px, transparent 9px);
+    overflow: hidden;
+}
+.tb-pm-label { position: absolute; right: 3px; bottom: 0; font-size: 9px; line-height: 1; color: #ff9f1a; opacity: 0.85; white-space: nowrap; }
+.tb-pm-done { border-color: #00ff41; background-color: rgba(0, 255, 65, 0.1); background-image: repeating-linear-gradient(45deg, rgba(0, 255, 65, 0.15) 0, rgba(0, 255, 65, 0.15) 3px, transparent 3px, transparent 9px); }
+.tb-pm-done .tb-pm-label { color: #00ff41; }
+.tb-pm-due { border-style: solid; }
+.tb-pm-over { border: 1px solid #ff3b3b; background-color: rgba(255, 59, 59, 0.18); background-image: repeating-linear-gradient(45deg, rgba(255, 59, 59, 0.25) 0, rgba(255, 59, 59, 0.25) 3px, transparent 3px, transparent 9px); animation: tb-blink 1.4s steps(1) infinite; }
+.tb-pm-over .tb-pm-label { color: #ff3b3b; }
+@keyframes tb-blink { 50% { border-color: transparent; } }
+div.tb-pm-first, div.tb-pm-due { position: absolute; z-index: 2; width: 0; pointer-events: none; }
+div.tb-pm-first { border-left: 2px solid #ff9f1a; }
+div.tb-pm-due { border-left: 2px solid #ff3b3b; }
+div.tb-pm-first b, div.tb-pm-due b { position: absolute; top: -2px; left: -5px; font-size: 10px; line-height: 1; }
+div.tb-pm-first b { color: #ff9f1a; }
+div.tb-pm-due b { color: #ff3b3b; left: 1px; font-size: 11px; }
+.tb-legend .tb-sw.tb-pm-wait, .tb-legend .tb-sw.tb-pm-done, .tb-legend .tb-sw.tb-pm-due, .tb-legend .tb-sw.tb-pm-over { position: static; display: inline-block; animation: none; }
+.tb-legend .tb-sw.tb-pm-wait { border: 1px dashed #ff9f1a; background: rgba(255, 159, 26, 0.3); }
+.tb-legend .tb-sw.tb-pm-done { border: 1px dashed #00ff41; background: rgba(0, 255, 65, 0.3); }
+.tb-legend .tb-sw.tb-pm-due { border: 1px solid #ff9f1a; background: rgba(255, 159, 26, 0.3); }
+.tb-legend .tb-sw.tb-pm-over { border: 1px solid #ff3b3b; background: rgba(255, 59, 59, 0.4); }
+
+/* Action 色塊 */
+.tb-act { position: absolute; top: 3px; bottom: 3px; z-index: 3; }
+.tb-act.is-editable { cursor: grab; }
+.tb-act-main {
+    position: relative;
+    height: 100%;
+    overflow: hidden;
+    padding: 0 5px;
+    border-radius: 2px;
+    font-size: 12px;
+    line-height: 28px;
+    white-space: nowrap;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.tb-act-label { margin-right: 4px; padding: 0 3px; border-radius: 2px; background: rgba(0, 0, 0, 0.55); }
+.tb-badge { display: inline-block; padding: 0 4px; border-radius: 2px; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 10px; line-height: 16px; font-weight: normal; vertical-align: 1px; text-shadow: none; }
+.tb-tail { position: absolute; top: 3px; bottom: 3px; }
+.tb-tail-mon { opacity: 0.8; background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.5) 0, rgba(0, 0, 0, 0.5) 3px, transparent 3px, transparent 7px); }
+.tb-tail-pil { opacity: 0.45; background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.5) 0, rgba(0, 0, 0, 0.5) 3px, transparent 3px, transparent 7px); }
+.tb-h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
+.tb-h-l { left: 0; }
+.tb-h-r { right: 0; }
+.tb-act.is-editable:hover .tb-h { background: rgba(255, 255, 255, 0.35); }
+.tb-act.is-editable:hover .tb-act-main { box-shadow: inset 0 0 0 1px #fff; }
+.tb-act.tb-wip-gone .tb-act-main { font-style: italic; }
+.tb-locked .tb-act-main { outline: 2px dashed #e6ff3b; outline-offset: -2px; }
+.tb-lock-tag { position: absolute; left: 2px; top: -3px; z-index: 5; padding: 0 3px; background: #000; color: #e6ff3b; font-size: 9px; line-height: 11px; white-space: nowrap; pointer-events: none; }
+.tb-dragging { z-index: 8; opacity: 0.9; cursor: grabbing; }
+.tb-dragging .tb-act-main { box-shadow: 0 0 10px #00ff41; }
+.tb-bad .tb-act-main { outline: 2px solid #ff3b3b; outline-offset: -2px; box-shadow: 0 0 10px #ff3b3b; }
+body.tb-is-dragging, body.tb-is-dragging * { cursor: grabbing !important; user-select: none; }
+.tb-drag-tip { position: fixed; z-index: 50; padding: 3px 8px; border: 1px solid #00ff41; background: #000; color: #00ff41; font-size: 12px; white-space: nowrap; pointer-events: none; }
+.tb-drag-tip.is-bad { border-color: #ff3b3b; color: #ff3b3b; }
+
+/* 右鍵選單 */
+.tb-menu { position: fixed; z-index: 40; min-width: 200px; margin: 0; padding: 4px 0; list-style: none; border: 1px solid #00ff41; background: #000; box-shadow: 0 0 14px rgba(0, 255, 65, 0.35); font-size: 14px; }
+.tb-menu-item { padding: 5px 14px; cursor: pointer; }
+.tb-menu-item:hover { background: #00b82e; color: #000; }
+.tb-menu-item.is-danger { color: #ff3b3b; }
+.tb-menu-item.is-danger:hover { background: #ff3b3b; color: #000; }
+.tb-menu-info { padding: 3px 14px; color: #008f11; font-size: 12px; border-bottom: 1px dashed #008f11; margin-bottom: 2px; }
+.tb-menu-sep { margin: 3px 0; border-top: 1px dashed #008f11; }
+
+/* 表單 */
+.tb-dt { display: flex; }
+.tb-dt input[type=date] { flex: 3 1 0; margin-right: 6px; }
+.tb-dt input[type=time] { flex: 2 1 0; }
+.tb-duration { margin: 4px 0 10px; font-size: 13px; min-height: 1em; }
+.tb-wip { padding: 4px 0 10px; }
+.tb-wip-opt input { vertical-align: middle; }
+.tb-wip-chip { display: inline-block; padding: 1px 8px; background: #333; }
+.tb-wip-gone-msg { margin: 4px 0; font-size: 13px; }
+.tb-hours { margin: 2px 0 10px 22px; }
+.tb-hours input { width: 90px; display: inline-block; }
+.tb-hours.is-off { opacity: 0.45; }
+.tb-quick { margin-left: 4px; }
+.tb-return { margin: 0 0 10px; color: #e6ff3b; font-size: 13px; min-height: 1em; }
+
+.tb-toast { position: fixed; right: 20px; bottom: 20px; z-index: 60; max-width: 480px; padding: 8px 14px; border: 1px solid #00ff41; background: #000; color: #00ff41; box-shadow: 0 0 14px rgba(0, 255, 65, 0.35); }
+.tb-toast.is-error { border-color: #ff3b3b; color: #ff3b3b; box-shadow: 0 0 14px rgba(255, 59, 59, 0.35); }
+
+@media (max-width: 760px) {
+    .tb-help { display: none; }
+    .tb-wrap { max-height: none; }
+}
+
+/* Pending Issue：唯讀的編輯視窗 */
+.pi-readonly input:disabled, .pi-readonly select:disabled, .pi-readonly textarea:disabled { opacity: 0.85; cursor: default; }
+.pi-readonly .pi-combo-btn:disabled { cursor: default; opacity: 0.5; }
+
+/* 借機看板：時長欄位、全螢幕 */
+.tb-span { margin-bottom: 10px; }
+.tb-span-row { display: flex; flex-wrap: wrap; align-items: center; }
+.tb-span-row input { width: 110px; display: inline-block; }
+.tb-span-unit { margin: 0 6px 0 4px; }
+.tb-span-row .tb-span-quick { margin-right: 4px; }
+.tb-span-row .tb-duration { margin: 0 0 0 8px; }
+.tb-span-err { margin: 4px 0 0; font-size: 13px; }
+.tb-head-right { float: right; margin: -3px 0; }
+.tb-head-right .pi-live { float: none; margin-right: 10px; }
+.tb-fs-btn { border-color: #000; color: #000; }
+.tb-fs-btn:hover { background: #000; color: #00ff41; box-shadow: none; }
+.tb-root.tb-full {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 30;
+    overflow: auto;
+    padding: 10px 14px;
+    background: #000;
+}
+.tb-root.tb-full-native { width: 100%; height: 100%; }
+.tb-root.tb-full .tb-panel { margin-bottom: 0; }
+body.tb-body-full { overflow: hidden; }
+/* 時長、Monitor / Pilot 時數輸入框：套 Matrix 樣式 */
+.tb-span input[type=number], .tb-hours input[type=number], .tb-dt input[type=time] {
+    padding: 7px 10px;
+    border: 1px solid #008f11;
+    background: #000;
+    color: #00ff41;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    color-scheme: dark;
+}
+.tb-hours input[type=number]:disabled { opacity: 0.35; }
+#@@@ FILE public/assets/js/tool_board.js sha1=1bd819d6acff03adac26fdaf6e54d0d10c1d6174 base=6e7f92621b5d42d16cc4987e4280781cdb31c41d mode=644 enc=text nl=1
+/*
+ * AISLE 機台借機與 PM 排程看板（jQuery 1.12，ES5 寫法）
+ *   - 機型頁籤：每個機型各自的機台、Action、WIP 選項、PM 射程、可用率
+ *   - 左欄 Tool ID，右邊以天為單位的時間軸；色塊依時間絕對定位，跨天 / 半天都正確
+ *   - 右鍵新增 / 編輯 / 複製 / 刪除；雙擊編輯；拖曳搬移、拉左右邊改起訖（Shift = 以小時對齊）
+ *   - 多人同步：version 樂觀鎖（409 可選覆蓋 / 使用最新）＋ 每 N 秒輪詢 ＋「某某 編輯中 / 拖曳中」
+ * 設定由 view 放在 window.TOOL_BOARD
+ *
+ * 時間一律當作「伺服器當地時間」處理：'Y-m-d H:i:s' 以 Date.UTC 轉成毫秒計算，
+ * 不受使用者電腦時區影響。
+ */
+(function ($) {
+    if (!$ || !window.TOOL_BOARD) {
+        return;
+    }
+    var CFG = window.TOOL_BOARD;
+    var DAY = 86400000, HOUR = 3600000;
+    var WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+    var TOOL_COL = 120;
+    var IS_IE = /Trident\/|MSIE /.test(window.navigator.userAgent);
+    var STORE_KEY = 'aisle.tool_board.model';
+
+    // ==================================================================
+    // 小工具
+    // ==================================================================
+    function esc(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    /** 'Y-m-d H:i:s' / 'Y-m-d' → 毫秒（當作 UTC，不受電腦時區影響） */
+    function ms(s) {
+        var m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(String(s || ''));
+        if (!m) {
+            return NaN;
+        }
+        return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+    }
+    function d(t) { return new Date(t); }
+    function ymd(t) { var x = d(t); return x.getUTCFullYear() + '-' + pad(x.getUTCMonth() + 1) + '-' + pad(x.getUTCDate()); }
+    function hm(t) { var x = d(t); return pad(x.getUTCHours()) + ':' + pad(x.getUTCMinutes()); }
+    function full(t) { return ymd(t) + ' ' + hm(t); }
+    function short(t) { var x = d(t); return pad(x.getUTCMonth() + 1) + '/' + pad(x.getUTCDate()) + ' ' + hm(t); }
+    function hours(h) { return (Math.round(h * 10) / 10) + 'h'; }
+    function duration(msLen) {
+        var h = Math.round(msLen / HOUR * 10) / 10;
+        var days = Math.floor(h / 24), rest = Math.round((h - days * 24) * 10) / 10;
+        return days ? days + ' 天' + (rest ? ' ' + rest + ' 小時' : '') : rest + ' 小時';
+    }
+    function errorText(xhr, fallback) {
+        var r = xhr && xhr.responseJSON;
+        return (r && r.error) || fallback || '連線失敗，請稍後再試';
+    }
+    function store(key, value) {
+        try {
+            if (value === undefined) {
+                return window.localStorage.getItem(key);
+            }
+            window.localStorage.setItem(key, value);
+        } catch (e) {
+            // 瀏覽器停用 storage 時只是不記憶
+        }
+        return null;
+    }
+    function nowMs() { return new Date().getTime(); }
+
+    // ==================================================================
+    // 狀態
+    // ==================================================================
+    var state = {
+        model: '',
+        b: null,              // board 回應
+        actions: {},          // id => action
+        lanes: {},            // tool_id => $lane
+        winStart: 0, winEnd: 0, todayMs: 0, cellW: 44,
+        serverOffset: 0,      // 伺服器時間 - 電腦時間（毫秒）
+        cursor: '',
+        editors: {},
+        editing: null,        // { id, mode: 'edit' | 'drag' }
+        drag: null,
+        queued: [],           // 拖曳中收到的輪詢結果，放開後再套用
+        pollXhr: null,
+        loadXhr: null,
+        paused: false,
+        lastActivity: nowMs(),
+        modal: null           // 表單狀態
+    };
+
+    var $wrap = $('#tb-wrap'), $menu = $('#tb-menu'), $tip = $('#tb-drag-tip');
+    var $modal = $('#tb-modal'), $form = $('#tb-form'), $conflict = $('#tb-conflict');
+
+    function serverNow() { return nowMs() + state.serverOffset; }
+    function canEdit() { return !!(state.b && state.b.canEdit); }
+    function catOf(code) {
+        var list = state.b ? state.b.categories : [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].code === code) {
+                return list[i];
+            }
+        }
+        return null;
+    }
+    function wipOf(code) {
+        var list = state.b ? state.b.wip : [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].code === code) {
+                return list[i];
+            }
+        }
+        return null;
+    }
+    function catLabel(code) { var c = catOf(code); return c ? c.label : code; }
+    function wipLabel(code) { var w = wipOf(code); return w ? w.label : code + '（已移除）'; }
+    function tailMs(a) {
+        return (a.need_monitor ? (a.monitor_hours || 0) * HOUR : 0) + (a.need_pilot ? (a.pilot_hours || 0) * HOUR : 0);
+    }
+    function inWindow(a) { return ms(a.start_at) < state.winEnd && ms(a.occupied_end) > state.winStart; }
+
+    // ==================================================================
+    // 提示訊息
+    // ==================================================================
+    var toastTimer = null;
+    function toast(msg, type) {
+        var $t = $('#tb-toast');
+        $t.removeClass('is-error is-ok').addClass(type === 'error' ? 'is-error' : 'is-ok').text(msg).show();
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { $t.fadeOut(200); }, type === 'error' ? 6000 : 3000);
+    }
+    function setLive(kind, text) {
+        $('#tb-live').removeClass('is-paused is-error')
+            .addClass(kind === 'paused' ? 'is-paused' : (kind === 'error' ? 'is-error' : ''))
+            .text(kind === 'live' ? '● LIVE' : (kind === 'paused' ? '❚❚ ' + text : '✕ ' + text));
+    }
+
+    // ==================================================================
+    // 載入
+    // ==================================================================
+    function pickModel() {
+        var keys = $.map(CFG.models, function (m) { return m.key; });
+        var want = CFG.model || store(STORE_KEY) || keys[0];
+        return $.inArray(want, keys) >= 0 ? want : keys[0];
+    }
+
+    function load(model) {
+        state.model = model;
+        store(STORE_KEY, model);
+        $('#tb-tabs .pi-tab').removeClass('active').filter('[data-model="' + model + '"]').addClass('active');
+        if (window.history && window.history.replaceState) {
+            var url = window.location.href.replace(/([?&])model=[^&]*/, '$1').replace(/[?&]$/, '');
+            url += (url.indexOf('?') >= 0 ? '&' : '?') + 'model=' + encodeURIComponent(model);
+            window.history.replaceState(null, '', url.replace('?&', '?').replace('&&', '&'));
+        }
+        if (state.loadXhr) {
+            state.loadXhr.abort();
+        }
+        if (state.pollXhr) {
+            state.pollXhr.abort();
+        }
+        $wrap.html('<div class="dim tb-loading">&gt; LOADING...</div>');
+        state.loadXhr = $.getJSON(CFG.urls.board, { model: model }).done(function (res) {
+            setBoard(res);
+            setLive('live');
+        }).fail(function (xhr, st) {
+            if (st !== 'abort') {
+                $wrap.html('<div class="text-red tb-loading">&gt; ' + esc(errorText(xhr, '載入失敗')) + '</div>');
+                setLive('error', '載入失敗');
+            }
+        }).always(function () {
+            state.loadXhr = null;
+        });
+    }
+
+    function setBoard(res) {
+        state.b = res;
+        state.cellW = res.cellWidth;
+        state.winStart = ms(res.firstDay);
+        state.winEnd = state.winStart + res.days * DAY;
+        state.todayMs = ms(res.today);
+        state.serverOffset = ms(res.serverTime) - nowMs();
+        state.cursor = res.cursor;
+        state.actions = {};
+        state.editors = {};
+        $.each(res.actions, function (i, a) { state.actions[a.id] = a; });
+        $('#tb-title').text(res.label + ' // TOOL BOARD');
+        renderMode();
+        renderLegend();
+        renderPmMsg();
+        render();
+        poll(true);
+    }
+
+    function renderMode() {
+        $('#tb-mode').text(canEdit() ? '[ ✎ 可編輯 ]' : '[ 唯讀 ]').toggleClass('is-ro', !canEdit());
+        $('#tb-help').text(canEdit()
+            ? '右鍵格子新增 Action・雙擊色塊編輯・拖曳色塊搬移、拉左右邊改起訖（按住 Shift 以小時對齊）'
+            : '唯讀：雙擊色塊可檢視內容；需要編輯請聯絡管理員把你加進這個機型的可編輯名單');
+    }
+
+    // ==================================================================
+    // 畫看板
+    // ==================================================================
+    function render() {
+        var b = state.b, cw = state.cellW, i, t;
+        var scrollL = $wrap.scrollLeft(), scrollT = $wrap.scrollTop();
+        var todayIdx = Math.round((state.todayMs - state.winStart) / DAY);
+        var h = [];
+        h.push('<table class="tb-grid" style="width:' + (TOOL_COL + b.days * cw) + 'px"><colgroup><col style="width:' + TOOL_COL + 'px">');
+        for (i = 0; i < b.days; i++) {
+            h.push('<col style="width:' + cw + 'px">');
+        }
+        h.push('</colgroup><thead><tr class="tb-head-date"><th class="tb-corner">TOOL ID</th>');
+        for (i = 0; i < b.days; i++) {
+            t = d(state.winStart + i * DAY);
+            var wd = t.getUTCDay(), cls = [];
+            if (i === todayIdx) { cls.push('tb-today'); }
+            if (wd === 0 || wd === 6) { cls.push('tb-wkend'); }
+            if (t.getUTCDate() === 1) { cls.push('tb-month'); }
+            if (i < todayIdx) { cls.push('tb-past'); }
+            h.push('<th class="' + cls.join(' ') + '" title="' + ymd(t.getTime()) + '">' +
+                pad(t.getUTCMonth() + 1) + '/' + pad(t.getUTCDate()) + '<small>' + (i === todayIdx ? 'TODAY' : WEEK[wd]) + '</small></th>');
+        }
+        h.push('</tr><tr class="tb-head-avail"><th class="tb-corner" title="每日預估可用率 = 可用時數 / (機台數 × 24h)">可用率 %</th>');
+        for (i = 0; i < b.days; i++) {
+            h.push('<th class="tb-av' + (i === todayIdx ? ' tb-today' : '') + '" data-day="' + i + '"></th>');
+        }
+        h.push('</tr></thead><tbody>');
+        if (!b.tools.length) {
+            h.push('<tr><td colspan="' + (b.days + 1) + '" class="dim tb-empty">&gt; 這個機型還沒有機台，請在 config/tool_board/' + esc(b.model) + '.ini 的 [tools] 加入</td></tr>');
+        }
+        $.each(b.tools, function (k, tool) {
+            h.push('<tr data-tool="' + esc(tool) + '"><th class="tb-tool">' + esc(tool) + '</th>' +
+                '<td colspan="' + b.days + '" class="tb-lane-td"><div class="tb-lane" data-tool="' + esc(tool) + '" style="width:' +
+                (b.days * cw) + 'px;background-size:' + cw + 'px 100%"></div></td></tr>');
+        });
+        h.push('</tbody></table>');
+        $wrap.html(h.join(''));
+
+        state.lanes = {};
+        $wrap.find('.tb-lane').each(function () {
+            state.lanes[$(this).attr('data-tool')] = $(this);
+        });
+        state.laneBg = laneBackground(todayIdx);
+        $.each(b.tools, function (k, tool) { renderLane(tool); });
+        renderAvailability(b.availability);
+        applySearch();
+        $wrap.scrollLeft(scrollL).scrollTop(scrollT);
+    }
+
+    /** 每列共用的底層：今天、週末、已過去的日子 */
+    function laneBackground(todayIdx) {
+        var cw = state.cellW, h = [], i, wd;
+        if (todayIdx > 0) {
+            h.push('<div class="tb-bg tb-bg-past" style="left:0;width:' + (todayIdx * cw) + 'px"></div>');
+        }
+        for (i = 0; i < state.b.days; i++) {
+            wd = d(state.winStart + i * DAY).getUTCDay();
+            if (wd === 0 || wd === 6) {
+                h.push('<div class="tb-bg tb-bg-wkend" style="left:' + (i * cw) + 'px;width:' + cw + 'px"></div>');
+            }
+        }
+        if (todayIdx >= 0 && todayIdx < state.b.days) {
+            h.push('<div class="tb-bg tb-bg-today" style="left:' + (todayIdx * cw) + 'px;width:' + cw + 'px"></div>');
+        }
+        var now = serverNow();
+        if (now >= state.winStart && now < state.winEnd) {
+            h.push('<div class="tb-now" style="left:' + x(now) + 'px" title="現在"></div>');
+        }
+        return h.join('');
+    }
+
+    function x(t) { return (t - state.winStart) / DAY * state.cellW; }
+
+    function renderLane(tool) {
+        var $lane = state.lanes[tool];
+        if (!$lane) {
+            return;
+        }
+        var h = [state.laneBg, pmHtml(tool)];
+        var list = [];
+        $.each(state.actions, function (id, a) {
+            if (a.tool_id === tool && inWindow(a)) {
+                list.push(a);
+            }
+        });
+        list.sort(function (p, q) { return ms(p.start_at) - ms(q.start_at); });
+        $.each(list, function (i, a) { h.push(actionHtml(a)); });
+        $lane.html(h.join(''));
+    }
+
+    function actionHtml(a) {
+        var s = ms(a.start_at), e = ms(a.end_at);
+        var mon = a.need_monitor ? (a.monitor_hours || 0) * HOUR : 0;
+        var pil = a.need_pilot ? (a.pilot_hours || 0) * HOUR : 0;
+        var cw = state.cellW;
+        var left = x(s), mainW = Math.max(3, (e - s) / DAY * cw), monW = mon / DAY * cw, pilW = pil / DAY * cw;
+        var cat = catOf(a.category), wip = wipOf(a.wip_mode);
+        var color = cat ? cat.color : '#777777';
+        var text = wip ? wip.text_color : '#BBBBBB';
+        var eds = state.editors[a.id];
+        var cls = 'tb-act' + (eds ? ' tb-locked' : '') + (canEdit() ? ' is-editable' : '') + (wip ? '' : ' tb-wip-gone');
+        var badge = '';
+        if (a.need_monitor || a.need_pilot) {
+            var parts = [], shortParts = [];
+            if (a.need_monitor) { parts.push('Mon: ' + hours(a.monitor_hours)); shortParts.push('M' + a.monitor_hours); }
+            if (a.need_pilot) { parts.push('Pilot: ' + hours(a.pilot_hours)); shortParts.push('P' + a.pilot_hours); }
+            badge = '<span class="tb-badge">' + esc(mainW + monW + pilW > 150 ? parts.join(' | ') : shortParts.join(' ')) + '</span>';
+        }
+        var catText = cat ? cat.label : a.category;
+        var label = catText + (a.pm_type && a.pm_type !== catText ? ' ' + a.pm_type : '');
+        var h = '<div class="' + cls + '" data-id="' + a.id + '" title="' + esc(tooltip(a)) + '" style="left:' + left +
+            'px;width:' + (mainW + monW + pilW) + 'px">' +
+            '<div class="tb-act-main" style="width:' + mainW + 'px;background-color:' + color + ';color:' + text +
+            (wip && wip.bold ? ';font-weight:bold' : '') + '">' +
+            '<span class="tb-act-label">' + esc(label) + '</span>' + badge +
+            (canEdit() && mainW >= 24 ? '<i class="tb-h tb-h-l"></i><i class="tb-h tb-h-r"></i>' : '') + '</div>';
+        if (monW > 0) {
+            h += '<div class="tb-tail tb-tail-mon" style="left:' + mainW + 'px;width:' + monW + 'px;background-color:' + color + '" title="Monitor ' + hours(a.monitor_hours) + '"></div>';
+        }
+        if (pilW > 0) {
+            h += '<div class="tb-tail tb-tail-pil" style="left:' + (mainW + monW) + 'px;width:' + pilW + 'px;background-color:' + color + '" title="Pilot ' + hours(a.pilot_hours) + '"></div>';
+        }
+        if (eds) {
+            h += '<span class="tb-lock-tag">🔒 ' + esc($.map(eds, function (x2) { return x2.name + (x2.mode === 'drag' ? ' 拖曳中' : ' 編輯中'); }).join('、')) + '</span>';
+        }
+        return h + '</div>';
+    }
+
+    function tooltip(a) {
+        var e = ms(a.end_at), lines = [
+            a.tool_id + '  ' + catLabel(a.category) + (a.pm_type ? '（' + a.pm_type + '）' : ''),
+            'WIP：' + wipLabel(a.wip_mode),
+            '時間：' + short(ms(a.start_at)) + ' ～ ' + short(e)
+        ];
+        if (a.need_monitor) {
+            lines.push('Monitor ' + hours(a.monitor_hours) + '：至 ' + short(e + a.monitor_hours * HOUR));
+        }
+        if (a.need_pilot) {
+            lines.push('Pilot ' + hours(a.pilot_hours) + '：至 ' + short(ms(a.occupied_end)));
+        }
+        if (a.remark) {
+            lines.push('備註：' + a.remark);
+        }
+        lines.push('建立：' + a.created_by_name + '　最後修改：' + a.updated_by_name + ' ' + String(a.updated_at).substring(5, 16));
+        return lines.join('\n');
+    }
+
+    // ---------------- PM 射程 ----------------
+    function pmStatus(tool, p) {
+        var s = ms(p.start), due = ms(p.due), first = ms(p.first), cat = state.b.pmCategory, done = false;
+        $.each(state.actions, function (id, a) {
+            if (a.tool_id === tool && a.category === cat && ms(a.start_at) < due && ms(a.occupied_end) > s) {
+                done = true;
+                return false;
+            }
+        });
+        var now = serverNow();
+        if (done) { return 'done'; }
+        if (now > due) { return 'over'; }
+        if (now > first) { return 'due'; }
+        return 'wait';
+    }
+
+    function pmHtml(tool) {
+        var pm = state.b.pm, list = (pm && pm.items && pm.items[tool]) || [], shown = [], h = [];
+        $.each(list, function (i, p) {
+            if (ms(p.start) < state.winEnd && ms(p.due) >= state.winStart) {
+                shown.push(p);
+            }
+        });
+        var n = shown.length;
+        $.each(shown, function (i, p) {
+            var s = ms(p.start), f = ms(p.first), due = ms(p.due), st = pmStatus(tool, p);
+            var top = n > 1 ? (i * 100 / n) : 0, height = n > 1 ? (100 / n) : 100;
+            var stText = { done: '已排 PM', over: '已超過最後到期日，尚未排 PM', due: '已到點，尚未排 PM', wait: '射程內' }[st];
+            var title = p.type + '：射程 ' + short(s) + ' ～ ' + short(due) + '，到點 ' + short(f) + '（' + stText + '）';
+            h.push('<div class="tb-pm tb-pm-' + st + '" data-pm="' + i + '" data-type="' + esc(p.type) + '" data-first="' + esc(p.first) +
+                '" title="' + esc(title) + '" style="left:' + x(s) + 'px;width:' + Math.max(2, x(due) - x(s)) + 'px;top:' + top +
+                '%;height:' + height + '%"><span class="tb-pm-label">' + esc(p.type) + '</span></div>');
+            h.push('<div class="tb-pm-first" style="left:' + x(f) + 'px;top:' + top + '%;height:' + height + '%" title="' + esc(p.type + ' 到點 ' + short(f)) + '"><b>▼</b></div>');
+            h.push('<div class="tb-pm-due" style="left:' + x(due) + 'px;top:' + top + '%;height:' + height + '%" title="' + esc(p.type + ' 最後到期 ' + short(due)) + '"><b>!</b></div>');
+        });
+        return h.join('');
+    }
+
+    function renderPmMsg() {
+        var pm = state.b.pm, $m = $('#tb-pm-msg'), parts = [];
+        if (!pm || pm.status === 'off') {
+            $m.hide();
+            return;
+        }
+        if (pm.status === 'missing' || pm.status === 'error') {
+            parts.push('PM 資料：' + esc(pm.message));
+        } else {
+            if (pm.loose) {
+                parts.push(esc(pm.message));
+            }
+            if (pm.skipped) {
+                var more = '';
+                if (pm.reasons && pm.reasons.length) {
+                    more = '<details><summary>略過原因（ADMIN）</summary><ul>' +
+                        $.map(pm.reasons, function (r) { return '<li>' + esc(r) + '</li>'; }).join('') + '</ul></details>';
+                }
+                parts.push('PM 資料：本機型 ' + pm.count + ' 筆；整個檔案略過 ' + pm.skipped + ' 筆格式錯誤的項目' + more);
+            }
+        }
+        if (parts.length) {
+            $m.html('&gt; ' + parts.join('<br>&gt; ')).show();
+        } else {
+            $m.hide();
+        }
+    }
+
+    // ---------------- 可用率 ----------------
+    function renderAvailability(av) {
+        if (!av) {
+            return;
+        }
+        state.b.availability = av;
+        $wrap.find('.tb-av').each(function () {
+            var i = +$(this).attr('data-day'), day = ymd(state.winStart + i * DAY);
+            var v = av.values[day], hrs = av.hours ? av.hours[day] : null;
+            var cls = 'tb-av' + ($(this).hasClass('tb-today') ? ' tb-today' : '');
+            if (v !== null && v !== undefined) {
+                if (v < av.alert) { cls += ' tb-av-alert'; } else if (v < av.warn) { cls += ' tb-av-warn'; }
+            }
+            $(this).attr('class', cls).text(v === null || v === undefined ? '—' : v.toFixed(1))
+                .attr('title', day + (hrs !== null && hrs !== undefined ? '：可用 ' + hrs + ' h / ' + (av.tools * 24) + ' h（' + av.tools + ' 台）' : ''));
+        });
+        if (av.error) {
+            toast(av.error, 'error');
+        }
+    }
+
+    // ---------------- 圖例 / 搜尋 ----------------
+    function renderLegend() {
+        var b = state.b, h = ['<div class="tb-legend-row"><b>類別</b>'];
+        $.each(b.categories, function (i, c) {
+            h.push('<span class="tb-sw" style="background:' + esc(c.color) + '"></span>' + esc(c.label) + (c.counts_down ? '' : '（不算停機）'));
+        });
+        h.push('</div><div class="tb-legend-row"><b>WIP 字色</b>');
+        $.each(b.wip, function (i, w) {
+            h.push('<span class="tb-wip-sample" style="color:' + esc(w.text_color) + (w.bold ? ';font-weight:bold' : '') + '">' + esc(w.label) + '</span>');
+        });
+        h.push('</div><div class="tb-legend-row"><b>尾巴</b><span class="tb-sw tb-sw-mon"></span>Monitor<span class="tb-sw tb-sw-pil"></span>Pilot　' +
+            '<b>PM</b><span class="tb-sw tb-pm-wait"></span>射程<span class="tb-sw tb-pm-done"></span>已排' +
+            '<span class="tb-sw tb-pm-due"></span>已到點未排<span class="tb-sw tb-pm-over"></span>已過期未排　<b class="tb-lg-first">▼</b>到點日<b class="tb-lg-due">!</b>最後到期日</div>');
+        $('#tb-legend').html(h.join(''));
+    }
+
+    function applySearch() {
+        var q = $.trim($('#tb-search').val()).toUpperCase();
+        $wrap.find('tbody tr[data-tool]').each(function () {
+            $(this).toggle(!q || $(this).attr('data-tool').indexOf(q) >= 0);
+        });
+    }
+
+    // ==================================================================
+    // 右鍵選單
+    // ==================================================================
+    function closeMenu() { $menu.hide().empty(); }
+
+    function openMenu(e, items) {
+        var h = [];
+        $.each(items, function (i, it) {
+            if (it.sep) {
+                h.push('<li class="tb-menu-sep"></li>');
+            } else if (it.info) {
+                h.push('<li class="tb-menu-info">' + esc(it.info) + '</li>');
+            } else {
+                h.push('<li class="tb-menu-item' + (it.danger ? ' is-danger' : '') + '" data-i="' + i + '">' + esc(it.label) + '</li>');
+            }
+        });
+        $menu.html(h.join('')).css({ left: 0, top: 0 }).show();
+        var w = $menu.outerWidth(), ht = $menu.outerHeight();
+        // position: fixed（全螢幕時也正確）
+        var left = Math.max(4, Math.min(e.clientX, $(window).width() - w - 8));
+        var top = Math.max(4, Math.min(e.clientY, $(window).height() - ht - 8));
+        $menu.css({ left: left, top: top });
+        $menu.off('click').on('click', '.tb-menu-item', function () {
+            var it = items[+$(this).attr('data-i')];
+            closeMenu();
+            it.run();
+        });
+    }
+
+    $wrap.on('contextmenu', '.tb-lane', function (e) {
+        e.preventDefault();
+        if (state.drag) {
+            return;
+        }
+        var $lane = $(this), tool = $lane.attr('data-tool');
+        var dayIdx = Math.floor((e.pageX - $lane.offset().left) / state.cellW);
+        var day = state.winStart + dayIdx * DAY;
+        var $act = $(e.target).closest('.tb-act'), $pm = $(e.target).closest('.tb-pm');
+        var items = [];
+        if ($act.length) {
+            var a = state.actions[+$act.attr('data-id')];
+            if (!a) {
+                return;
+            }
+            items.push({ info: a.tool_id + '  ' + catLabel(a.category) + '  ' + short(ms(a.start_at)) });
+            items.push({ label: canEdit() ? '編輯' : '檢視', run: function () { openForm('edit', a); } });
+            if (canEdit()) {
+                items.push({ label: '複製', run: function () { openForm('copy', a); } });
+                items.push({ sep: true });
+                items.push({ label: '刪除', danger: true, run: function () { removeAction(a); } });
+            }
+        } else {
+            items.push({ info: tool + '  ' + ymd(day) });
+            if (canEdit()) {
+                items.push({ label: '新增 Action', run: function () { openForm('new', { tool_id: tool, day: day }); } });
+                if ($pm.length) {
+                    var type = $pm.attr('data-type'), first = ms($pm.attr('data-first'));
+                    items.push({ label: '依此 PM（' + type + '）新增 Action', run: function () {
+                        openForm('new', { tool_id: tool, day: first, exact: true, category: state.b.pmCategory, pm_type: type });
+                    } });
+                }
+            } else {
+                items.push({ info: '唯讀：你沒有編輯 ' + state.b.label + ' 的權限' });
+            }
+        }
+        openMenu(e, items);
+    });
+    $(document).on('mousedown', function (e) {
+        if (!$(e.target).closest('#tb-menu').length) {
+            closeMenu();
+        }
+    }).on('keydown', function (e) {
+        if (e.keyCode === 27) {
+            closeMenu();
+        }
+    });
+    $wrap.on('scroll', closeMenu);
+
+    $wrap.on('dblclick', '.tb-act', function () {
+        var a = state.actions[+$(this).attr('data-id')];
+        if (a) {
+            openForm('edit', a);
+        }
+    });
+
+    // ==================================================================
+    // 表單
+    // ==================================================================
+    function f(name) { return $form.find('[name="' + name + '"]'); }
+
+    function formStart() { return ms(f('start_date').val() + ' ' + (f('start_time').val() || '00:00')); }
+    function formEnd() { return ms(f('end_date').val() + ' ' + (f('end_time').val() || '00:00')); }
+    function setStart(t) { f('start_date').val(ymd(t)); f('start_time').val(hm(t)); }
+    function setEnd(t) { f('end_date').val(ymd(t)); f('end_time').val(hm(t)); }
+
+    function fillCategories(selected) {
+        var h = [];
+        $.each(state.b.categories, function (i, c) {
+            h.push('<option value="' + esc(c.code) + '"' + (c.code === selected ? ' selected' : '') + '>' + esc(c.label) + '</option>');
+        });
+        if (selected && !catOf(selected)) {
+            h.push('<option value="" selected>（原類別 ' + esc(selected) + ' 已從設定移除，請改選）</option>');
+        }
+        f('category').html(h.join(''));
+    }
+
+    function fillWip(selected) {
+        var h = [];
+        $.each(state.b.wip, function (i, w) {
+            h.push('<label class="pi-check tb-wip-opt"><input type="radio" name="wip_mode" value="' + esc(w.code) + '"' +
+                (w.code === selected ? ' checked' : '') + '> <span style="color:' + esc(w.text_color) + (w.bold ? ';font-weight:bold' : '') +
+                '" class="tb-wip-chip">' + esc(w.label) + '</span></label>');
+        });
+        if (selected && !wipOf(selected)) {
+            h.push('<p class="text-red tb-wip-gone-msg">&gt; 原本的 WIP「' + esc(selected) + '」已從 ' + esc(state.b.label) + ' 的設定移除，請改選</p>');
+        }
+        $('#tb-f-wip').html(h.join(''));
+    }
+
+    function defaultWip(catCode) {
+        var c = catOf(catCode);
+        if (c && c.default_wip && wipOf(c.default_wip)) {
+            return c.default_wip;
+        }
+        return state.b.wip.length ? state.b.wip[0].code : '';
+    }
+
+    /**
+     * mode: new（data = { tool_id, day, exact?, category?, pm_type? }）/ edit（data = action）/ copy（data = action）
+     */
+    function openForm(mode, data) {
+        closeMenu();
+        var ro = !canEdit();
+        var a = mode === 'new' ? null : data;
+        state.modal = { mode: mode, id: mode === 'edit' ? a.id : 0, wipTouched: mode !== 'new', original: null };
+        $('#tb-error, #tb-stale, #tb-editors').hide();
+        $('#tb-history').hide();
+        $('#tb-history-list').empty();
+        $form[0].reset();
+        f('id').val(mode === 'edit' ? a.id : 0);
+        f('version').val(mode === 'edit' ? a.version : 0);
+
+        if (a) {
+            f('tool_id').val(a.tool_id);
+            fillCategories(a.category);
+            fillWip(a.wip_mode);
+            setStart(ms(a.start_at));
+            setEnd(ms(a.end_at));
+            f('need_monitor').prop('checked', a.need_monitor);
+            f('monitor_hours').val(a.need_monitor ? a.monitor_hours : '');
+            f('need_pilot').prop('checked', a.need_pilot);
+            f('pilot_hours').val(a.need_pilot ? a.pilot_hours : '');
+            f('remark').val(a.remark);
+            f('pm_type').val(a.pm_type || '');
+        } else {
+            var cat = data.category && catOf(data.category) ? data.category : (state.b.categories[0] ? state.b.categories[0].code : '');
+            var start = data.exact ? data.day : ms(ymd(data.day) + ' ' + state.b.startTime);
+            if (start < state.winStart) {
+                start = state.winStart;
+            }
+            f('tool_id').val(data.tool_id);
+            fillCategories(cat);
+            fillWip(defaultWip(cat));
+            setStart(start);
+            setEnd(start + (catOf(cat) ? catOf(cat).default_hours : 8) * HOUR);
+            f('pm_type').val(data.pm_type || '');
+        }
+
+        var title = { 'new': '&gt; NEW ACTION', edit: ro ? '&gt; VIEW ACTION #' + a.id : '&gt; EDIT ACTION #' + (a ? a.id : ''), copy: '&gt; COPY ACTION' }[mode];
+        $('#tb-modal-title').html(title + ' <small>' + esc(state.b.label) + '</small>');
+        $form.find('input, select, textarea').not('[name=tool_id]').prop('disabled', ro);
+        $('#tb-save').toggle(!ro);
+        $('#tb-delete').toggle(!ro && mode === 'edit');
+        $('#tb-meta').text(mode === 'edit' ? '建立：' + a.created_by_name + ' ' + String(a.created_at).substring(0, 16) +
+            '　最後修改：' + a.updated_by_name + ' ' + String(a.updated_at).substring(0, 16) : '');
+        syncHours();
+        spanFromRange();
+        updateInfo();
+        renderEditorsNote();
+        state.modal.lastStart = formStart();
+        state.modal.original = $form.serialize();
+        $('body').addClass('pi-modal-open');
+        $modal.show();
+        if (mode === 'edit') {
+            state.editing = ro ? null : { id: a.id, mode: 'edit' };
+            loadHistory(a.id);
+            if (!ro) {
+                poll(false);
+            }
+        }
+        if (!ro) {
+            setTimeout(function () { f('category').focus(); }, 30);
+        }
+    }
+
+    function closeForm(force) {
+        if (!force && canEdit() && state.modal && $form.serialize() !== state.modal.original &&
+            !window.confirm('有尚未儲存的修改，確定要關閉嗎？')) {
+            return;
+        }
+        $modal.hide();
+        $('body').removeClass('pi-modal-open');
+        state.modal = null;
+        if (state.editing && state.editing.mode === 'edit') {
+            state.editing = null;
+            poll(false);
+        }
+    }
+
+    function syncHours() {
+        var ro = !canEdit();
+        $.each([['need_monitor', 'monitor_hours', '#tb-mon-box'], ['need_pilot', 'pilot_hours', '#tb-pilot-box']], function (i, p) {
+            var on = f(p[0]).prop('checked');
+            f(p[1]).prop('disabled', ro || !on);
+            $(p[2]).toggleClass('is-off', !on).find('.tb-quick').prop('disabled', ro);
+        });
+    }
+
+    /** 時長、回到生產時間 */
+    function updateInfo() {
+        var s = formStart(), e = formEnd();
+        if (isNaN(s) || isNaN(e)) {
+            $('#tb-duration, #tb-return').text('');
+            return;
+        }
+        $('#tb-duration').text(e > s ? '= ' + duration(e - s) : '');
+        var mon = f('need_monitor').prop('checked') ? parseFloat(f('monitor_hours').val()) || 0 : 0;
+        var pil = f('need_pilot').prop('checked') ? parseFloat(f('pilot_hours').val()) || 0 : 0;
+        var parts = [];
+        if (e > s) {
+            if (mon) { parts.push('Monitor 結束（機台回到生產）：' + short(e + mon * HOUR)); }
+            if (pil) { parts.push('Pilot 結束：' + short(e + (mon + pil) * HOUR)); }
+            if (!mon && !pil) { parts.push('機台回到生產：' + short(e)); }
+        }
+        $('#tb-return').text(parts.join('　'));
+    }
+
+    function renderEditorsNote() {
+        if (!state.modal || !state.modal.id) {
+            $('#tb-editors').hide();
+            return;
+        }
+        var eds = state.editors[state.modal.id];
+        if (eds && eds.length) {
+            $('#tb-editors').text('> ' + $.map(eds, function (x2) { return x2.name; }).join('、') + ' 也正在編輯這筆，存檔時若對方已先存，會提示衝突').show();
+        } else {
+            $('#tb-editors').hide();
+        }
+    }
+
+    function loadHistory(id) {
+        $.getJSON(CFG.urls.history, { id: id }).done(function (res) {
+            if (!state.modal || state.modal.id !== id || !res.logs.length) {
+                return;
+            }
+            var ops = { create: '新增', update: '修改', move: '拖曳', 'delete': '刪除' };
+            $('#tb-history-list').html($.map(res.logs, function (l) {
+                var dt = l.detail || {}, a2 = dt.after, b2 = dt.before, desc = '';
+                if (a2 && (l.op === 'move' || (b2 && (a2.start_at !== b2.start_at || a2.end_at !== b2.end_at)))) {
+                    desc = (b2 ? short(ms(b2.start_at)) + '～' + short(ms(b2.end_at)) + ' → ' : '') + short(ms(a2.start_at)) + '～' + short(ms(a2.end_at));
+                } else if (a2) {
+                    desc = short(ms(a2.start_at)) + '～' + short(ms(a2.end_at));
+                }
+                return '<li>' + esc(String(l.at).substring(5, 16)) + '　' + esc(l.by) + '　' + esc(ops[l.op] || l.op) +
+                    (dt.overwrite ? '（覆蓋）' : '') + (desc ? '　<span class="dim">' + esc(desc) + '</span>' : '') + '</li>';
+            }).join(''));
+            $('#tb-history').show();
+        });
+    }
+
+    // ---------------- 開始 / 時長 / 結束 連動 ----------------
+    // 改時長 → 結束 = 開始 + 時長；改結束 → 重算時長；改開始 → 結束跟著平移、時長不變
+    var SPAN_MAX = 2160;
+    function fmtHours(h) { return String(Math.round(h * 100) / 100); }
+    function spanFromRange() {
+        var s = formStart(), e = formEnd();
+        $('#tb-span-err').hide();
+        f('span_hours').val(!isNaN(s) && !isNaN(e) && e > s ? fmtHours((e - s) / HOUR) : '');
+    }
+    function endFromSpan() {
+        var raw = $.trim(f('span_hours').val()), h = parseFloat(raw), s = formStart();
+        if (raw === '' || isNaN(h) || h <= 0 || h > SPAN_MAX) {
+            $('#tb-span-err').text('> 時長需為大於 0、最多 ' + SPAN_MAX + ' 的小時數（可有小數，例 1.5）').show();
+            return;
+        }
+        $('#tb-span-err').hide();
+        if (!isNaN(s)) {
+            setEnd(s + Math.round(h * HOUR / 60000) * 60000);
+        }
+    }
+
+    $form.on('change input', '[name=start_date], [name=start_time]', function () {
+        var m = state.modal;
+        if (!m) {
+            return;
+        }
+        var s = formStart();
+        if (!isNaN(s) && m.lastStart !== undefined && !isNaN(m.lastStart)) {
+            var e = formEnd();
+            if (!isNaN(e)) {
+                setEnd(e + (s - m.lastStart));
+            }
+        }
+        m.lastStart = s;
+        updateInfo();
+    }).on('focus', '[name=start_date], [name=start_time]', function () {
+        if (state.modal) {
+            state.modal.lastStart = formStart();
+        }
+    }).on('change input', '[name=end_date], [name=end_time]', function () {
+        spanFromRange();
+        updateInfo();
+    }).on('input change', '[name=span_hours]', function () {
+        endFromSpan();
+        updateInfo();
+    }).on('change', '[name=category]', function () {
+        var m = state.modal, c = catOf(this.value);
+        if (!m || !c) {
+            return;
+        }
+        if (m.mode === 'new') {
+            f('span_hours').val(fmtHours(c.default_hours));
+            endFromSpan();
+        }
+        if (!m.wipTouched) {
+            fillWip(defaultWip(c.code));
+        }
+        updateInfo();
+    }).on('change', '[name=wip_mode]', function () {
+        if (state.modal) {
+            state.modal.wipTouched = true;
+        }
+    }).on('change', '[name=need_monitor], [name=need_pilot]', function () {
+        syncHours();
+        var box = this.name === 'need_monitor' ? 'monitor_hours' : 'pilot_hours';
+        if (this.checked && !f(box).val()) {
+            f(box).focus();
+        }
+        updateInfo();
+    }).on('input change', '[name=monitor_hours], [name=pilot_hours]', updateInfo);
+
+    $form.on('click', '.tb-span-quick', function () {
+        f('span_hours').val($(this).attr('data-h'));
+        endFromSpan();
+        updateInfo();
+    });
+    $form.on('click', '.tb-quick', function () {
+        var $t = $('#' + $(this).attr('data-target'));
+        $t.val($(this).attr('data-h'));
+        f($t.attr('name') === 'monitor_hours' ? 'need_monitor' : 'need_pilot').prop('checked', true);
+        syncHours();
+        updateInfo();
+    });
+
+    function formPayload() {
+        var s = formStart(), e = formEnd();
+        return {
+            id: f('id').val(),
+            version: f('version').val(),
+            model: state.model,
+            tool_id: f('tool_id').val(),
+            category: f('category').val(),
+            wip_mode: $form.find('[name=wip_mode]:checked').val() || '',
+            start_at: isNaN(s) ? '' : full(s),
+            end_at: isNaN(e) ? '' : full(e),
+            need_monitor: f('need_monitor').prop('checked') ? '1' : '0',
+            monitor_hours: f('monitor_hours').val(),
+            need_pilot: f('need_pilot').prop('checked') ? '1' : '0',
+            pilot_hours: f('pilot_hours').val(),
+            remark: f('remark').val(),
+            pm_type: f('pm_type').val()
+        };
+    }
+
+    function showFormError(msg) {
+        $('#tb-error').text('> ' + msg).show();
+        $modal.scrollTop(0);
+    }
+
+    function save(payload) {
+        if ($('#tb-span-err').is(':visible')) {
+            return showFormError('時長（小時）格式不正確');
+        }
+        if (!payload.wip_mode) {
+            return showFormError('請勾選 WIP 處理方式');
+        }
+        if (!payload.start_at || !payload.end_at) {
+            return showFormError('請填寫開始與結束時間');
+        }
+        if (ms(payload.end_at) <= ms(payload.start_at)) {
+            return showFormError('結束時間必須晚於開始時間');
+        }
+        var $btn = $('#tb-save').prop('disabled', true);
+        $.post(CFG.urls.save, payload).done(function (res) {
+            upsert(res.action);
+            closeForm(true);
+            toast(payload.id > 0 ? '已儲存' : '已新增 ' + res.action.tool_id + ' ' + catLabel(res.action.category), 'ok');
+            poll(false, true);
+        }).fail(function (xhr) {
+            var r = xhr.responseJSON || {};
+            if (xhr.status === 409) {
+                conflict(payload, r, 'form');
+            } else if (xhr.status !== 401) {
+                showFormError(errorText(xhr, '儲存失敗'));
+            }
+        }).always(function () {
+            $btn.prop('disabled', false);
+        });
+    }
+
+    $form.on('submit', function () { save(formPayload()); });
+    $('#tb-cancel, #tb-cancel-x').on('click', function () { closeForm(false); });
+    $modal.on('mousedown', function (e) {
+        if (e.target === this) {
+            closeForm(false);
+        }
+    });
+    $(document).on('keydown', function (e) {
+        if (e.keyCode === 27 && $modal.is(':visible') && !$conflict.is(':visible')) {
+            closeForm(false);
+        }
+    });
+    $('#tb-delete').on('click', function () {
+        var a = state.actions[+f('id').val()];
+        if (a) {
+            removeAction(a, true);
+        }
+    });
+    $('#tb-stale-load').on('click', function () {
+        var a = state.actions[state.modal ? state.modal.id : 0];
+        if (a) {
+            openForm('edit', a);
+        }
+    });
+
+    function removeAction(a, fromForm) {
+        if (!window.confirm('確定刪除 ' + a.tool_id + ' 的「' + catLabel(a.category) + '」（' + short(ms(a.start_at)) + ' ～ ' + short(ms(a.end_at)) + '）？')) {
+            return;
+        }
+        $.post(CFG.urls['delete'], { id: a.id, version: a.version }).done(function () {
+            drop(a.id);
+            if (fromForm) {
+                closeForm(true);
+            }
+            toast('已刪除', 'ok');
+            poll(false, true);
+        }).fail(function (xhr) {
+            var r = xhr.responseJSON || {};
+            if (xhr.status === 409 && r.action && !r.action.deleted) {
+                upsert(r.action);
+                toast(r.error + '，請確認後再刪除', 'error');
+                if (fromForm) {
+                    openForm('edit', r.action);
+                }
+            } else if (xhr.status === 409) {
+                drop(a.id);
+                if (fromForm) {
+                    closeForm(true);
+                }
+                toast(errorText(xhr), 'error');
+            } else if (xhr.status !== 401) {
+                toast(errorText(xhr, '刪除失敗'), 'error');
+            }
+        });
+    }
+
+    // ==================================================================
+    // 衝突（409）
+    // ==================================================================
+    /**
+     * mine: 我要送出的內容（save 的 payload 或 move 的 {start_at, end_at}）
+     * kind: form / drag
+     */
+    function conflict(mine, r, kind) {
+        var latest = r.action;
+        if (!latest || latest.deleted || r.reason === 'gone') {
+            if (latest) {
+                drop(latest.id);
+            } else if (mine.id) {
+                drop(+mine.id);
+            }
+            if (kind === 'form') {
+                closeForm(true);
+            }
+            toast(r.error || '這筆已被刪除', 'error');
+            return;
+        }
+        upsertSilently(latest);
+        var full2 = kind === 'drag' ? $.extend({}, latest, { start_at: mine.start_at, end_at: mine.end_at }) : mine;
+        var rows = [
+            ['類別', catLabel(full2.category), catLabel(latest.category)],
+            ['WIP', wipLabel(full2.wip_mode), wipLabel(latest.wip_mode)],
+            ['開始', String(full2.start_at).substring(0, 16), String(latest.start_at).substring(0, 16)],
+            ['結束', String(full2.end_at).substring(0, 16), String(latest.end_at).substring(0, 16)],
+            ['Monitor', tailText(full2.need_monitor, full2.monitor_hours), tailText(latest.need_monitor, latest.monitor_hours)],
+            ['Pilot', tailText(full2.need_pilot, full2.pilot_hours), tailText(latest.need_pilot, latest.pilot_hours)],
+            ['備註', full2.remark || '', latest.remark || '']
+        ];
+        $('#tb-conflict-msg').text('> ' + r.error + '。要用你的版本覆蓋，還是使用最新版本？');
+        $('#tb-conflict-rows').html($.map(rows, function (row) {
+            return '<tr class="' + (row[1] !== row[2] ? 'pi-diff-hot' : '') + '"><td>' + esc(row[0]) + '</td><td>' + esc(row[1]) + '</td><td>' + esc(row[2]) + '</td></tr>';
+        }).join(''));
+        $conflict.show();
+        $('#tb-conflict-overwrite').off('click').on('click', function () {
+            $conflict.hide();
+            if (kind === 'form') {
+                f('version').val(latest.version);
+                save($.extend({}, mine, { version: latest.version, overwrite: '1' }));
+            } else {
+                sendMove(latest, mine.start_at, mine.end_at, true);
+            }
+        });
+        $('#tb-conflict-load').off('click').on('click', function () {
+            $conflict.hide();
+            upsert(latest);
+            if (kind === 'form') {
+                openForm('edit', latest);
+            }
+        });
+        $('#tb-conflict-cancel').off('click').on('click', function () {
+            $conflict.hide();
+            if (kind === 'drag') {
+                upsert(latest);
+            } else {
+                f('version').val(latest.version);   // 繼續編輯，下次存檔以最新版本為基準
+            }
+        });
+    }
+    function tailText(on, h) { return on ? hours(h) : '—'; }
+
+    // ==================================================================
+    // 資料更新
+    // ==================================================================
+    function upsertSilently(a) {
+        if (inWindow(a)) {
+            state.actions[a.id] = a;
+        } else {
+            delete state.actions[a.id];
+        }
+    }
+    function upsert(a) {
+        var old = state.actions[a.id];
+        upsertSilently(a);
+        renderLane(a.tool_id);
+        if (old && old.tool_id !== a.tool_id) {
+            renderLane(old.tool_id);
+        }
+    }
+    function drop(id) {
+        var old = state.actions[id];
+        delete state.actions[id];
+        if (old) {
+            renderLane(old.tool_id);
+        }
+    }
+
+    // ==================================================================
+    // 拖曳：中間 = 搬移；左右邊 = 改開始 / 結束；預設以天對齊，按住 Shift 以小時對齊
+    // ==================================================================
+    $wrap.on('mousedown', '.tb-act.is-editable', function (e) {
+        if (e.which !== 1 || !canEdit()) {
+            return;
+        }
+        var $act = $(this), a = state.actions[+$act.attr('data-id')];
+        if (!a) {
+            return;
+        }
+        e.preventDefault();
+        closeMenu();
+        var $lane = state.lanes[a.tool_id];
+        // 色塊夠寬才能拉邊（左右各 7px），太窄的色塊一律整段搬移
+        var $main = $act.children('.tb-act-main'), mw = $main.outerWidth(), ox = e.pageX - $main.offset().left, mode = 'm';
+        if (mw >= 24 && ox <= 7) {
+            mode = 'l';
+        } else if (mw >= 24 && ox >= mw - 7 && ox <= mw) {
+            mode = 'r';
+        }
+        state.drag = {
+            a: a,
+            mode: mode,
+            $act: $act,
+            $lane: $lane,
+            x0: e.pageX - $lane.offset().left,
+            s0: ms(a.start_at),
+            e0: ms(a.end_at),
+            tail: tailMs(a),
+            started: false,
+            s: ms(a.start_at),
+            e: ms(a.end_at),
+            bad: false
+        };
+    });
+
+    $(document).on('mousemove', function (e) {
+        var g = state.drag;
+        if (!g) {
+            return;
+        }
+        var lx = e.pageX - g.$lane.offset().left, dx = lx - g.x0;
+        if (!g.started) {
+            if (Math.abs(dx) < 4) {
+                return;
+            }
+            g.started = true;
+            g.$act.addClass('tb-dragging');
+            $('body').addClass('tb-is-dragging');
+            state.editing = { id: g.a.id, mode: 'drag' };
+            poll(false);
+        }
+        var unit = e.shiftKey ? HOUR : DAY;
+        var delta = Math.round(dx / state.cellW * DAY / unit) * unit;
+        var s = g.s0, en = g.e0;
+        if (g.mode === 'm') {
+            s = g.s0 + delta;
+            en = g.e0 + delta;
+            if (s < state.winStart && s !== g.s0) {
+                en += state.winStart - s;
+                s = state.winStart;
+            }
+        } else if (g.mode === 'l') {
+            s = Math.min(g.s0 + delta, g.e0 - HOUR);
+            if (s < state.winStart && s !== g.s0) {
+                s = Math.min(state.winStart, g.e0 - HOUR);
+            }
+        } else {
+            en = Math.max(g.e0 + delta, g.s0 + HOUR);
+        }
+        if (s >= state.winEnd) {
+            var shift = s - (state.winEnd - unit);
+            s -= shift;
+            if (g.mode === 'm') {
+                en -= shift;
+            }
+        }
+        g.s = s;
+        g.e = en;
+        g.bad = overlaps(g.a, s, en + g.tail);
+        // 更新畫面
+        var cw = state.cellW, mainW = Math.max(3, (en - s) / DAY * cw);
+        var monW = g.a.need_monitor ? g.a.monitor_hours * HOUR / DAY * cw : 0;
+        var pilW = g.a.need_pilot ? g.a.pilot_hours * HOUR / DAY * cw : 0;
+        g.$act.css({ left: x(s), width: mainW + monW + pilW }).toggleClass('tb-bad', g.bad);
+        g.$act.children('.tb-act-main').css('width', mainW);
+        g.$act.children('.tb-tail-mon').css('left', mainW);
+        g.$act.children('.tb-tail-pil').css('left', mainW + monW);
+        $tip.text(short(s) + ' → ' + short(en) + (g.tail ? '（尾巴至 ' + short(en + g.tail) + '）' : '') +
+            (g.bad ? '　✕ 與其他 Action 重疊' : '') + (e.shiftKey ? '　[小時]' : '　[天]，按住 Shift 以小時對齊'))
+            .toggleClass('is-bad', g.bad).css({ left: e.clientX + 14, top: e.clientY + 16 }).show();
+        // 拖到邊緣自動捲動
+        var wl = $wrap.offset().left, wr = wl + $wrap.innerWidth();
+        if (e.pageX > wr - 40) {
+            $wrap.scrollLeft($wrap.scrollLeft() + 16);
+        } else if (e.pageX < wl + TOOL_COL + 40) {
+            $wrap.scrollLeft($wrap.scrollLeft() - 16);
+        }
+    }).on('mouseup', function () {
+        var g = state.drag;
+        if (!g) {
+            return;
+        }
+        state.drag = null;
+        $tip.hide();
+        $('body').removeClass('tb-is-dragging');
+        if (!g.started) {
+            return;
+        }
+        state.editing = null;
+        if (g.bad || (g.s === g.s0 && g.e === g.e0)) {
+            if (g.bad) {
+                toast('與同台其他 Action（含 Monitor / Pilot 尾巴）重疊，已還原', 'error');
+            }
+            renderLane(g.a.tool_id);
+            flushQueue();
+            poll(false);
+            return;
+        }
+        sendMove(g.a, full(g.s), full(g.e), false);
+        flushQueue();
+    });
+
+    function overlaps(a, s, occ) {
+        var hit = false;
+        $.each(state.actions, function (id, o) {
+            if (o.id !== a.id && o.tool_id === a.tool_id && ms(o.start_at) < occ && ms(o.occupied_end) > s) {
+                hit = true;
+                return false;
+            }
+        });
+        return hit;
+    }
+
+    function sendMove(a, startAt, endAt, overwrite) {
+        var payload = { id: a.id, version: a.version, start_at: startAt, end_at: endAt };
+        if (overwrite) {
+            payload.overwrite = '1';
+        }
+        $.post(CFG.urls.move, payload).done(function (res) {
+            upsert(res.action);
+            toast(res.action.tool_id + ' 已改為 ' + short(ms(res.action.start_at)) + ' ～ ' + short(ms(res.action.end_at)), 'ok');
+            poll(false, true);
+        }).fail(function (xhr) {
+            var r = xhr.responseJSON || {};
+            renderLane(a.tool_id);
+            if (xhr.status === 409) {
+                conflict({ id: a.id, start_at: startAt, end_at: endAt }, r, 'drag');
+            } else if (xhr.status !== 401) {
+                if (r.action) {
+                    upsert(r.action);
+                }
+                toast(errorText(xhr, '拖曳失敗，已還原'), 'error');
+            }
+        });
+    }
+
+    // ==================================================================
+    // 輪詢
+    // ==================================================================
+    function poll(force, withAvail) {
+        if (!state.b || (state.pollXhr && !force)) {
+            return;
+        }
+        if (state.pollXhr) {
+            state.pollXhr.abort();
+        }
+        var model = state.model;
+        state.pollXhr = $.getJSON(CFG.urls.poll, {
+            model: model,
+            since: state.cursor,
+            editing: state.editing ? state.editing.id : 0,
+            mode: state.editing ? state.editing.mode : 'view',
+            pm_sig: state.b.pm ? state.b.pm.sig : '',
+            avail: withAvail ? 1 : 0
+        }).done(function (res) {
+            if (model !== state.model) {
+                return;
+            }
+            if (state.drag && state.drag.started) {
+                state.queued.push(res);
+                return;
+            }
+            applyPoll(res);
+            if (!state.paused) {
+                setLive('live');
+            }
+        }).fail(function (xhr, st) {
+            if (st !== 'abort' && xhr.status !== 401) {
+                setLive('error', '同步失敗，重試中');
+            }
+        }).always(function () {
+            state.pollXhr = null;
+        });
+    }
+
+    function flushQueue() {
+        var q = state.queued;
+        state.queued = [];
+        $.each(q, function (i, res) { applyPoll(res); });
+    }
+
+    function applyPoll(res) {
+        if (res.today !== state.b.today) {
+            // 跨日：時間視窗移動，整個重新載入
+            load(state.model);
+            return;
+        }
+        state.cursor = res.cursor;
+        var dirty = {};
+        $.each(res.changed, function (i, a) {
+            var old = state.actions[a.id];
+            if (old && old.version >= a.version) {
+                return;
+            }
+            if (old) {
+                dirty[old.tool_id] = true;
+            }
+            upsertSilently(a);
+            dirty[a.tool_id] = true;
+            noteStale(a, false);
+        });
+        $.each(res.deleted, function (i, id) {
+            var old = state.actions[id];
+            if (old) {
+                delete state.actions[id];
+                dirty[old.tool_id] = true;
+                noteStale(old, true);
+            }
+        });
+        // 編輯中提示
+        var oldEds = state.editors;
+        state.editors = res.editors || {};
+        $.each([oldEds, state.editors], function (k, map) {
+            $.each(map, function (id) {
+                var a = state.actions[id];
+                if (a) {
+                    dirty[a.tool_id] = true;
+                }
+            });
+        });
+        if (res.canEdit !== state.b.canEdit) {
+            state.b.canEdit = res.canEdit;
+            renderMode();
+            dirty = {};
+            $.each(state.b.tools, function (i, t) { dirty[t] = true; });
+        }
+        if (res.pm) {
+            state.b.pm = res.pm;
+            renderPmMsg();
+            $.each(state.b.tools, function (i, t) { dirty[t] = true; });
+        }
+        if (res.changed.length || res.deleted.length) {
+            // PM 狀態（已排 / 未排）可能改變
+            $.each(state.b.tools, function (i, t) {
+                if (state.b.pm && state.b.pm.items && state.b.pm.items[t]) {
+                    dirty[t] = true;
+                }
+            });
+        }
+        $.each(dirty, function (tool) { renderLane(tool); });
+        if (res.availability) {
+            renderAvailability(res.availability);
+        }
+        $('#tb-online').html(res.online.length ? '線上：<b>' + esc(res.online.join('、')) + '</b>' : '');
+        renderEditorsNote();
+    }
+
+    /** 別人改了我正在編輯的那一筆：立刻提示 */
+    function noteStale(a, gone) {
+        if (!state.modal || state.modal.id !== a.id) {
+            return;
+        }
+        if (!gone && a.version <= +f('version').val()) {
+            return;
+        }
+        $('#tb-stale-text').text(gone ? '> 這筆已被刪除，存檔將會失敗' : '> 這筆已被 ' + a.updated_by_name + ' 於 ' + String(a.updated_at).substring(5, 16) + ' 更新');
+        $('#tb-stale-load').toggle(!gone);
+        $('#tb-stale').show();
+    }
+
+    // 閒置偵測：超過 idleSeconds 沒操作，或分頁在背景，就暫停輪詢，讓 session 照常逾時
+    function isHidden() { return document.hidden === true || document.msHidden === true; }
+    function pause(reason) {
+        state.paused = true;
+        setLive('paused', reason);
+    }
+    function resume() {
+        state.paused = false;
+        setLive('live');
+        poll(true, true);
+    }
+    function tick() {
+        if (isHidden()) {
+            pause('已暫停同步（分頁在背景）');
+        } else if (nowMs() - state.lastActivity > CFG.idleSeconds * 1000) {
+            pause('已暫停同步（閒置）');
+        } else {
+            poll(false);
+        }
+    }
+    $(document).on('mousemove keydown mousedown wheel touchstart', function () {
+        state.lastActivity = nowMs();
+        if (state.paused && !isHidden()) {
+            resume();
+        }
+    });
+    $(document).on('visibilitychange msvisibilitychange', function () {
+        if (isHidden()) {
+            pause('已暫停同步（分頁在背景）');
+        } else if (nowMs() - state.lastActivity <= CFG.idleSeconds * 1000) {
+            resume();
+        }
+    });
+    // 每分鐘重畫「現在」的紅線位置與 PM 狀態
+    setInterval(function () {
+        if (state.b && !state.drag) {
+            state.laneBg = laneBackground(Math.round((state.todayMs - state.winStart) / DAY));
+            $.each(state.b.tools, function (i, t) { renderLane(t); });
+        }
+    }, 60000);
+
+    // 離開頁面時清除自己的線上 / 編輯中
+    $(window).on('pagehide beforeunload', function () {
+        if (navigator.sendBeacon && window.FormData) {
+            var fd = new FormData();
+            fd.append('_csrf', $('meta[name="csrf-token"]').attr('content') || '');
+            navigator.sendBeacon(CFG.urls.release, fd);
+        }
+    });
+
+    // ==================================================================
+    // 全螢幕 / 恢復
+    //   優先用瀏覽器全螢幕 API；瀏覽器不允許時改成「頁面內最大化」（蓋滿瀏覽器視窗）
+    //   右鍵選單、表單、衝突視窗都在 #tb-root 裡面，全螢幕時一樣看得到
+    // ==================================================================
+    var $root = $('#tb-root'), rootEl = $root[0];
+    var FS_TEXT = { off: '[ ⛶ 全螢幕 ]', on: '[ 🗗 恢復 ]' };
+    function fsElement() {
+        return document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+    }
+    function isFull() { return $root.hasClass('tb-full'); }
+    function fitWrap() {
+        if (isFull()) {
+            var top = $wrap.offset().top - $(window).scrollTop();
+            $wrap.css('max-height', Math.max(200, $(window).height() - top - 16) + 'px');
+        } else {
+            $wrap.css('max-height', '');
+        }
+    }
+    function setFull(on, native) {
+        $root.toggleClass('tb-full', on).toggleClass('tb-full-native', on && !!native);
+        $('body').toggleClass('tb-body-full', on);
+        $('#tb-fs').text(on ? FS_TEXT.on : FS_TEXT.off).attr('title', on ? '恢復正常大小（Esc）' : '看板全螢幕（快捷鍵 F）');
+        closeMenu();
+        setTimeout(fitWrap, 0);
+    }
+    function enterFull() {
+        var req = rootEl.requestFullscreen || rootEl.webkitRequestFullscreen || rootEl.msRequestFullscreen;
+        if (!req) {
+            setFull(true, false);
+            return;
+        }
+        try {
+            var p = req.call(rootEl);
+            if (p && p.then) {
+                p.then(null, function () { setFull(true, false); });   // 被瀏覽器或政策擋下：頁面內最大化
+            }
+        } catch (err) {
+            setFull(true, false);
+        }
+    }
+    function exitFull() {
+        if (fsElement()) {
+            var ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+            if (ex) {
+                ex.call(document);
+                return;
+            }
+        }
+        setFull(false);
+    }
+    function toggleFull() {
+        if (isFull()) {
+            exitFull();
+        } else {
+            enterFull();
+        }
+    }
+    $(document).on('fullscreenchange webkitfullscreenchange MSFullscreenChange', function () {
+        var el = fsElement();
+        if (el === rootEl) {
+            setFull(true, true);
+        } else if (!el && $root.hasClass('tb-full-native')) {
+            setFull(false);
+        }
+    });
+    $('#tb-fs').on('click', toggleFull);
+    $(document).on('keydown', function (e) {
+        if (e.ctrlKey || e.altKey || e.metaKey || $(e.target).is('input, textarea, select') ||
+            $modal.is(':visible') || $conflict.is(':visible')) {
+            return;
+        }
+        if ((e.key === 'f' || e.key === 'F' || e.keyCode === 70) && !e.shiftKey) {
+            e.preventDefault();
+            toggleFull();
+        } else if (e.keyCode === 27 && isFull() && !fsElement() && !$menu.is(':visible')) {
+            setFull(false);   // 頁面內最大化用 Esc 恢復（瀏覽器全螢幕的 Esc 由瀏覽器處理）
+        }
+    });
+    $(window).on('resize', fitWrap);
+
+    // ==================================================================
+    // 其他操作
+    // ==================================================================
+    $('#tb-tabs').on('click', '.pi-tab', function (e) {
+        e.preventDefault();
+        if ($modal.is(':visible')) {
+            return;
+        }
+        var m = String($(this).attr('data-model'));
+        if (m !== state.model) {
+            load(m);
+        }
+    });
+    $('#tb-search').on('input', applySearch);
+    $('#tb-legend-btn').on('click', function (e) {
+        e.preventDefault();
+        $('#tb-legend').toggle();
+    });
+    $('#tb-ie-ok').on('click', function () { $('#tb-ie').hide(); });
+
+    // ==================================================================
+    // 啟動
+    // ==================================================================
+    if (!CFG.models.length) {
+        $wrap.html('<div class="text-red tb-loading">&gt; config/tool_board.ini 沒有設定機型</div>');
+        return;
+    }
+    if (IS_IE) {
+        $('#tb-ie').show();
+    }
+    load(pickModel());
+    setInterval(tick, CFG.pollSeconds * 1000);
+})(window.jQuery);
+#@@@ END count=5

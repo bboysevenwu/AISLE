@@ -697,3 +697,7 @@ body.tb-is-dragging, body.tb-is-dragging * { cursor: grabbing !important; user-s
     .tb-help { display: none; }
     .tb-wrap { max-height: none; }
 }
+
+/* Pending Issue：唯讀的編輯視窗 */
+.pi-readonly input:disabled, .pi-readonly select:disabled, .pi-readonly textarea:disabled { opacity: 0.85; cursor: default; }
+.pi-readonly .pi-combo-btn:disabled { cursor: default; opacity: 0.5; }

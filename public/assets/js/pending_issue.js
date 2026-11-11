@@ -564,7 +564,7 @@
             }
             state.pollXhr = $.get(CFG.urls.poll, {
                 since: state.cursor,
-                editing: state.editingId,
+                editing: CFG.canEdit ? state.editingId : 0,
                 trash: state.trash ? 1 : 0
             }).done(function (res) {
                 var changed = false;
@@ -828,17 +828,32 @@
                 $('#pi-delete').hide();
                 renderHistory([]);
             }
+            setReadOnly(!CFG.canEdit);
             state.original = formValues();
             renderImages();
             $modal.show();
             $('body').addClass('pi-modal-open');
             renderEditors();
-            $form.find('[name=tool_id]').focus();
+            if (CFG.canEdit) {
+                $form.find('[name=tool_id]').focus();
+            }
             state.lastActivity = nowMs();
             if (state.paused) {
                 resume();
             } else {
                 poll(true);   // 立刻讓別人看到「編輯中」
+            }
+        }
+
+        /** 不在 [editors] 名單的 EE：編輯視窗只能看，不能改 */
+        function setReadOnly(ro) {
+            $form.find('input, select, textarea').not('[type=hidden]').prop('disabled', ro);
+            $('#e-sponsor .pi-combo-btn').prop('disabled', ro);
+            $('#pi-save').toggle(!ro);
+            $('#pi-paste').toggle(!ro);
+            $modal.toggleClass('pi-readonly', ro);
+            if (ro) {
+                $('#pi-modal-title').text($('#pi-modal-title').text() + '（唯讀）');
             }
         }
 
@@ -867,7 +882,7 @@
             $modal.hide();
             $conflict.hide();
             $('body').removeClass('pi-modal-open');
-            if (state.editingId) {
+            if (state.editingId && CFG.canEdit) {
                 release();
             }
             state.editingId = 0;
@@ -881,6 +896,9 @@
             $modal.scrollTop(0);
         }
 
+        if (!CFG.canEdit) {
+            $('#pi-new').hide();
+        }
         $('#pi-new').on('click', function () { openEditor(null); });
         $('#pi-cancel, #pi-cancel-x').on('click', function () { closeEditor(false); });
         $modal.on('mousedown', function (e) {
@@ -1064,7 +1082,7 @@
                 html += '<div class="pi-thumb" data-index="' + i + '">' +
                     '<a href="' + esc(img.url) + '" target="_blank" rel="noopener noreferrer" title="' + esc(img.name) + '">' +
                     '<img src="' + esc(img.url) + '" alt="' + esc(img.name) + '"></a>' +
-                    '<button type="button" class="pi-thumb-del" title="移除">×</button></div>';
+                    (CFG.canEdit ? '<button type="button" class="pi-thumb-del" title="移除">×</button>' : '') + '</div>';
             });
             if (state.uploading) {
                 html += '<div class="pi-thumb pi-thumb-loading">UPLOADING ' + state.uploading + '...</div>';
@@ -1126,7 +1144,7 @@
 
         // 整個編輯視窗都能貼上（含文字欄），只攔截圖片，文字照常貼上
         $(document).on('paste', function (e) {
-            if (!$modal.is(':visible') || $conflict.is(':visible')) {
+            if (!CFG.canEdit || !$modal.is(':visible') || $conflict.is(':visible')) {
                 return;
             }
             var cd = e.originalEvent && e.originalEvent.clipboardData;
@@ -1182,7 +1200,7 @@
         });
         $(window).on('unload', function () {
             // 清掉自己的「編輯中」；沒有 sendBeacon 的瀏覽器就等 presence_seconds 自然消失
-            if (state.editingId && window.navigator.sendBeacon && window.FormData) {
+            if (state.editingId && CFG.canEdit && window.navigator.sendBeacon && window.FormData) {
                 var fd = new window.FormData();
                 fd.append('_csrf', CFG.csrfToken);
                 window.navigator.sendBeacon(CFG.urls.release, fd);

@@ -566,12 +566,12 @@ class BSLrChart extends ChartSource
 
 ## 11. Pending Issue Control Table（`?m=pending_issue`）
 
-追蹤各機台的 pending issue。只有 **EE** 能使用（查詢、新增、編輯、匯出，**不能刪除**），**ADMIN** 全部可以（含刪除、看已刪除、還原），PE 看不到選單、直接開網址會 403。
+追蹤各機台的 pending issue。只有 **EE** 能進入：所有 EE 都能查詢、匯出；**新增、編輯（含上傳圖片）只限列在 `config/pending_issue.ini` `[editors]` 的 EE 帳號**，其他 EE 打開 issue 是唯讀；**刪除只有 ADMIN**。**ADMIN** 全部可以（含刪除、看已刪除、還原），PE 看不到選單、直接開網址會 403。
 
 | 檔案 | 用途 |
 |---|---|
 | `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.delete` / `action.trash` / `action.restore` = `"ADMIN"`（刪除、看已刪除、還原） |
-| `config/pending_issue.ini` | 機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
+| `config/pending_issue.ini` | 可新增 / 編輯的 EE 帳號（`[editors]`）、機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
 | `modules/pending_issue/` | controller + view |
 | `public/assets/js/pending_issue.js` | 表格、篩選、Sponsor 元件、貼圖、輪詢、衝突視窗 |
 | `sql/migrations/20261110_pending_issue.sql` | 建表（`pending_issues`、`pending_issue_status_logs`、`pending_issue_images`、`pending_issue_presence`） |

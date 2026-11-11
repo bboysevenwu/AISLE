@@ -282,7 +282,7 @@ crontab -e
    chmod -R 775 storage/uploads
    ```
 3. 確認 `php.ini`：`file_uploads = On`，`upload_max_filesize`、`post_max_size` 大於 `config/pending_issue.ini` 的 `max_mb`（預設 5 MB，建議設 8M）
-4. `config/pending_issue.ini`：依需要調整機型、分類、Sponsor 身份、匯出開關；`idle_seconds` 要小於 `app.ini` 的 `session_idle`
+4. `config/pending_issue.ini`：在 `[editors]` 列出可新增 / 編輯的 EE 帳號（範例 `neo` 請換成實際帳號），依需要調整機型、分類、Sponsor 身份、匯出開關；`idle_seconds` 要小於 `app.ini` 的 `session_idle`
 5. `python scripts/python/check_config.py`，再以 EE 帳號開啟「Pending Issue // CONTROL TABLE」
 
 ## 17-2.（選用）啟用機台借機與 PM 排程看板

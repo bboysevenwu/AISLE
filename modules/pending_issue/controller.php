@@ -1,6 +1,7 @@
 <?php
 /**
  * Pending Issue Control Table（config.ini：EE 與 ADMIN；刪除 / 看已刪除 / 還原只有 ADMIN）
+ * 新增 / 編輯 / 上傳圖片：ADMIN，或列在 config/pending_issue.ini [editors] 的 EE 帳號；其他 EE 唯讀
  * 機型 / 分類 / 狀態 / Sponsor 等設定在 config/pending_issue.ini
  *
  *   index    頁面（表格、篩選、編輯視窗都由 pending_issue.js 呼叫下列 JSON 動作）
@@ -43,6 +44,7 @@ class PendingIssueController extends Controller
                 'statuses'        => $cfg['statuses'],
                 'sponsors'        => $this->sponsorList(),
                 'me'              => array('id' => (int) $this->user['id'], 'name' => $this->user['display_name']),
+                'canEdit'         => $this->canEdit(),
                 'canDelete'       => $this->can('delete'),
                 'canTrash'        => $this->can('trash'),
                 'canRestore'      => $this->can('restore'),
@@ -90,7 +92,7 @@ class PendingIssueController extends Controller
     {
         $cfg = self::cfg();
         $uid = (int) $this->user['id'];
-        $editing = (int) $this->query('editing');
+        $editing = $this->canEdit() ? (int) $this->query('editing') : 0;   // 唯讀的人不算「編輯中」
         $now = now();
 
         // 自己的「編輯中」：只保留正在編輯的那一筆
@@ -134,6 +136,9 @@ class PendingIssueController extends Controller
     {
         if (!$this->isPost()) {
             return $this->json(array('ok' => false, 'error' => 'POST only'), 405);
+        }
+        if (!$this->canEdit()) {
+            return $this->json(array('ok' => false, 'error' => '你沒有新增 / 編輯 Pending Issue 的權限'), 403);
         }
         $cfg = self::cfg();
         $id = (int) $this->input('id');
@@ -299,6 +304,9 @@ class PendingIssueController extends Controller
     {
         if (!$this->isPost()) {
             return $this->json(array('ok' => false, 'error' => 'POST only'), 405);
+        }
+        if (!$this->canEdit()) {
+            return $this->json(array('ok' => false, 'error' => '你沒有新增 / 編輯 Pending Issue 的權限'), 403);
         }
         $cfg = self::cfg();
         $maxBytes = (int) round($cfg['max_mb'] * 1048576);
@@ -547,7 +555,16 @@ class PendingIssueController extends Controller
         }
         $roles = array_values(array_filter(array_map('trim', explode(',', (string) array_get(array_get($ini, 'sponsor', array()), 'roles', 'EE,ADMIN'))), 'strlen'));
 
+        $editors = array();
+        foreach ((array) array_get(array_get($ini, 'editors', array()), 'account', array()) as $acc) {
+            $acc = strtolower(trim((string) $acc));
+            if ($acc !== '') {
+                $editors[$acc] = true;
+            }
+        }
+
         self::$cfg = array(
+            'editors'          => $editors,
             'models'           => $models ? $models : array('PAN' => '1980 (PAN)', 'PAP' => '2000 (PAP)', 'POV' => 'YSM (POV)'),
             'categories'       => array_get($ini, 'categories', array()) ? array_get($ini, 'categories') : array(
                 'hl' => 'PE/YED HL', 'tool_select' => '選機表', 'aging_parts' => 'Aging parts', 'others' => 'Others'),
@@ -686,6 +703,20 @@ class PendingIssueController extends Controller
             return 'Sponsor 必須是 AISLE 使用者（請從清單中選擇）';
         }
         return '';
+    }
+
+    /** 可否新增 / 編輯：ADMIN 全部；EE 須列在 pending_issue.ini [editors] */
+    private function canEdit()
+    {
+        $role = $this->user['role'];
+        if (Acl::isSuperuser($role)) {
+            return true;
+        }
+        if ($role !== 'EE') {
+            return false;
+        }
+        $cfg = self::cfg();
+        return isset($cfg['editors'][strtolower((string) $this->user['account'])]);
     }
 
     /** 機台代號包含機型代碼（不分大小寫）→ 該機型；較長的代碼優先 */

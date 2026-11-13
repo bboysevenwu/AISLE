@@ -583,7 +583,6 @@ input.tb-search { width: 180px; padding: 4px 8px; }
 .tb-grid thead th.tb-today { background: #00b82e; color: #000; font-weight: bold; box-shadow: inset 2px 0 #00ff41, inset -2px 0 #00ff41; }
 .tb-grid thead th.tb-today small { color: #000; }
 .tb-av { font-variant-numeric: tabular-nums; }
-.tb-grid thead th.tb-av-warn { color: #000; background: #e6ff3b; }
 .tb-grid thead th.tb-av-alert { color: #fff; background: #c62828; }
 .tb-grid tbody th.tb-tool { position: sticky; left: 0; z-index: 3; background: #001a07; color: #00ff41; text-align: left; padding: 0 8px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb-grid tbody tr:hover th.tb-tool { background: #003b0f; }
@@ -737,3 +736,4 @@ body.tb-body-full { overflow: hidden; }
     color-scheme: dark;
 }
 .tb-hours input[type=number]:disabled { opacity: 0.35; }
+.tb-sw-av-alert { background: #c62828; }

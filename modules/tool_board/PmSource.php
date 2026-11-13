@@ -2,7 +2,8 @@
 /**
  * PM 射程：讀 config/tool_board.ini [pm] json_path 指定的 JSON 檔
  *
- * 格式：{"APAN01": {"PM": {"window_start_date": "2026-06-01 09:30", "first_due": "...", "due_date": "..."},
+ * 格式：{"APAN01": {"PM": {"window_start_date": "2026-06-01 09:30", "first_due": "...", "due_date": "...",
+ *                          "period": "week26"},          ← period（PM 週期）可省略
  *                   "AMC_PM": {...}}, ...}
  *
  * - 不匯入資料庫；檔案修改時間或大小改變才重新解析，解析結果快取在 storage/cache/
@@ -11,14 +12,14 @@
  */
 class ToolBoardPm
 {
-    const CACHE_VERSION = 1;
+    const CACHE_VERSION = 2;
 
     private static $parsed = null;
 
     /**
      * 該機型的 PM 射程
      * @return array array(
-     *   'items'   => array(tool_id => array(array('type','start','first','due'), ...)),
+     *   'items'   => array(tool_id => array(array('type','start','first','due','period'), ...)),
      *   'sig'     => 檔案簽章（修改時間-大小），前端用來判斷是否需要重新載入,
      *   'status'  => 'off' | 'ok' | 'missing' | 'error',
      *   'message' => 提示訊息, 'count' => 本機型筆數, 'skipped' => 略過筆數, 'reasons' => 略過原因,
@@ -142,6 +143,7 @@ class ToolBoardPm
                     'start' => $start,
                     'first' => $first,
                     'due'   => $due,
+                    'period' => self::period(array_get($p, 'period')),
                 );
             }
         }
@@ -152,6 +154,17 @@ class ToolBoardPm
             $out['items'][$t] = $list;
         }
         return $out;
+    }
+
+    /** PM 週期：文字、去掉前後空白、最多 32 字；沒有或空白 = '' */
+    private static function period($v)
+    {
+        if ($v === null || is_array($v) || is_bool($v)) {
+            return '';
+        }
+        $v = trim((string) $v);
+        // 不依賴 mbstring：以 UTF-8 字元為單位截斷
+        return preg_match('/^.{0,32}/us', $v, $m) ? $m[0] : substr($v, 0, 32);
     }
 
     private static function skip(&$out, $reason)

@@ -552,8 +552,12 @@ class ToolBoardController extends Controller
     private function availability($cfg, $actions, $win)
     {
         $a = ToolBoardAvailability::compute($cfg, $actions, $win['first'], $win['days']);
-        $a['warn'] = $cfg['availability']['warn_below'];
         $a['alert'] = $cfg['availability']['alert_below'];
+        $a['formula'] = $cfg['availability']['formula'];
+        if ($a['error'] !== '') {
+            // 公式檔載入失敗時實際用的是預設公式
+            $a['formula'] = 'default（' . $a['formula'] . ' 載入失敗）';
+        }
         $a['tools'] = count($cfg['tools']);
         return $a;
     }

@@ -193,6 +193,7 @@ def check_chart(name, errors, warnings):
 RE_HEX = re.compile(r'^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$')
 RE_TOOL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$')
 RE_CODE = re.compile(r'^[a-z][a-z0-9_]{0,31}$')
+RE_FORMULA = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
 
 
 def check_tool_board(ee_accounts, errors, warnings):
@@ -238,11 +239,43 @@ def check_tool_board(ee_accounts, errors, warnings):
     if pm_category not in categories:
         warnings.append('%s [pm] category "%s" 不是已定義的類別' % (label, pm_category))
 
-    formula = (sget(shared, 'availability', 'formula') or 'default').lower()
-    if formula != 'default':
+    def check_formula(formula, where):
+        """可用率公式：default 或 modules/tool_board/formulas/<Camel>.php 的 <Camel>Availability"""
+        if formula == 'default':
+            return
+        if not RE_FORMULA.match(formula):
+            errors.append('%s [availability] formula "%s" 只能用小寫英數字與底線，且以英文字母開頭' % (where, formula))
+            return
         camel = ''.join(w.capitalize() for w in formula.split('_'))
-        if not os.path.isfile(os.path.join(MODULES, 'tool_board', 'formulas', camel + '.php')):
-            errors.append('%s [availability] formula "%s" 找不到 modules/tool_board/formulas/%s.php' % (label, formula, camel))
+        php = os.path.join(MODULES, 'tool_board', 'formulas', camel + '.php')
+        if not os.path.isfile(php):
+            errors.append('%s [availability] formula "%s" 找不到 modules/tool_board/formulas/%s.php' % (where, formula, camel))
+            return
+        with open(php) as fp:
+            if not re.search(r'class\s+%sAvailability\b' % camel, fp.read()):
+                errors.append('modules/tool_board/formulas/%s.php 裡沒有 class %sAvailability（formula "%s"）' % (camel, camel, formula))
+
+    def check_alert(parser, where):
+        """回傳該檔的 alert_below（沒寫 = None）"""
+        if parser.has_option('availability', 'warn_below'):
+            warnings.append('%s [availability] warn_below 已不使用（只剩 alert_below 紅色門檻），可刪除' % where)
+        v = sget(parser, 'availability', 'alert_below')
+        if v == '':
+            return None
+        try:
+            f = float(v)
+        except ValueError:
+            errors.append('%s [availability] alert_below 必須是數字：%s' % (where, v))
+            return None
+        if f < 0 or f > 100:
+            warnings.append('%s [availability] alert_below = %s 不在 0 ～ 100 之間' % (where, v))
+        return f
+
+    shared_formula = (sget(shared, 'availability', 'formula') or 'default').lower()
+    check_formula(shared_formula, label)
+    shared_alert = check_alert(shared, label)
+    if shared_alert is None:
+        shared_alert = 80.0
 
     pm_path = sget(shared, 'pm', 'json_path')
     if pm_path:
@@ -253,14 +286,31 @@ def check_tool_board(ee_accounts, errors, warnings):
             import ast
             with open(pm_path) as fp:
                 text = fp.read()
+            data = None
             try:
-                json.loads(text)
+                data = json.loads(text)
             except ValueError:
                 try:
-                    ast.literal_eval(text)
+                    data = ast.literal_eval(text)
                     warnings.append('PM 檔 %s 不是標準 JSON（單引號），看板會自動轉換；請產生端改用 json.dump' % pm_path)
                 except Exception:  # noqa
                     errors.append('PM 檔 %s 無法解析' % pm_path)
+            # period（PM 週期，選填）：文字，最多 32 字，超過會被截斷
+            if isinstance(data, dict):
+                for tool, pms in data.items():
+                    if not isinstance(pms, dict):
+                        continue
+                    for typ, p in pms.items():
+                        if not isinstance(p, dict) or p.get('period') is None:
+                            continue
+                        per = p.get('period')
+                        if isinstance(per, (dict, list, bool)):
+                            warnings.append('PM 檔 %s / %s 的 period 不是文字，不會顯示' % (tool, typ))
+                            continue
+                        if isinstance(per, str):
+                            per = per.decode('utf-8', 'replace')
+                        if len(unicode(per).strip()) > 32:  # noqa: F821（Python 2.7）
+                            warnings.append('PM 檔 %s / %s 的 period 超過 32 字，會被截斷' % (tool, typ))
 
     owner = {}
     defaults_wip = [(c, sget(shared, 'category.' + c, 'default_wip')) for c in categories]
@@ -314,8 +364,15 @@ def check_tool_board(ee_accounts, errors, warnings):
         for cat, dw in defaults_wip:
             if dw and dw not in wips:
                 warnings.append('%s 沒有 [wip.%s]，類別 %s 的 default_wip 在這個機型改選第一個' % (rel, dw, cat))
-        print('== 借機看板 %s：機台 %d 台、可編輯 %s、WIP %s ==' % (
-            m, len(tools), ', '.join(editors) or '-', ', '.join(wips) or '-'))
+        # 可用率：機型檔沒寫的項目沿用共用檔
+        formula = (sget(parser, 'availability', 'formula') or shared_formula).lower()
+        if parser.has_option('availability', 'formula'):
+            check_formula(formula, rel)
+        alert = check_alert(parser, rel)
+        if alert is None:
+            alert = shared_alert
+        print('== 借機看板 %s：機台 %d 台、可編輯 %s、WIP %s、可用率公式 %s（低於 %g 紅）==' % (
+            m, len(tools), ', '.join(editors) or '-', ', '.join(wips) or '-', formula, alert))
 
 
 def main():

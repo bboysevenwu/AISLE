@@ -219,7 +219,7 @@ class ToolBoardConfig
     private static function availability($v, $base)
     {
         $d = $base ? $base : array(
-            'formula' => 'default', 'count_monitor' => true, 'count_pilot' => false, 'warn_below' => 90.0, 'alert_below' => 80.0,
+            'formula' => 'default', 'count_monitor' => true, 'count_pilot' => false, 'alert_below' => 80.0,
         );
         if (array_key_exists('formula', $v)) {
             $d['formula'] = strtolower(trim((string) $v['formula']));
@@ -229,10 +229,9 @@ class ToolBoardConfig
                 $d[$k] = (bool) $v[$k];
             }
         }
-        foreach (array('warn_below', 'alert_below') as $k) {
-            if (array_key_exists($k, $v)) {
-                $d[$k] = (float) $v[$k];
-            }
+        // 只有一個門檻：低於 alert_below 紅底（舊設定的 warn_below 已不使用，寫了也忽略）
+        if (array_key_exists('alert_below', $v) && trim((string) $v['alert_below']) !== '') {
+            $d['alert_below'] = (float) $v['alert_below'];
         }
         return $d;
     }

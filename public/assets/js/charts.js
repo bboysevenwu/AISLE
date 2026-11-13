@@ -392,32 +392,32 @@
         opt.legend.formatter = function (name) { return shortName(name, group); };
         opt.tooltip.trigger = 'axis';
         opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
-        if (urls) {
-            // 有 Url：tooltip 多一行提示，點數據點開新分頁（見 bindUrlClick）
-            opt.tooltip.formatter = function (params) {
-                var html = '';
-                var idx = null;
-                $.each(params, function (i, p) {
-                    if (p.seriesName === '_spec') {
-                        return;
-                    }
-                    if (!html) {
-                        html = AISLE.escape(s.Date[p.dataIndex]);
-                        idx = p.dataIndex;
-                    }
-                    html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
-                });
-                if (idx !== null && safeUrl(urls[idx])) {
-                    html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+        // tooltip 標題一律顯示完整時間（後端已統一成 Y-m-d H:i:s）；有 Url 時多一行提示，點數據點開新分頁（見 bindUrlClick）
+        opt.tooltip.formatter = function (params) {
+            var html = '';
+            var idx = null;
+            $.each(params, function (i, p) {
+                if (p.seriesName === '_spec') {
+                    return;
                 }
-                return html;
-            };
+                if (!html) {
+                    html = AISLE.escape(s.Date[p.dataIndex]);
+                    idx = p.dataIndex;
+                }
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
+            });
+            if (urls && idx !== null && safeUrl(urls[idx])) {
+                html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+            }
+            return html;
+        };
+        if (urls) {
             box.urlInfo = { dates: s.Date, urls: urls, cols: $.map(group.params, function (p) { return [s.Data[p] || []]; }) };
         }
         opt.xAxis = {
             type: 'time',
             axisLine: axisLine(),
-            axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{MM}-{dd}' },
+            axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{yyyy}-{MM}-{dd} {HH}:{mm}:{ss}' },
             splitLine: { show: false }
         };
         opt.yAxis = valueAxis(group, 'single');

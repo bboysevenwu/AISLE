@@ -14,7 +14,7 @@
  * 切換機台 / 機型只在瀏覽器端篩選，不再發 request；改日期區間才重新呼叫 tbt
  *
  * 回傳格式：
- *   { "APAN01": { "Date": ["2026-01-01", ...],
+ *   { "APAN01": { "Date": ["2026-01-01 08:00:00", ...],
  *                 "Data": { "M1BF_Z_C1": [1.0, ...], "M1BF_Z_C2": [1.1, ...], ... },
  *                 "Url":  ["http://...", null, ...] }, ... }      ← 選用：series() 有回傳 Url 才有
  * 機台依名稱自然排序，每台內部依時間排序；Data 只含 ini 用到的參數，
@@ -153,6 +153,7 @@ class ChartsController extends Controller
      * 統一整理資料來源的結果：
      *   - 只保留 $tools 中的機台，並依 $tools 的順序輸出
      *   - 每台依 Date 排序；Data 只保留 $params，依 $params 的順序輸出，缺少的參數整列補 null
+     *   - 時間統一成 Y-m-d H:i:s（只有日期的補 00:00:00），圖表 X 軸、tooltip、資料表都用這個格式
      *   - 數值轉成數字，不是數字的轉成 null；所有參數都是 null 的時間點丟掉
      *   - 有 Url（與 Date 等長）時跟著 Date 一起排序保留；只接受 http(s):// 或 / 開頭的網址，其他轉成 null
      */
@@ -185,7 +186,7 @@ class ChartsController extends Controller
                     $values[$p] = $v;
                 }
                 if ($any) {
-                    $rows[] = array((string) $date, $values, $hasUrl ? self::safeUrl(isset($urls[$i]) ? $urls[$i] : null) : null);
+                    $rows[] = array(self::dateTime($date), $values, $hasUrl ? self::safeUrl(isset($urls[$i]) ? $urls[$i] : null) : null);
                 }
             }
             if (!$rows) {
@@ -211,6 +212,17 @@ class ChartsController extends Controller
             $out[$tool] = $series;
         }
         return $out;
+    }
+
+    /** 時間轉成 Y-m-d H:i:s；已經是這個格式的原樣保留，無法解析的保留原字串 */
+    private static function dateTime($date)
+    {
+        $date = trim((string) $date);
+        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $date)) {
+            return $date;
+        }
+        $ts = strtotime($date);
+        return $ts === false ? $date : date('Y-m-d H:i:s', $ts);
     }
 
     /** 點擊數據點要開的網址：只接受 http://、https:// 或 / 開頭的站內路徑（不含 //），其他（javascript: 等）回傳 null */

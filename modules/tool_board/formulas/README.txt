@@ -3,6 +3,13 @@
 範例：config/tool_board.ini [availability] formula = "fab_hours"
   → 載入 modules/tool_board/formulas/FabHours.php 的 FabHoursAvailability
 
+每個機型可以用不同公式：在機型檔寫 [availability]，沒寫的機型沿用共用檔
+  config/tool_board/PAN.ini   [availability]  formula = "pan_hours"    → PanHours.php
+  config/tool_board/PAP.ini   [availability]  formula = "pap_hours"    → PapHours.php
+  config/tool_board/POV.ini   （沒寫）                                  → 共用檔的 formula
+同一個機型檔也可以寫 alert_below（低於幾 % 紅底）。
+$cfg['model'] 是目前機型代碼，同一個公式檔也可以依機型分支。
+
 <?php
 class FabHoursAvailability extends AvailabilityFormula
 {

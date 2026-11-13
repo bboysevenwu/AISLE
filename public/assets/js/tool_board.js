@@ -220,7 +220,7 @@
             h.push('<th class="' + cls.join(' ') + '" title="' + ymd(t.getTime()) + '">' +
                 pad(t.getUTCMonth() + 1) + '/' + pad(t.getUTCDate()) + '<small>' + (i === todayIdx ? 'TODAY' : WEEK[wd]) + '</small></th>');
         }
-        h.push('</tr><tr class="tb-head-avail"><th class="tb-corner" title="每日預估可用率 = 可用時數 / (機台數 × 24h)">可用率 %</th>');
+        h.push('</tr><tr class="tb-head-avail"><th class="tb-corner tb-corner-av" title="每日預估可用率">可用率 %</th>');
         for (i = 0; i < b.days; i++) {
             h.push('<th class="tb-av' + (i === todayIdx ? ' tb-today' : '') + '" data-day="' + i + '"></th>');
         }
@@ -361,6 +361,11 @@
         return 'wait';
     }
 
+    /** PM 名稱：有 period 時 'PM（week26）'，沒有時 'PM' */
+    function pmName(p) {
+        return p.type + (p.period ? '（' + p.period + '）' : '');
+    }
+
     function pmHtml(tool) {
         var pm = state.b.pm, list = (pm && pm.items && pm.items[tool]) || [], shown = [], h = [];
         $.each(list, function (i, p) {
@@ -373,12 +378,13 @@
             var s = ms(p.start), f = ms(p.first), due = ms(p.due), st = pmStatus(tool, p);
             var top = n > 1 ? (i * 100 / n) : 0, height = n > 1 ? (100 / n) : 100;
             var stText = { done: '已排 PM', over: '已超過最後到期日，尚未排 PM', due: '已到點，尚未排 PM', wait: '射程內' }[st];
-            var title = p.type + '：射程 ' + short(s) + ' ～ ' + short(due) + '，到點 ' + short(f) + '（' + stText + '）';
-            h.push('<div class="tb-pm tb-pm-' + st + '" data-pm="' + i + '" data-type="' + esc(p.type) + '" data-first="' + esc(p.first) +
-                '" title="' + esc(title) + '" style="left:' + x(s) + 'px;width:' + Math.max(2, x(due) - x(s)) + 'px;top:' + top +
-                '%;height:' + height + '%"><span class="tb-pm-label">' + esc(p.type) + '</span></div>');
-            h.push('<div class="tb-pm-first" style="left:' + x(f) + 'px;top:' + top + '%;height:' + height + '%" title="' + esc(p.type + ' 到點 ' + short(f)) + '"><b>▼</b></div>');
-            h.push('<div class="tb-pm-due" style="left:' + x(due) + 'px;top:' + top + '%;height:' + height + '%" title="' + esc(p.type + ' 最後到期 ' + short(due)) + '"><b>!</b></div>');
+            var name = pmName(p), label = p.type + (p.period ? ' · ' + p.period : '');
+            var title = name + '：射程 ' + short(s) + ' ～ ' + short(due) + '，到點 ' + short(f) + '（' + stText + '）';
+            h.push('<div class="tb-pm tb-pm-' + st + '" data-pm="' + i + '" data-type="' + esc(p.type) + '" data-period="' + esc(p.period || '') +
+                '" data-first="' + esc(p.first) + '" title="' + esc(title) + '" style="left:' + x(s) + 'px;width:' + Math.max(2, x(due) - x(s)) + 'px;top:' + top +
+                '%;height:' + height + '%"><span class="tb-pm-label">' + esc(label) + '</span></div>');
+            h.push('<div class="tb-pm-first" style="left:' + x(f) + 'px;top:' + top + '%;height:' + height + '%" title="' + esc(name + ' 到點 ' + short(f)) + '"><b>▼</b></div>');
+            h.push('<div class="tb-pm-due" style="left:' + x(due) + 'px;top:' + top + '%;height:' + height + '%" title="' + esc(name + ' 最後到期 ' + short(due)) + '"><b>!</b></div>');
         });
         return h.join('');
     }
@@ -412,20 +418,28 @@
     }
 
     // ---------------- 可用率 ----------------
+    /** 例：'公式：default，低於 80 紅' */
+    function avRule(av) {
+        return '公式：' + (av.formula || 'default') + '，低於 ' + av.alert + ' 紅';
+    }
+
     function renderAvailability(av) {
         if (!av) {
             return;
         }
         state.b.availability = av;
+        $wrap.find('.tb-corner-av').attr('title', '每日預估可用率\n' + avRule(av));
+        $('#tb-lg-av').text(avRule(av));
         $wrap.find('.tb-av').each(function () {
             var i = +$(this).attr('data-day'), day = ymd(state.winStart + i * DAY);
             var v = av.values[day], hrs = av.hours ? av.hours[day] : null;
             var cls = 'tb-av' + ($(this).hasClass('tb-today') ? ' tb-today' : '');
             if (v !== null && v !== undefined) {
-                if (v < av.alert) { cls += ' tb-av-alert'; } else if (v < av.warn) { cls += ' tb-av-warn'; }
+                if (av.alert !== null && av.alert !== undefined && v < av.alert) { cls += ' tb-av-alert'; }
             }
             $(this).attr('class', cls).text(v === null || v === undefined ? '—' : v.toFixed(1))
-                .attr('title', day + (hrs !== null && hrs !== undefined ? '：可用 ' + hrs + ' h / ' + (av.tools * 24) + ' h（' + av.tools + ' 台）' : ''));
+                .attr('title', day + (hrs !== null && hrs !== undefined ? '：可用 ' + hrs + ' h / ' + (av.tools * 24) + ' h（' + av.tools + ' 台）' : '') +
+                    '\n' + avRule(av));
         });
         if (av.error) {
             toast(av.error, 'error');
@@ -444,7 +458,9 @@
         });
         h.push('</div><div class="tb-legend-row"><b>尾巴</b><span class="tb-sw tb-sw-mon"></span>Monitor<span class="tb-sw tb-sw-pil"></span>Pilot　' +
             '<b>PM</b><span class="tb-sw tb-pm-wait"></span>射程<span class="tb-sw tb-pm-done"></span>已排' +
-            '<span class="tb-sw tb-pm-due"></span>已到點未排<span class="tb-sw tb-pm-over"></span>已過期未排　<b class="tb-lg-first">▼</b>到點日<b class="tb-lg-due">!</b>最後到期日</div>');
+            '<span class="tb-sw tb-pm-due"></span>已到點未排<span class="tb-sw tb-pm-over"></span>已過期未排　<b class="tb-lg-first">▼</b>到點日<b class="tb-lg-due">!</b>最後到期日</div>' +
+            '<div class="tb-legend-row"><b>可用率</b><span class="tb-sw tb-sw-av-alert"></span><span id="tb-lg-av">' +
+            esc(b.availability ? avRule(b.availability) : '') + '</span></div>');
         $('#tb-legend').html(h.join(''));
     }
 
@@ -511,9 +527,10 @@
             if (canEdit()) {
                 items.push({ label: '新增 Action', run: function () { openForm('new', { tool_id: tool, day: day }); } });
                 if ($pm.length) {
-                    var type = $pm.attr('data-type'), first = ms($pm.attr('data-first'));
-                    items.push({ label: '依此 PM（' + type + '）新增 Action', run: function () {
-                        openForm('new', { tool_id: tool, day: first, exact: true, category: state.b.pmCategory, pm_type: type });
+                    var type = $pm.attr('data-type'), period = $pm.attr('data-period') || '', first = ms($pm.attr('data-first'));
+                    items.push({ label: '依此 PM（' + type + (period ? ' · ' + period : '') + '）新增 Action', run: function () {
+                        openForm('new', { tool_id: tool, day: first, exact: true, category: state.b.pmCategory, pm_type: type,
+                            remark: period ? '週期：' + period : '' });
                     } });
                 }
             } else {
@@ -621,6 +638,9 @@
             setStart(start);
             setEnd(start + (catOf(cat) ? catOf(cat).default_hours : 8) * HOUR);
             f('pm_type').val(data.pm_type || '');
+            if (data.remark) {
+                f('remark').val(data.remark);
+            }
         }
 
         var title = { 'new': '&gt; NEW ACTION', edit: ro ? '&gt; VIEW ACTION #' + a.id : '&gt; EDIT ACTION #' + (a ? a.id : ''), copy: '&gt; COPY ACTION' }[mode];

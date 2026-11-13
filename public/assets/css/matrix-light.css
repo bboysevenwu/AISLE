@@ -195,7 +195,6 @@ body.theme-light .tb-grid thead th.tb-wkend { color: #7aa886; }
 body.theme-light .tb-grid thead th.tb-month { border-left-color: #00801a; }
 body.theme-light .tb-grid thead th.tb-today { background: #00801a; color: #fff; box-shadow: inset 2px 0 #00591a, inset -2px 0 #00591a; }
 body.theme-light .tb-grid thead th.tb-today small { color: #fff; }
-body.theme-light .tb-grid thead th.tb-av-warn { background: #ffd54f; color: #000; }
 body.theme-light .tb-grid thead th.tb-av-alert { background: #c62828; color: #fff; }
 body.theme-light .tb-grid tbody th.tb-tool { background: #f2fbf4; color: #00591a; }
 body.theme-light .tb-grid tbody tr:hover th.tb-tool { background: #d6eedc; }

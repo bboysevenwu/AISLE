@@ -642,21 +642,31 @@ Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN
 **每日預估可用率**
 
 - 預設：`Σ(每台當天可用時數) / (該機型機台數 × 24h) × 100%`；停機時段 = `counts_down = On` 的類別的 Action 本體 ＋ Monitor 尾巴（`count_monitor`，預設算）＋ Pilot 尾巴（`count_pilot`，預設不算，因為 Pilot 有在跑貨）
-- 低於 `warn_below`（90）黃底、低於 `alert_below`（80）紅底；滑鼠移上去顯示可用時數
-- 換公式：在 `modules/tool_board/formulas/` 新增 `<名稱>.php`（`class <名稱>Availability extends AvailabilityFormula`），設定 `formula = "<名稱>"`，範例見該資料夾的 README.txt；機型檔可以各自指定
+- 低於 `alert_below`（預設 80）紅底，其他不上色（舊設定的 `warn_below` 已不使用，寫了也忽略）；滑鼠移上去顯示可用時數、目前的公式與門檻，圖例也會顯示
+- 換公式：在 `modules/tool_board/formulas/` 新增 `<名稱>.php`（`class <名稱>Availability extends AvailabilityFormula`），設定 `formula = "<名稱>"`，範例見該資料夾的 README.txt
+- **每個機型各自設定**：`config/tool_board.ini` 的 `[availability]` 是預設值，機型檔 `config/tool_board/<機型>.ini` 加 `[availability]` 只寫要改的項目即可，例：
+  ```ini
+  ; config/tool_board/PAP.ini
+  [availability]
+  formula     = "pap_hours"   ; → modules/tool_board/formulas/PapHours.php 的 PapHoursAvailability
+  alert_below = 85            ; 這個機型低於 85 紅底
+  count_pilot = On            ; 這個機型 Pilot 也算停機
+  ```
+  某個機型的公式檔載入失敗時，只有該機型改用預設公式並提示錯誤，其他機型不受影響。改完執行 `python scripts/python/check_config.py`，會逐一列出每個機型實際使用的公式與門檻
 
 **PM 射程**
 
 - `config/tool_board.ini` `[pm] json_path` 指定一個 JSON 檔（三個機型共用，各機型只顯示自己的機台）：
   ```json
-  {"APAN01": {"PM":     {"window_start_date": "2026-06-01 09:30", "first_due": "2026-06-10 09:30", "due_date": "2026-06-17 09:30"},
+  {"APAN01": {"PM":     {"window_start_date": "2026-06-01 09:30", "first_due": "2026-06-10 09:30", "due_date": "2026-06-17 09:30", "period": "week26"},
               "AMC_PM": {"window_start_date": "2026-07-01 09:30", "first_due": "2026-07-10 09:30", "due_date": "2026-07-17 09:30"}}}
   ```
+- `period`（PM 週期，選填）：同機型 PM 週期不同時使用。有的話射程上顯示 `PM · week26`，滑鼠提示也會加上 `（week26）`；沒有這個 key（或空白）時維持只顯示 `PM`。文字最多 32 字
 - 不匯入資料庫：每次讀取比對檔案修改時間與大小，有變才重新解析，下一次輪詢就更新所有人的畫面
 - 產生端請用 Python `json.dump` 輸出；若是單引號（Python dict 印法，含 `u'..'`、`True/False/None`）也會自動轉換，但畫面會提示
 - 格式錯誤的項目略過，畫面顯示略過筆數（原因只有 ADMIN 看得到）；檔案不存在或整個壞掉時看板照常運作，只顯示警告
 - 畫法：射程（window_start_date → due_date）淡色斜線底帶、到點日 ▼ 橘線、最後到期日 ! 紅線；射程內已有 PM 類別的 Action → 綠色（已排），已到點未排 → 橘框，已過最後到期日未排 → 紅色閃爍
-- 在射程上按右鍵「依此 PM 新增 Action」：類別帶 PM、開始時間 = 到點日、記下 PM 類型
+- 在射程上按右鍵「依此 PM 新增 Action」：類別帶 PM、開始時間 = 到點日、記下 PM 類型；有 period 時備註預填 `週期：week26`（可改）
 
 **多人同時操作**（不需要 WebSocket，沿用 Pending Issue 的做法）
 

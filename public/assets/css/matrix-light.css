@@ -225,3 +225,30 @@ body.theme-light .tb-root.tb-full { background: #f2fbf4; }
 body.theme-light .tb-span input[type=number],
 body.theme-light .tb-hours input[type=number],
 body.theme-light .tb-dt input[type=time] { border-color: #7fbf8e; background: #fff; color: #00591a; color-scheme: light; }
+
+/* 設備選機表（modules/tool_select） */
+body.theme-light .ts-head-right .dim { color: #d9f0de; }
+body.theme-light .ts-head-right .btn { color: #fff; border-color: #fff; background: transparent; }
+body.theme-light .ts-head-right .btn:hover { background: #fff; color: #00591a; }
+body.theme-light .ts-check { color: #00591a; }
+body.theme-light .ts-legend { color: #2e6b3c; }
+body.theme-light .ts-swatch { border-color: #7fbf8e; }
+body.theme-light .ts-swatch-ovr { border-top-color: #00801a; }
+body.theme-light .ts-dd-btn { border-color: #7fbf8e; background: #fff; color: #00591a; }
+body.theme-light .ts-dd-btn:hover, body.theme-light .ts-dd-btn.is-filtered { border-color: #00801a; box-shadow: none; }
+body.theme-light .ts-dd-caret { color: #2e6b3c; }
+body.theme-light .ts-dd-panel { border-color: #00801a; background: #fff; box-shadow: 0 2px 10px rgba(0, 80, 20, 0.25); }
+body.theme-light .ts-dd-item { color: #00591a; }
+body.theme-light .ts-dd-item:hover { background: #e3f5e7; }
+body.theme-light .ts-wrap { border-color: #7fbf8e; background: #fff; }
+body.theme-light .ts-table th, body.theme-light .ts-table td { border-color: #b8dcc0; }
+body.theme-light .ts-table th,
+body.theme-light .ts-table th.ts-c0, body.theme-light .ts-table th.ts-c1, body.theme-light .ts-table th.ts-c2,
+body.theme-light .ts-table th.ts-c3, body.theme-light .ts-table th.ts-c4, body.theme-light .ts-table th.ts-c5 { background: #d9f0de; color: #00591a; }
+body.theme-light .ts-table .ts-c0, body.theme-light .ts-table .ts-c1, body.theme-light .ts-table .ts-c2,
+body.theme-light .ts-table .ts-c3, body.theme-light .ts-table .ts-c4, body.theme-light .ts-table .ts-c5 { background: #f4fbf5; }
+body.theme-light .ts-c5 { box-shadow: 3px 0 4px rgba(0, 80, 20, 0.15); }
+body.theme-light .ts-spec, body.theme-light .ts-table td.ts-cat { color: #2e6b3c; }
+body.theme-light .ts-table tbody tr:hover td { box-shadow: inset 0 0 0 9999px rgba(0, 128, 26, 0.06); }
+body.theme-light .ts-na { color: #9cc4a5; }
+body.theme-light .ts-ovr:after { border-top-color: #00801a; }

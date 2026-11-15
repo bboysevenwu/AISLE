@@ -919,5 +919,13 @@
         });
 
         loadRange();
+
+        // 網址帶 &tool=（例如從選機表點數值格過來）：捲到單台機台趨勢
+        if (CFG.focusTool) {
+            var $single = $('.cd-box[data-kind="single"]').first();
+            if ($single.length) {
+                $('html, body').scrollTop($single.offset().top - 80);
+            }
+        }
     });
 })(window.jQuery, window);

@@ -306,6 +306,19 @@ crontab -e
    - 依需要調整類別顏色、可用率門檻；`[sync] idle_seconds` 要小於 `app.ini` 的 `session_idle`（程式也會自動調小）
 5. `python scripts/python/check_config.py`，再以 EE 帳號開啟「借機 / PM 排程 // TOOL BOARD」
 
+## 17-3.（選用）啟用設備選機表
+
+不需要建資料表。
+
+1. 確認 `storage/cache` 可寫入（17-2 已設定過就不用再做）
+2. 每個機型的設定檔 `config/tool_select/PAN.ini`、`PAP.ini`、`POV.ini`：
+   - `[tools]` 換成實際機台；`[category]` 分類；`[item.<代號>]` 項目、spec、`key`（JSON 裡的名稱）、`href`（可留空）
+   - 同一項目某台 spec 不同：加 `upper_oos.APAN03 = 6` 這類機台覆蓋
+   - `[page] json_path` 填這個機型數值 JSON 檔的絕對路徑（Apache 要能讀），並把 `sample` 改成 `Off`
+3. `config/tool_select.ini`：依需要調整超規底色、狀態底色
+4. `python scripts/python/check_config.py`（會逐一檢查每個項目的 spec 與機台覆蓋），再開啟「選機表 // TOOL SELECT」
+5. 想從選機表點數值格直接看某台的趨勢：該項目 `href` 寫 `"?m=<chart 頁面代號>&tool={tool}"`（charts 頁面也支援手動帶 `&tool=APAN01`、`&days=30`）
+
 ## 18. 不能 git pull 時的更新方式（單檔更新）
 
 公司內只能開 GitHub 網頁複製文字時使用。每次更新會在 repo 的 `updates/` 放一個純文字更新檔，裡面包含這次新增、修改、刪除的所有檔案；在主機上貼成一個檔案，執行一次 `apply_update.py` 就全部更新完。

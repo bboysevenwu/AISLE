@@ -21,6 +21,9 @@
     config/tool_board/<機型>.ini 存在且格式正確、顏色是 Hex、機台沒有重複列在多個機型、
     每個機型至少一個 [wip.*]、[editors] 帳號是否在 [ee_accounts]（警告）、
     可用率公式檔存在、PM JSON 檔可解析（單引號格式只警告）
+  - 設備選機表（有 [page.tool_select] 時）：config/tool_select.ini 與每個機型的
+    config/tool_select/<機型>.ini 存在且格式正確、顏色是 Hex、項目的分類存在、
+    spec（含機台覆蓋）大小關係正確、覆蓋的機台在 [tools] 裡、href 格式、數值 JSON 檔可解析
   - 列出每個身份可用的頁面
 
 用法：python scripts/python/check_config.py
@@ -375,6 +378,161 @@ def check_tool_board(ee_accounts, errors, warnings):
             m, len(tools), ', '.join(editors) or '-', ', '.join(wips) or '-', formula, alert))
 
 
+RE_TS_CODE = re.compile(r'^[a-z0-9_]{1,32}$')
+RE_TS_ITEM = re.compile(r'^[a-z0-9_]{1,64}$')
+TS_ITEM_KEYS = ('category', 'label', 'key', 'unit', 'decimals', 'href',
+                'ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light') + SPEC_KEYS
+
+
+def check_tool_select(errors, warnings):
+    """設備選機表設定"""
+    shared_file = os.path.join(ROOT, 'config', 'tool_select.ini')
+    label = 'config/tool_select.ini'
+    if not os.path.isfile(shared_file):
+        errors.append('找不到 %s' % label)
+        return
+    shared = RawConfigParser()
+    try:
+        with open(shared_file) as fp:
+            shared.readfp(fp)
+    except Exception as e:  # noqa
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def sget(parser, section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    models = [m.upper() for m in shared.options('models')] if shared.has_section('models') else []
+    if not models:
+        errors.append('%s 的 [models] 沒有任何機型' % label)
+    for sec in ('color', 'status'):
+        if shared.has_section(sec):
+            for opt in shared.options(sec):
+                v = sget(shared, sec, opt)
+                if v and not RE_HEX.match(v):
+                    errors.append('%s [%s] %s "%s" 不是 Hex 色號（例 "#7A0000"）' % (label, sec, opt, v))
+
+    def number(v, where):
+        if v == '':
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            errors.append('%s 必須是數字或留空：%s' % (where, v))
+            return None
+
+    def check_order(vals, where):
+        uoos, uooc, looc, loos = vals
+        pairs = ((loos, looc, False), (looc, uooc, True), (uooc, uoos, False),
+                 (loos, uoos, True), (loos, uooc, True), (looc, uoos, True))
+        for lo, hi, strict in pairs:
+            if lo is None or hi is None:
+                continue
+            if (lo >= hi) if strict else (lo > hi):
+                errors.append('%s：spec 必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos' % where)
+                return
+
+    for m in models:
+        rel = 'config/tool_select/%s.ini' % m
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            errors.append('找不到機型設定檔 %s' % rel)
+            continue
+        parser = RawConfigParser()
+        try:
+            with open(path) as fp:
+                parser.readfp(fp)
+        except Exception as e:  # noqa
+            errors.append('%s 解析失敗：%s' % (rel, e))
+            continue
+        tools = []
+        for t in read_array('tools', 'tool', path):
+            if not RE_TOOL.match(t):
+                errors.append('%s 機台代號格式錯誤：%s' % (rel, t))
+            elif t.upper() in tools:
+                warnings.append('%s 機台重複：%s' % (rel, t))
+            else:
+                tools.append(t.upper())
+        if not tools:
+            warnings.append('%s 的 [tools] 沒有任何機台' % rel)
+        cats = parser.options('category') if parser.has_section('category') else []
+        for c in cats:
+            if not RE_TS_CODE.match(c):
+                errors.append('%s [category] 代號只能用小寫英文、數字、底線：%s' % (rel, c))
+        if not cats:
+            errors.append('%s 沒有 [category]（分類）' % rel)
+
+        items = 0
+        keys = {}
+        for section in parser.sections():
+            if not section.startswith('item.'):
+                continue
+            items += 1
+            iid = section[len('item.'):]
+            where = '%s [%s]' % (rel, section)
+            if not RE_TS_ITEM.match(iid):
+                errors.append('%s 項目代號只能用小寫英文、數字、底線' % where)
+            cat = sget(parser, section, 'category')
+            if cat not in cats:
+                errors.append('%s category "%s" 不在 [category] 裡' % (where, cat))
+            key = (sget(parser, section, 'key') or iid).lower()
+            if key in keys:
+                warnings.append('%s 的 JSON key "%s" 和 [%s] 重複，兩個項目會顯示相同的值' % (where, key, keys[key]))
+            keys[key] = section
+            spec = [number(sget(parser, section, k), '%s %s' % (where, k)) for k in SPEC_KEYS]
+            check_order(spec, where)
+            overrides = {}
+            for opt in parser.options(section):
+                if '.' in opt:
+                    base, tool = opt.split('.', 1)
+                    tool = tool.upper()
+                    if base not in SPEC_KEYS:
+                        errors.append('%s 不認得的欄位 %s（機台覆蓋只能用 %s）' % (where, opt, ' / '.join(SPEC_KEYS)))
+                        continue
+                    if tool not in tools:
+                        errors.append('%s %s 的機台 %s 不在 [tools] 裡' % (where, opt, tool))
+                        continue
+                    overrides.setdefault(tool, list(spec))[SPEC_KEYS.index(base)] = \
+                        number(sget(parser, section, opt), '%s %s' % (where, opt))
+                elif opt not in TS_ITEM_KEYS:
+                    warnings.append('%s 不認得的欄位：%s（會被忽略）' % (where, opt))
+            for tool, vals in overrides.items():
+                check_order(vals, '%s 機台 %s' % (where, tool))
+            for k in ('ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light'):
+                v = sget(parser, section, k)
+                if v and not RE_HEX.match(v):
+                    errors.append('%s %s "%s" 不是 Hex 色號' % (where, k, v))
+            href = sget(parser, section, 'href')
+            if href and (re.search(r'[\s"\'<>\\]', href) or not re.match(r'^(\?|/(?!/)|https?://)', href, re.I)):
+                errors.append('%s href 只能是 "?m=..."、"/..." 或 http(s):// 開頭：%s' % (where, href))
+            dec = sget(parser, section, 'decimals')
+            if dec and not dec.isdigit():
+                errors.append('%s decimals 必須是 0 以上的整數' % where)
+        if not items:
+            warnings.append('%s 沒有任何 [item.<代號>]（項目）' % rel)
+
+        sample = sget(parser, 'page', 'sample').lower() in ('1', 'on', 'yes', 'true')
+        json_path = sget(parser, 'page', 'json_path')
+        status = '範例值' if sample else (json_path or '未設定 json_path')
+        if not sample and json_path:
+            if not os.path.isfile(json_path):
+                warnings.append('%s [page] json_path 檔案不存在：%s（頁面會顯示警告，數值顯示 "-"）' % (rel, json_path))
+            else:
+                import json
+                import ast
+                with open(json_path) as fp:
+                    text = fp.read()
+                try:
+                    json.loads(text)
+                except ValueError:
+                    try:
+                        ast.literal_eval(text)
+                        warnings.append('數值檔 %s 不是標準 JSON（單引號），頁面會自動轉換；請產生端改用 json.dump' % json_path)
+                    except Exception:  # noqa
+                        errors.append('數值檔 %s 無法解析' % json_path)
+        print('== 選機表 %s：機台 %d 台、分類 %d、項目 %d、數值 %s ==' % (m, len(tools), len(cats), items, status))
+
+
 def main():
     errors = []
     warnings = []
@@ -505,6 +663,8 @@ def main():
 
     if 'tool_board' in pages:
         check_tool_board(seen, errors, warnings)
+    if 'tool_select' in pages:
+        check_tool_select(errors, warnings)
 
     print('== 身份可用頁面 ==')
     for role in roles:

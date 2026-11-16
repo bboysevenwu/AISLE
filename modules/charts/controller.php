@@ -45,6 +45,14 @@ class ChartsController extends Controller
         foreach ($tools as $t) {
             $models[$t] = $cfg->modelOf($t);
         }
+        // 網址參數（例如從選機表點過來）：&tool=APAN02 預選單台機台；&days=30 預設區間天數
+        // 機台不在清單或天數不合理時照原本行為
+        $focus = strtoupper($this->query('tool'));
+        if (!in_array($focus, $tools, true)) {
+            $focus = '';
+        }
+        $days = (int) $this->query('days');
+        $days = $days > 0 ? min($days, $cfg->maxDays()) : $cfg->defaultDays();
         $this->render('index', array(
             'chart'      => $cfg->name,
             'plots'      => $cfg->plots(),
@@ -52,7 +60,8 @@ class ChartsController extends Controller
             'models'     => $models,
             'modelRules' => $cfg->models(),
             'quickDays'  => $cfg->quickDays(),
-            'start'      => date('Y-m-d', strtotime('-' . ($cfg->defaultDays() - 1) . ' day')),
+            'focusTool'  => $focus,
+            'start'      => date('Y-m-d', strtotime('-' . ($days - 1) . ' day')),
             'end'        => date('Y-m-d'),
             'source'     => $cfg->source(),
         ));

@@ -29,7 +29,7 @@ $echartsSrc = is_file(AISLE_ROOT . '/public/assets/' . $echartsLocal)
                 <label for="cd-tool">機台 // TOOL</label>
                 <select id="cd-tool">
                     <?php foreach ($tools as $t): ?>
-                        <option value="<?php echo e($t); ?>"><?php echo e($t); ?></option>
+                        <option value="<?php echo e($t); ?>"<?php echo $t === $focusTool ? ' selected' : ''; ?>><?php echo e($t); ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
@@ -133,6 +133,7 @@ window.AISLE_CHARTS = {
     groups: <?php echo js($plots); ?>,
     tools:  <?php echo js($tools); ?>,
     models: <?php echo js((object) $models); ?>,
+    focusTool: <?php echo js($focusTool); ?>,
     urls: {
         tbt:    <?php echo js(url($module, 'tbt')); ?>
     }

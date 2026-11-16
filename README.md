@@ -23,7 +23,9 @@ AISLE/
 │   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
 │   ├── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
 │   ├── tool_board.ini         # 借機 / PM 看板共用設定：機型、類別顏色、可用率、PM JSON 路徑（見第 12 節）
-│   └── tool_board/<機型>.ini  # 借機 / PM 看板各機型：機台清單、可編輯成員、WIP 處理方式
+│   ├── tool_board/<機型>.ini  # 借機 / PM 看板各機型：機台清單、可編輯成員、WIP 處理方式
+│   ├── tool_select.ini        # 選機表共用設定：機型、超規底色、狀態底色（見第 13 節）
+│   └── tool_select/<機型>.ini # 選機表各機型：機台、分類、項目、spec（可依機台覆蓋）、數值 JSON 路徑
 ├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
 │   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
 │   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
@@ -560,6 +562,7 @@ class BSLrChart extends ChartSource
 - 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
 - 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
 - 每張圖都有「資料表」按鈕可切換成表格檢視
+- 網址參數（選用）：`&tool=APAN01` 預選「單台機台趨勢」的機台並捲到該區塊（機台不在清單時忽略）；`&days=30` 預設區間改成最近 30 天（不超過 `max_days`）。選機表點數值格就是用這個（見第 13 節）
 - 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
 
 ![charts](docs/screenshots/charts.png)
@@ -681,3 +684,91 @@ Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN
 ![tool board form](docs/screenshots/tool_board_form.png)
 
 ![tool board fullscreen](docs/screenshots/tool_board_fullscreen.png)
+
+## 13. 設備選機表（`?m=tool_select`）
+
+Tool Selection Matrix。上方機型頁籤 **1980 (PAN) / 2000 (PAP) / YSM (POV)**；表格欄位 `分類 | 項目 | uOOS | uOOC | lOOC | lOOS | 各機台`，數值超出 OOC / OOS 時格子上底色。EE、PE 都能看（唯讀），也都能匯出 CSV。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.tool_select]` | 頁面登記；EE、PE 都在 `[access]`；`action.export = "EE,PE"` |
+| `config/tool_select.ini` | 共用：機型清單、超規底色（暗色 / 亮色主題各一組）、狀態文字底色 |
+| `config/tool_select/<機型>.ini` | 各機型：`[page]` 數值 JSON 路徑、`[tools]` 機台、`[category]` 分類、`[item.<代號>]` 項目 |
+| `modules/tool_select/` | controller（頁面 / 資料 / 匯出）、設定讀取（SelectConfig）、JSON 讀取（ValueSource）、view |
+| `public/assets/js/tool_select.js` | 表格、篩選、超規判斷、機台下拉選單 |
+| `storage/cache/` | JSON 解析快取（檔案改變才重新解析） |
+
+不需要建資料表，也不連資料庫。
+
+**項目設定**（`config/tool_select/<機型>.ini`）
+
+```ini
+[category]
+focus = "Focus"
+ovl   = "OVL"
+
+[item.m1bf_ry]
+category  = "focus"           ; 必填，[category] 的代號
+label     = "M1BF Ry"         ; 顯示名稱
+key       = "M1BF_Ry"         ; JSON 裡的名稱（省略 = 代號），不分大小寫
+unit      = "nm"              ; 選用
+decimals  = 2                 ; 選用，顯示幾位小數
+upper_oos = 5.5               ; spec 四條都選用，留空 = 不判斷那一條
+upper_ooc = 5
+lower_ooc =
+lower_oos =
+upper_oos.APAN03 = 6          ; 機台覆蓋：只有 APAN03 用不同的 spec，只寫要不同的那幾條
+upper_ooc.APAN03 = 5.5
+href      = "?m=m1bf&tool={tool}"   ; 選用，可留空 = 沒有連結
+ooc_bg    = "#A0522D"         ; 選用，這個項目自己的 OOC 底色（還有 oos_bg、ooc_bg_light、oos_bg_light）
+```
+
+- 表格依 `[category]` 的順序分組，同分類內依 `[item.*]` 的順序；同分類的分類格合併
+- spec 必須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`（機台覆蓋後也要符合），錯了頁面與 `check_config.py` 都會指出是哪一項
+- 有機台覆蓋的格子右上角有小三角，滑鼠移上去顯示那台實際用的 spec；超規一律用那台的 spec 判定
+
+**超規判定與底色**
+
+| 判定 | 條件 | 底色 |
+|---|---|---|
+| OOS | 大於 `upper_oos` 或小於 `lower_oos` | `oos_bg`（預設紅） |
+| OOC | 不是 OOS，且大於 `upper_ooc` 或小於 `lower_ooc` | `ooc_bg`（預設橘黃） |
+| 正常 | 其他（**剛好等於界限算正常**） | 無 |
+
+- 顏色：`config/tool_select.ini [color]` 是全站預設（`*_light` 給亮色主題），項目可用同名欄位覆蓋；文字依底色深淺自動用黑或白
+- 非數字的值（例 `Down`、`PM`）當作狀態，不判斷 spec，依 `[status]` 上底色
+
+**數值 JSON**（`[page] json_path`，每個機型各自一個檔）
+
+```json
+{"updated": "2026-11-15 08:00",
+ "data": {"APAN01": {"M1BF_Ry": 3.21, "LUSU": "Down", "SAMOS": {"v": -3.4, "t": "2026-11-15 07:30"}},
+          "APAN02": {"M1BF_Ry": 5.12}}}
+```
+
+- 機台 → 項目 → 值；值可以是數字、數字字串、狀態文字，或 `{"v": 值, "t": "資料時間"}`（`t` 顯示在滑鼠提示）
+- `updated` 顯示在表格右上（省略時顯示檔案修改時間）；也可以省略 `data` 這一層直接 `{"APAN01": {...}}`
+- JSON 裡多的機台 / 項目忽略；ini 有、JSON 沒有的顯示 `-`
+- 不自動刷新，按標題列 `[ ⟳ 重新整理 ]` 重新讀取；檔案沒變時用快取
+- 產生端請用 Python `json.dump`；單引號（Python dict 印法）也會自動轉換，但畫面會提示
+- JSON 還沒準備好時 `sample = On` 用內建範例值先看畫面
+
+**篩選**（全部在瀏覽器端即時套用，條件依機型記在瀏覽器）
+
+- 分類：多選下拉；關鍵字：比對分類與項目名稱，空白分隔多個 = 任一符合
+- 機台：下拉選單，可搜尋（例輸入 `05`），有全選 / 全不選 / 反選（搜尋中只作用在搜尋結果）；沒勾的機台整欄隱藏
+- 「只顯示有超規的項目」：只留在已勾選機台中至少一台超出 OOC 的項目
+- 表頭、分類 / 項目 / 四個 spec 欄固定不捲動
+- **全螢幕**：標題列 `[ ⛶ 全螢幕 ]`（或在頁面上按 **F**）把頁籤 + 選機表放大到整個螢幕，篩選、下拉選單照常可用；按 **Esc**（有開著的下拉選單時先收起選單，再按一次 Esc）或 `[ 🗗 恢復 ]` 回到原本大小。瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗
+
+**連結到 charts**
+
+- `href = "?m=m1bf"`：點項目名稱在新分頁開 chart 頁（自動接上 `base_url`，proxy 前綴下也正常）
+- `href = "?m=m1bf&tool={tool}"`：點**數值格**時 `{tool}` 換成那一欄的機台，chart 頁會預選那台並捲到「單台機台趨勢」；點項目名稱時 `{tool}` 換成空白
+- 也可以寫 `/...` 或 `http(s)://...`；其他寫法（例 `javascript:`）不接受
+
+**匯出 CSV**：`[ 匯出 CSV ]` 匯出目前篩選結果（顯示的項目 × 勾選的機台），最後兩欄列出該項目的 OOC 機台、OOS 機台；UTF-8 BOM，Excel 直接開。
+
+![tool select](docs/screenshots/tool_select.png)
+
+![tool select tool menu](docs/screenshots/tool_select_tool_menu.png)

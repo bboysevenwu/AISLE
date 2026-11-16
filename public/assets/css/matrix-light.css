@@ -252,3 +252,4 @@ body.theme-light .ts-spec, body.theme-light .ts-table td.ts-cat { color: #2e6b3c
 body.theme-light .ts-table tbody tr:hover td { box-shadow: inset 0 0 0 9999px rgba(0, 128, 26, 0.06); }
 body.theme-light .ts-na { color: #9cc4a5; }
 body.theme-light .ts-ovr:after { border-top-color: #00801a; }
+body.theme-light .ts-root.ts-full { background: #f2fbf4; }

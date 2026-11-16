@@ -4,6 +4,7 @@
  *   - 項目篩選（列）：分類多選下拉 + 關鍵字；機台篩選（欄）：可搜尋的多選下拉
  *   - 數值超出 OOC / OOS 依設定上底色；項目名稱 / 數值格可連到 chart（href 的 {tool} 換成機台）
  *   - 篩選全部在瀏覽器端進行，條件依機型記在 localStorage
+ *   - 全螢幕：標題列按鈕或快捷鍵 F；Esc 恢復（瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗）
  * 設定由 view 放在 window.TOOL_SELECT
  */
 (function ($) {
@@ -211,16 +212,103 @@
         this.opts.onChange(this.hidden);
     };
 
-    // 點下拉以外的地方 / Esc 收起
+    // 點下拉以外的地方收起（Esc 在下面的全螢幕區塊一起處理）
     $(document).on('mousedown', function (e) {
         if (!$(e.target).closest('.ts-dd').length) {
             $('.ts-dd-panel').hide();
         }
-    }).on('keydown', function (e) {
-        if (e.which === 27) {
-            $('.ts-dd-panel').hide();
+    });
+
+    // ==================================================================
+    // 全螢幕 / 恢復（做法同借機看板）
+    //   優先用瀏覽器全螢幕 API；瀏覽器不允許時改成「頁面內最大化」（蓋滿瀏覽器視窗）
+    //   Esc：先收起開著的下拉選單，再按一次離開全螢幕
+    // ==================================================================
+    var FS_TEXT = { off: '[ ⛶ 全螢幕 ]', on: '[ 🗗 恢復 ]' };
+    function rootEl() { return document.getElementById('ts-root'); }
+    function fsElement() {
+        return document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+    }
+    function isFull() { return $('#ts-root').hasClass('ts-full'); }
+    function fitWrap() {
+        var $wrap = $('#ts-wrap');
+        if (isFull()) {
+            var top = $wrap.offset().top - $(window).scrollTop();
+            $wrap.css('max-height', Math.max(200, $(window).height() - top - 16) + 'px');
+        } else {
+            $wrap.css('max-height', '');
+        }
+    }
+    function setFull(on, nativeFs) {
+        $('#ts-root').toggleClass('ts-full', on).toggleClass('ts-full-native', on && !!nativeFs);
+        $('body').toggleClass('ts-body-full', on);
+        $('#ts-fs').text(on ? FS_TEXT.on : FS_TEXT.off).attr('title', on ? '恢復正常大小（Esc）' : '選機表全螢幕（快捷鍵 F）');
+        setTimeout(fitWrap, 0);
+    }
+    function enterFull() {
+        var el = rootEl();
+        var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+        if (!req) {
+            setFull(true, false);
+            return;
+        }
+        try {
+            var p = req.call(el);
+            if (p && p.then) {
+                p.then(null, function () { setFull(true, false); });   // 被瀏覽器或政策擋下：頁面內最大化
+            }
+        } catch (err) {
+            setFull(true, false);
+        }
+    }
+    function exitFull() {
+        if (fsElement()) {
+            var ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+            if (ex) {
+                ex.call(document);
+                return;
+            }
+        }
+        setFull(false);
+    }
+    function toggleFull() {
+        if (isFull()) {
+            exitFull();
+        } else {
+            enterFull();
+        }
+    }
+    $(document).on('fullscreenchange webkitfullscreenchange MSFullscreenChange', function () {
+        var el = fsElement();
+        if (el && el === rootEl()) {
+            setFull(true, true);
+        } else if (!el && $('#ts-root').hasClass('ts-full-native')) {
+            setFull(false);
         }
     });
+    $(document).on('keydown', function (e) {
+        if (e.ctrlKey || e.altKey || e.metaKey) {
+            return;
+        }
+        if (e.which === 27) {
+            // 先收起下拉選單；沒有開著的下拉選單時離開全螢幕
+            // （瀏覽器全螢幕時多數瀏覽器自己會處理 Esc，這裡再補一次，收不到也沒關係）
+            if ($('.ts-dd-panel:visible').length) {
+                $('.ts-dd-panel').hide();
+            } else if (isFull()) {
+                exitFull();
+            }
+            return;
+        }
+        if ($(e.target).is('input, textarea, select')) {
+            return;
+        }
+        if ((e.key === 'f' || e.key === 'F' || e.which === 70) && !e.shiftKey) {
+            e.preventDefault();
+            toggleFull();
+        }
+    });
+    $(window).on('resize', fitWrap);
 
     // ==================================================================
     // 篩選條件記憶
@@ -541,6 +629,7 @@
         });
         $('#ts-refresh').on('click', load);
         $('#ts-export').on('click', exportCsv);
+        $('#ts-fs').on('click', toggleFull);
         $('#ts-tabs').on('click', '.pi-tab', function (e) {
             e.preventDefault();
             var m = $(this).data('model');

@@ -76,7 +76,10 @@ class ToolSelectConfig
      *   'categories' => array(代號 => 名稱),
      *   'items'      => array(array('id','category','label','key','unit','decimals',
      *                               'spec' => array(4 個值或 null), 'toolSpec' => array(機台 => array(4)),
+     *                               'offset' => bool, 'target' => 預設 target, 'targets' => array(機台 => target),
+     *                               'abs' => array(機台 => array(4))  偏移模式時每台換算後的絕對 spec,
      *                               'colors' => array(覆蓋的顏色), 'href'), ...))  已依分類排序
+     *   偏移模式（項目有寫任何一行 target / target.<機台>）：spec 與機台覆蓋都是距離 target 的偏移量
      */
     public static function forModel($model)
     {
@@ -130,18 +133,41 @@ class ToolSelectConfig
             foreach (self::$SPEC_KEYS as $k) {
                 $spec[] = self::number(array_get($v, $k, ''), $where . ' ' . $k);
             }
-            self::checkOrder($spec, $where);
+
+            // target：target = 預設、target.APAN01 = 這台；寫了任何一行（含留空）→ 偏移模式
+            $offset = false;
+            $target = 0.0;
+            $targets = array();
+            foreach ($v as $k => $val) {
+                $k = (string) $k;
+                if ($k === 'target') {
+                    $offset = true;
+                    $n = self::number($val, $where . ' target');
+                    $target = $n === null ? 0.0 : $n;
+                } elseif (strpos($k, 'target.') === 0) {
+                    $offset = true;
+                    $tool = strtoupper(trim(substr($k, 7)));
+                    if (!in_array($tool, $tools, true)) {
+                        throw new ToolSelectConfigException($where . '：' . $k . ' 的機台 ' . $tool . ' 不在 [tools] 裡');
+                    }
+                    $n = self::number($val, $where . ' ' . $k);
+                    if ($n !== null) {
+                        $targets[$tool] = $n;
+                    }
+                }
+            }
+            self::checkSpec($spec, $where, $offset);
 
             // 機台覆蓋：upper_oos.APAN03 = 6
             $toolSpec = array();
             foreach ($v as $k => $val) {
-                if (strpos($k, '.') === false) {
+                if (strpos($k, '.') === false || strpos($k, 'target.') === 0) {
                     continue;
                 }
                 list($base, $tool) = explode('.', $k, 2);
                 $idx = array_search($base, self::$SPEC_KEYS, true);
                 if ($idx === false) {
-                    throw new ToolSelectConfigException($where . '：不認得的欄位 ' . $k . '（機台覆蓋只能用 upper_oos / upper_ooc / lower_ooc / lower_oos）');
+                    throw new ToolSelectConfigException($where . '：不認得的欄位 ' . $k . '（機台覆蓋只能用 upper_oos / upper_ooc / lower_ooc / lower_oos / target）');
                 }
                 $tool = strtoupper(trim($tool));
                 if (!in_array($tool, $tools, true)) {
@@ -153,7 +179,22 @@ class ToolSelectConfig
                 $toolSpec[$tool][$idx] = self::number($val, $where . ' ' . $k);
             }
             foreach ($toolSpec as $tool => $s) {
-                self::checkOrder($s, $where . ' 機台 ' . $tool);
+                self::checkSpec($s, $where . ' 機台 ' . $tool, $offset);
+            }
+
+            // 偏移模式：每台換算成絕對 spec（target + upper、target - lower），判斷邏輯不用改
+            $abs = array();
+            if ($offset) {
+                foreach ($tools as $tool) {
+                    $s = isset($toolSpec[$tool]) ? $toolSpec[$tool] : $spec;
+                    $t = isset($targets[$tool]) ? $targets[$tool] : $target;
+                    $abs[$tool] = array(
+                        $s[0] === null ? null : round($t + $s[0], 10),
+                        $s[1] === null ? null : round($t + $s[1], 10),
+                        $s[2] === null ? null : round($t - $s[2], 10),
+                        $s[3] === null ? null : round($t - $s[3], 10),
+                    );
+                }
             }
 
             $colors = array();
@@ -183,6 +224,10 @@ class ToolSelectConfig
                 'decimals' => $dec === '' ? null : max(0, min(8, (int) $dec)),
                 'spec'     => $spec,
                 'toolSpec' => $toolSpec,
+                'offset'   => $offset,
+                'target'   => $target,
+                'targets'  => $targets,
+                'abs'      => $abs,
                 'colors'   => $colors,
                 'href'     => $href,
                 '_cat'     => array_search($cat, array_keys($categories), true),
@@ -213,9 +258,12 @@ class ToolSelectConfig
         return self::$models[$model];
     }
 
-    /** 該項目在某台機台的有效 spec */
+    /** 該項目在某台機台的有效 spec（絕對值；偏移模式時已換算成 target ± 偏移） */
     public static function specOf($item, $tool)
     {
+        if (!empty($item['offset'])) {
+            return isset($item['abs'][$tool]) ? $item['abs'][$tool] : array(null, null, null, null);
+        }
         return isset($item['toolSpec'][$tool]) ? $item['toolSpec'][$tool] : $item['spec'];
     }
 
@@ -285,6 +333,33 @@ class ToolSelectConfig
             || ($looc !== null && $uoos !== null && $looc >= $uoos);
         if ($bad) {
             throw new ToolSelectConfigException($where . '：spec 必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos');
+        }
+    }
+
+    private static function checkSpec($s, $where, $offset)
+    {
+        if ($offset) {
+            self::checkOffset($s, $where);
+        } else {
+            self::checkOrder($s, $where);
+        }
+    }
+
+    /** 偏移模式：都是距離 target 的偏移量，必須 >= 0；同側 OOS >= OOC；上下同一層不能同時為 0 */
+    private static function checkOffset($s, $where)
+    {
+        list($uoos, $uooc, $looc, $loos) = $s;
+        foreach ($s as $i => $x) {
+            if ($x !== null && $x < 0) {
+                throw new ToolSelectConfigException($where . '：有寫 target 時 ' . self::$SPEC_KEYS[$i] .
+                    ' 是距離 target 的偏移量，必須 >= 0（例 lower_ooc = 1.5 表示 target - 1.5）');
+            }
+        }
+        if (($uoos !== null && $uooc !== null && $uoos < $uooc) || ($loos !== null && $looc !== null && $loos < $looc)) {
+            throw new ToolSelectConfigException($where . '：有寫 target 時，同一側的 OOS 偏移量必須大於等於 OOC');
+        }
+        if (($uooc === 0.0 && $looc === 0.0) || ($uoos === 0.0 && $loos === 0.0)) {
+            throw new ToolSelectConfigException($where . '：upper 與 lower 同一層的偏移量不能同時為 0');
         }
     }
 

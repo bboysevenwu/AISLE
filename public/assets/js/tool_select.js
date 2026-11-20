@@ -82,7 +82,23 @@
         }
         return '';
     }
+    /** 偏移模式的 spec 欄：upper 加 +、lower 加 - */
+    function specCell(item, k) {
+        var v = item.spec[k];
+        if (!item.offset || v === null || v === undefined) {
+            return specText(v);
+        }
+        return (k < 2 ? '+' : '-') + specText(v);
+    }
+    /** 偏移模式：該台的 target */
+    function targetOf(item, tool) {
+        return item.targets && item.targets.hasOwnProperty(tool) ? item.targets[tool] : item.target;
+    }
+    /** 某台的有效 spec（絕對值）；偏移模式時伺服器已換算成 target ± 偏移 */
     function specOf(item, tool) {
+        if (item.offset) {
+            return item.abs && item.abs[tool] ? item.abs[tool] : [null, null, null, null];
+        }
         return item.toolSpec && item.toolSpec[tool] ? item.toolSpec[tool] : item.spec;
     }
 
@@ -453,7 +469,8 @@
 
     function cellHtml(it, tool, c) {
         var s = specOf(it, tool);
-        var ovr = !!(it.toolSpec && it.toolSpec[tool]);
+        var ovr = !!(it.toolSpec && it.toolSpec[tool]) ||
+            !!(it.offset && it.targets && it.targets.hasOwnProperty(tool) && it.targets[tool] !== it.target);
         var cls = ['ts-v'], style = '', text = '-', level = '';
         var tip = [tool + ' · ' + it.label];
         if (!c) {
@@ -480,8 +497,13 @@
         if (c && c.t) {
             tip.push('資料時間：' + c.t);
         }
-        if (ovr) {
-            cls.push('ts-ovr');
+        if (it.offset) {
+            tip.push('此機台 target ' + specText(targetOf(it, tool)));
+        }
+        if (ovr || it.offset) {
+            if (ovr) {
+                cls.push('ts-ovr');
+            }
             tip.push('此機台 spec：uOOS ' + specText(s[0]) + ' / uOOC ' + specText(s[1]) +
                 ' / lOOC ' + specText(s[2]) + ' / lOOS ' + specText(s[3]));
         }
@@ -540,9 +562,10 @@
             if (href) {
                 label = '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer" title="開啟 chart">' + label + '</a>';
             }
-            h += '<td class="ts-c1 ts-item">' + label + (it.unit ? ' <small class="dim">' + esc(it.unit) + '</small>' : '') + '</td>';
+            h += '<td class="ts-c1 ts-item">' + label + (it.unit ? ' <small class="dim">' + esc(it.unit) + '</small>' : '') +
+                (it.offset ? ' <small class="dim ts-target" title="spec 是距離各機台 target 的偏移量（滑鼠移到數值格看該台的 target 與 spec）">±T</small>' : '') + '</td>';
             for (k = 0; k < 4; k++) {
-                h += '<td class="ts-spec ts-c' + (k + 2) + '">' + specText(it.spec[k]) + '</td>';
+                h += '<td class="ts-spec ts-c' + (k + 2) + '">' + specCell(it, k) + '</td>';
             }
             var vals = d.values[it.id] || {};
             for (var j = 0; j < tools.length; j++) {
@@ -559,10 +582,13 @@
 
     function renderLegend() {
         var c = state.data.colors, sfx = isLight() ? '_light' : '';
+        var anyOffset = false;
+        $.each(state.data.items, function (i, it) { anyOffset = anyOffset || !!it.offset; });
         $('#ts-legend').html(
             '圖例 <span class="ts-swatch" style="background:' + c['ooc_bg' + sfx] + '"></span>OOC ' +
             '<span class="ts-swatch" style="background:' + c['oos_bg' + sfx] + '"></span>OOS ' +
-            '<span class="ts-swatch ts-swatch-ovr"></span>該機台 spec 有覆蓋（滑鼠移上去看）'
+            '<span class="ts-swatch ts-swatch-ovr"></span>該機台 spec' + (anyOffset ? ' 或 target' : '') + ' 有覆蓋（滑鼠移上去看）' +
+            (anyOffset ? ' <small class="dim">±T</small> spec 為距離各機台 target 的偏移量' : '')
         );
     }
 

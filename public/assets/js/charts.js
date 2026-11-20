@@ -60,7 +60,8 @@
             ZOOM_FILL: 'rgba(0,255,65,0.12)',
             ZOOM_AREA: 'rgba(0,255,65,0.08)',
             OOS: '#ff3b3b',                 // spec 線：OOS（規格界限）
-            OOC: '#ffb000'                  // spec 線：OOC（管制界限）
+            OOC: '#ffb000',                 // spec 線：OOC（管制界限）
+            TARGET: '#4dd0e1'               // target 線（ini 有寫 target 的組）
         },
         light: {
             INK: '#00591a',
@@ -77,7 +78,8 @@
             ZOOM_FILL: 'rgba(0,143,17,0.15)',
             ZOOM_AREA: 'rgba(0,143,17,0.10)',
             OOS: '#c62828',
-            OOC: '#b26a00'
+            OOC: '#b26a00',
+            TARGET: '#00838f'
         }
     };
     var T, INK, INK_DIM, GRID, AXIS, NEUTRAL, BAND;
@@ -139,12 +141,15 @@
         };
     }
 
-    /** Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt */
-    function valueAxis(group, kind) {
+    /**
+     * Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt
+     * lines = specLines() 的結果。偏移模式的 newest / tbt 畫的是「值 - target」，軸名稱加註
+     */
+    function valueAxis(group, kind, lines) {
         var lim = (group.limits && group.limits[kind]) || {};
         var axis = {
             type: 'value',
-            name: group.unit || 'Data',
+            name: (group.unit || 'Data') + (group.offset && kind !== 'single' ? '（- target）' : ''),
             nameTextStyle: { color: INK_DIM },
             axisLine: { show: false },
             axisTick: { show: false },
@@ -152,7 +157,10 @@
             splitLine: { lineStyle: { color: GRID } },
             scale: kind !== 'newest'
         };
-        var spec = specValues(group);
+        if (group.offset && kind !== 'single') {
+            axis.nameTextStyle.align = 'left';   // 名稱較長，靠左對齊才不會被裁掉
+        }
+        var spec = $.map(lines, function (l) { return l.value; });
         if (lim.min !== null && lim.min !== undefined) {
             axis.min = lim.min;
         } else if (spec.length) {
@@ -166,16 +174,97 @@
         return axis;
     }
 
-    /** 這組圖有設定的 spec 值（數字陣列） */
-    function specValues(group) {
-        var out = [];
-        $.each(SPEC_KEYS, function (i, k) {
-            var v = group.spec ? group.spec[k.key] : null;
-            if (v !== null && v !== undefined) {
-                out.push(v);
+    // ---------- target（偏移模式） ----------
+    // ini 有寫任何一行 target 的組 group.offset = true：spec 是距離 target 的偏移量，
+    //   single：畫原始值，spec 線在 target ± 偏移，另畫 target 線
+    //   newest / tbt：畫「值 - target」，所有機台共用 +偏移 / 0 / -偏移 的水平線
+    // 取值順序：target.<機台>.<參數> → target.<機台> → target → 0（機台不分大小寫）
+
+    /** 某台機台、某個參數的 target；不是偏移模式時為 0 */
+    function targetOf(group, tool, param) {
+        if (!group.offset) {
+            return 0;
+        }
+        var t = group.targets ? group.targets[String(tool).toLowerCase()] : null;
+        if (t && t.hasOwnProperty(param)) {
+            return t[param];
+        }
+        if (t && t.hasOwnProperty('*')) {
+            return t['*'];
+        }
+        return group.target || 0;
+    }
+
+    /** 扣掉 target 的偏差，去掉浮點誤差（28.2 - 27 = 1.2 而不是 1.1999999） */
+    function minus(v, t) {
+        return parseFloat((v - t).toPrecision(12));
+    }
+
+    /** newest / tbt 的資料點：偏移模式時畫偏差，原始值放在 raw 給 tooltip 用 */
+    function plotPoint(group, tool, param, v) {
+        if (v === null || v === undefined) {
+            return null;
+        }
+        if (!group.offset) {
+            return v;
+        }
+        return { value: minus(v, targetOf(group, tool, param)), raw: v };
+    }
+
+    /** tooltip 顯示的原始值 */
+    function rawOf(p) {
+        return p.data && typeof p.data === 'object' && p.data.hasOwnProperty('raw') ? p.data.raw : p.value;
+    }
+
+    /**
+     * 這張圖要畫的 spec 線：[{ key, value, text, colorKey, type }]
+     *   絕對值模式：ini 的四條線（三個區塊相同）
+     *   偏移模式 single：依所選機台每個參數的 target 算出 target ± 偏移與 target 線；
+     *                    各參數 target 相同時只有一組線，不同時每個參數各一組，標籤加參數簡稱
+     *   偏移模式 newest / tbt：+偏移 / 0（target）/ -偏移
+     */
+    function specLines(group, kind, tool) {
+        var lines = [];
+        function add(t, prefix) {
+            $.each(SPEC_KEYS, function (i, k) {
+                var v = group.spec ? group.spec[k.key] : null;
+                if (v === null || v === undefined) {
+                    return;
+                }
+                if (group.offset) {
+                    v = k.key.indexOf('upper') === 0 ? minus(t, -v) : minus(t, v);
+                }
+                lines.push({ key: k.key, value: v, text: prefix + k.label + ' ' + fmtNum(v), colorKey: k.colorKey, type: k.type });
+            });
+            if (group.offset) {
+                lines.push({ key: 'target', value: t, text: prefix + 'Target ' + fmtNum(t), colorKey: 'TARGET', type: 'dotted' });
             }
-        });
-        return out;
+        }
+        if (!group.offset) {
+            add(0, '');
+        } else if (kind !== 'single') {
+            add(0, '');
+        } else {
+            var order = [];
+            var byTarget = {};
+            $.each(group.params, function (i, p) {
+                var t = targetOf(group, tool, p);
+                var key = String(t);
+                if (!byTarget.hasOwnProperty(key)) {
+                    byTarget[key] = { t: t, names: [] };
+                    order.push(key);
+                }
+                byTarget[key].names.push(shortName(p, group));
+            });
+            $.each(order, function (i, key) {
+                add(byTarget[key].t, order.length > 1 ? byTarget[key].names.join(',') + ' ' : '');
+            });
+        }
+        return lines;
+    }
+
+    function fmtNum(v) {
+        return String(parseFloat(Number(v).toPrecision(10)));
     }
 
     /** 資料範圍 v（{min, max}）加上 spec 線後的 Y 軸上下限，取整到刻度間距 */
@@ -208,24 +297,20 @@
         return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
     }
 
-    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒設定 spec 時回傳 null */
-    function specSeries(group) {
+    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒有線時回傳 null */
+    function specSeries(specs) {
         var lines = [];
-        $.each(SPEC_KEYS, function (i, k) {
-            var v = group.spec ? group.spec[k.key] : null;
-            if (v === null || v === undefined) {
-                return;
-            }
+        $.each(specs, function (i, l) {
             lines.push({
-                name: k.key,
-                yAxis: v,
-                lineStyle: { color: T[k.colorKey], type: k.type, width: 1.5 },
+                name: l.key,
+                yAxis: l.value,
+                lineStyle: { color: T[l.colorKey], type: l.type, width: 1.5 },
                 label: {
                     show: true,
-                    position: k.key.indexOf('upper') === 0 ? 'insideEndTop' : 'insideEndBottom',
-                    color: T[k.colorKey],
+                    position: l.key.indexOf('lower') === 0 ? 'insideEndBottom' : 'insideEndTop',
+                    color: T[l.colorKey],
                     fontFamily: FONT,
-                    formatter: k.label + ' ' + fmt(v)
+                    formatter: l.text
                 }
             });
         });
@@ -242,8 +327,8 @@
     }
 
     /** 有 spec 時把輔助 series 加到 series 陣列最後 */
-    function pushSpec(series, group) {
-        var s = specSeries(group);
+    function pushSpec(series, specs) {
+        var s = specSeries(specs);
         if (s) {
             series.push(s);
         }
@@ -420,9 +505,10 @@
             axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{yyyy}-{MM}-{dd} {HH}:{mm}:{ss}' },
             splitLine: { show: false }
         };
-        opt.yAxis = valueAxis(group, 'single');
+        var specs = specLines(group, 'single', tool);
+        opt.yAxis = valueAxis(group, 'single', specs);
         opt.dataZoom = [{ type: 'inside' }];
-        pushSpec(series, group);
+        pushSpec(series, specs);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -442,7 +528,12 @@
                 if (decalOf(pi)) {
                     style.decal = decalOf(pi);
                 }
-                bars.push({ value: s.Data[param][0], date: s.Date[param][0], itemStyle: style });
+                var v = s.Data[param][0];
+                var bar = { value: v, raw: v, date: s.Date[param][0], itemStyle: style };
+                if (group.offset && v !== null && v !== undefined) {
+                    bar.value = minus(v, targetOf(group, tool, param));   // 偏移模式畫「值 - target」
+                }
+                bars.push(bar);
             });
             // series 的 itemStyle 只決定圖例的樣子（中性色 + 該參數的紋理），每根長條另用機台色
             var legendStyle = { color: NEUTRAL };
@@ -471,7 +562,7 @@
             }
             var html = '<b>' + AISLE.escape(params[0].name) + '</b>';
             $.each(params, function (i, p) {
-                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value) + '</b>' +
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(rawOf(p)) + '</b>' +
                     ' <span style="color:' + INK_DIM + '">(' + fmt(p.data.date) + ')</span>';
             });
             return html;
@@ -483,8 +574,9 @@
             axisTick: { show: false },
             axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
         };
-        opt.yAxis = valueAxis(group, 'newest');
-        pushSpec(series, group);
+        var specs = specLines(group, 'newest');
+        opt.yAxis = valueAxis(group, 'newest', specs);
+        pushSpec(series, specs);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);
@@ -528,7 +620,7 @@
                     arr[k] = null;
                 }
                 for (var j = 0; j < s.Date.length; j++) {
-                    arr[seg.from + j] = col[j] === undefined ? null : col[j];
+                    arr[seg.from + j] = plotPoint(group, seg.tool, param, col[j]);   // 偏移模式為「值 - target」
                 }
                 paramOf.push(param);
                 series.push({
@@ -575,7 +667,7 @@
                 if (!html) {
                     html = p.marker + AISLE.escape(p.seriesName) + '<br>' + AISLE.escape(String(p.name).split('|')[1]);
                 }
-                html += '<br>' + AISLE.escape(paramOf[p.seriesIndex]) + '：<b>' + fmt(p.value) + '</b>';
+                html += '<br>' + AISLE.escape(paramOf[p.seriesIndex]) + '：<b>' + fmt(rawOf(p)) + '</b>';
             });
             return html;
         };
@@ -593,7 +685,8 @@
             },
             splitLine: { show: false }
         };
-        opt.yAxis = valueAxis(group, 'tbt');
+        var specs = specLines(group, 'tbt');
+        opt.yAxis = valueAxis(group, 'tbt', specs);
         opt.dataZoom = [
             { type: 'inside' },
             {
@@ -605,7 +698,7 @@
                 labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
             }
         ];
-        pushSpec(series, group);
+        pushSpec(series, specs);
         opt.series = series;
         box.chart.clear();
         box.chart.setOption(opt);

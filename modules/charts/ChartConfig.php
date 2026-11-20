@@ -14,17 +14,23 @@
  *   [db]            這張 chart 查資料用的資料庫連線：ip、port、name、user、password、charset
  *                   ip 沒填（或沒有 [db]）時沿用 AISLE 自己的資料庫（config/app.ini 的 [database]）
  *   [plot.<代號>]   一組圖：title、params、unit、single / newest / tbt、connect、ymin / ymax、<區塊>_ymin / <區塊>_ymax、
- *                   spec 線 upper_oos / upper_ooc / lower_ooc / lower_oos（可留空）
+ *                   spec 線 upper_oos / upper_ooc / lower_ooc / lower_oos（可留空）、
+ *                   target / target.<機台> / target.<機台>.<參數>（有寫任何一行 → 偏移模式）
  *
  * $cfg->plots() 回傳（依檔案順序）：
  *   array(
  *     array('id' => 'm1bf_z', 'title' => 'M1BF_Z', 'params' => array('M1BF_Z_C1', 'M1BF_Z_C2'),
  *           'unit' => 'Data', 'single' => true, 'newest' => true, 'tbt' => true, 'connect' => false,
  *           'limits' => array('single' => array('min' => 0, 'max' => 5), 'newest' => array(...), 'tbt' => array(...)),
- *           'spec'   => array('upper_oos' => 6, 'upper_ooc' => 5, 'lower_ooc' => null, 'lower_oos' => null)),
+ *           'spec'   => array('upper_oos' => 6, 'upper_ooc' => 5, 'lower_ooc' => null, 'lower_oos' => null),
+ *           'offset' => true, 'target' => 0,
+ *           'targets' => array('apan01' => array('*' => 27, 'M1BF_Z_C2' => 26.5))),
  *     ...
  *   )
  *   min / max 為 null 表示自動；spec 為 null 表示不畫線
+ *   offset = false：spec 是絕對值（沒寫任何 target 的組，維持原本行為）
+ *   offset = true ：spec 是距離 target 的偏移量（一律 >= 0），線畫在 target ± 偏移；
+ *                   targets 的機台一律小寫（比對不分大小寫），'*' = 該台所有參數
  *
  * [db] 只給伺服器端的 ChartSource 使用，不會出現在 plots()，不會送到瀏覽器。
  */
@@ -275,7 +281,7 @@ class ChartConfig
         if (!$params) {
             throw new RuntimeException($label . ' [' . $section . '] 沒有設定 params');
         }
-        return array(
+        $out = array(
             'id'     => $id,
             'title'  => (string) array_get($conf, 'title', $id),
             'params' => $params,
@@ -289,15 +295,66 @@ class ChartConfig
                 'newest' => self::limits($conf, 'newest', $label, $section),
                 'tbt'    => self::limits($conf, 'tbt', $label, $section),
             ),
-            'spec'   => self::spec($conf, $label, $section),
         );
+        $t = self::targets($conf, $params, $label, $section);
+        $out['spec'] = self::spec($conf, $label, $section, $t['offset']);
+        return array_merge($out, $t);
+    }
+
+    /**
+     * target：寫了任何一行 target / target.<機台> / target.<機台>.<參數>（含留空的 target =）→ 偏移模式
+     * 取值順序：target.<機台>.<參數> → target.<機台> → target → 0
+     * 機台不分大小寫（存成小寫）；參數必須在這組的 params 裡（區分大小寫）
+     * 機台不檢查是否存在（機台清單是執行時從資料庫取得），不存在的機台就用不到
+     */
+    private static function targets($conf, $params, $label, $section)
+    {
+        $offset = false;
+        $default = 0.0;
+        $targets = array();
+        foreach ($conf as $k => $v) {
+            $k = (string) $k;
+            if ($k !== 'target' && strpos($k, 'target.') !== 0) {
+                continue;
+            }
+            $offset = true;
+            $raw = trim((string) $v);
+            if ($raw !== '' && !is_numeric($raw)) {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 必須是數字或留空：' . $raw);
+            }
+            if ($k === 'target') {
+                if ($raw !== '') {
+                    $default = (float) $raw;
+                }
+                continue;
+            }
+            $rest = explode('.', substr($k, 7), 2);
+            $tool = strtolower(trim($rest[0]));
+            $param = isset($rest[1]) ? trim($rest[1]) : '*';
+            if ($tool === '' || $param === '') {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 格式錯誤，應為 target.<機台> 或 target.<機台>.<參數>');
+            }
+            if ($param !== '*' && !in_array($param, $params, true)) {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 的參數 ' . $param .
+                    ' 不在 params 裡（區分大小寫：' . implode(', ', $params) . '）');
+            }
+            if ($raw === '') {
+                continue;   // 留空 = 沒寫，往下一層找
+            }
+            if (!isset($targets[$tool])) {
+                $targets[$tool] = array();
+            }
+            $targets[$tool][$param] = (float) $raw;
+        }
+        return array('offset' => $offset, 'target' => $default, 'targets' => $targets);
     }
 
     /**
      * spec 線：upper_oos / upper_ooc / lower_ooc / lower_oos，沒設定或空字串為 null（不畫線）
-     * 有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+     * 絕對值模式：有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+     * 偏移模式  ：都是距離 target 的偏移量，必須 >= 0；同側 OOS >= OOC；上下同一層不能同時為 0
      */
-    private static function spec($conf, $label, $section)
+    private static function spec($conf, $label, $section, $offset = false)
     {
         $keys = array('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos');
         $out = array();
@@ -310,6 +367,10 @@ class ChartConfig
                 }
                 $out[$k] = (float) $raw;
             }
+        }
+        if ($offset) {
+            self::checkOffsetSpec($out, $label . ' [' . $section . '] ');
+            return $out;
         }
         // 由上到下：upper_oos >= upper_ooc > lower_ooc >= lower_oos（同一側的 OOC 與 OOS 可以相等）
         for ($i = 0; $i < count($keys); $i++) {
@@ -327,6 +388,27 @@ class ChartConfig
             }
         }
         return $out;
+    }
+
+    private static function checkOffsetSpec($s, $where)
+    {
+        foreach ($s as $k => $v) {
+            if ($v !== null && $v < 0) {
+                throw new RuntimeException($where . '有寫 target 時 ' . $k . ' 是距離 target 的偏移量，必須 >= 0（例 lower_ooc = 1.5 表示 target - 1.5）');
+            }
+        }
+        foreach (array('upper', 'lower') as $side) {
+            $oos = $s[$side . '_oos'];
+            $ooc = $s[$side . '_ooc'];
+            if ($oos !== null && $ooc !== null && $oos < $ooc) {
+                throw new RuntimeException($where . $side . '_oos（' . $oos . '）必須大於等於 ' . $side . '_ooc（' . $ooc . '）');
+            }
+        }
+        foreach (array('ooc', 'oos') as $lv) {
+            if ($s['upper_' . $lv] === 0.0 && $s['lower_' . $lv] === 0.0) {
+                throw new RuntimeException($where . 'upper_' . $lv . ' 與 lower_' . $lv . ' 不能同時為 0');
+            }
+        }
     }
 
     /**

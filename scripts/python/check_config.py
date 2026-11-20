@@ -16,6 +16,7 @@
   - 沒有任何身份能使用的頁面、modules/ 下沒登記的資料夾（警告）
   - 圖表（route = module:charts 的頁面）：charts/<名稱>.ini 存在且格式正確、
     source = php 時 charts/<名稱>.php 存在且有 <名稱>Chart 類別、
+    target / target.<機台> / target.<機台>.<參數> 是數字、參數在 params 裡（偏移模式 spec 規則）、
     charts/ 底下沒有頁面使用的 chart（警告）
   - 借機 / PM 看板（有 [page.tool_board] 時）：config/tool_board.ini 與每個機型的
     config/tool_board/<機型>.ini 存在且格式正確、顏色是 Hex、機台沒有重複列在多個機型、
@@ -23,7 +24,8 @@
     可用率公式檔存在、PM JSON 檔可解析（單引號格式只警告）
   - 設備選機表（有 [page.tool_select] 時）：config/tool_select.ini 與每個機型的
     config/tool_select/<機型>.ini 存在且格式正確、顏色是 Hex、項目的分類存在、
-    spec（含機台覆蓋）大小關係正確、覆蓋的機台在 [tools] 裡、href 格式、數值 JSON 檔可解析
+    spec（含機台覆蓋）大小關係正確、覆蓋的機台在 [tools] 裡、href 格式、數值 JSON 檔可解析、
+    target / target.<機台> 是數字且機台在 [tools] 裡（偏移模式時 spec 必須 >= 0、同側 OOS >= OOC）
   - 列出每個身份可用的頁面
 
 用法：python scripts/python/check_config.py
@@ -111,8 +113,46 @@ def check_chart_db(label, parser, get, errors):
                 errors.append('%s [db] 有填 %s 但沒有填 ip（ip 留空 = 使用 AISLE 自己的資料庫）' % (label, key))
 
 
-def check_spec(label, section, get, errors):
-    """spec 線：數字或留空；lower_oos <= lower_ooc < upper_ooc <= upper_oos"""
+def check_offset_spec(where, vals, errors):
+    """偏移模式（有寫 target）：spec 是距離 target 的偏移量，>= 0；同側 OOS >= OOC；上下同一層不能同時為 0"""
+    for key in SPEC_KEYS:
+        if vals.get(key) is not None and vals[key] < 0:
+            errors.append('%s：有寫 target 時 %s 是距離 target 的偏移量，必須 >= 0' % (where, key))
+    for side in ('upper', 'lower'):
+        oos, ooc = vals.get(side + '_oos'), vals.get(side + '_ooc')
+        if oos is not None and ooc is not None and oos < ooc:
+            errors.append('%s：%s_oos（%s）必須大於等於 %s_ooc（%s）' % (where, side, oos, side, ooc))
+    for lv in ('ooc', 'oos'):
+        if vals.get('upper_' + lv) == 0 and vals.get('lower_' + lv) == 0:
+            errors.append('%s：upper_%s 與 lower_%s 不能同時為 0' % (where, lv, lv))
+
+
+def check_chart_target(label, section, parser, get, errors):
+    """target / target.<機台> / target.<機台>.<參數>：數字或留空，參數在 params 裡。回傳是否為偏移模式"""
+    params = split_list(get(section, 'params'))
+    offset = False
+    for opt in parser.options(section):
+        if opt != 'target' and not opt.startswith('target.'):
+            continue
+        offset = True
+        v = get(section, opt)
+        if v:
+            try:
+                float(v)
+            except ValueError:
+                errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, opt, v))
+        if opt == 'target':
+            continue
+        rest = opt[len('target.'):].split('.', 1)
+        if not rest[0].strip() or (len(rest) > 1 and not rest[1].strip()):
+            errors.append('%s [%s] %s 格式錯誤，應為 target.<機台> 或 target.<機台>.<參數>' % (label, section, opt))
+        elif len(rest) > 1 and rest[1].strip() not in params:
+            errors.append('%s [%s] %s 的參數 %s 不在 params 裡（區分大小寫）' % (label, section, opt, rest[1].strip()))
+    return offset
+
+
+def check_spec(label, section, get, errors, offset=False):
+    """spec 線：數字或留空；絕對值模式 lower_oos <= lower_ooc < upper_ooc <= upper_oos"""
     vals = {}
     for key in SPEC_KEYS:
         v = get(section, key)
@@ -122,6 +162,9 @@ def check_spec(label, section, get, errors):
             vals[key] = float(v)
         except ValueError:
             errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, key, v))
+    if offset:
+        check_offset_spec('%s [%s]' % (label, section), vals, errors)
+        return
     for i, a in enumerate(SPEC_KEYS):
         for b in SPEC_KEYS[i + 1:]:
             if a not in vals or b not in vals:
@@ -176,7 +219,7 @@ def check_chart(name, errors, warnings):
                         float(v)
                     except ValueError:
                         errors.append('%s [%s] %s 必須是數字：%s' % (label, section, opt, v))
-        check_spec(label, section, get, errors)
+        check_spec(label, section, get, errors, check_chart_target(label, section, parser, get, errors))
     if plots == 0:
         errors.append('%s 沒有任何 [plot.xxx] 圖' % label)
 
@@ -480,9 +523,26 @@ def check_tool_select(errors, warnings):
                 warnings.append('%s 的 JSON key "%s" 和 [%s] 重複，兩個項目會顯示相同的值' % (where, key, keys[key]))
             keys[key] = section
             spec = [number(sget(parser, section, k), '%s %s' % (where, k)) for k in SPEC_KEYS]
-            check_order(spec, where)
+            offset = False
+            for opt in parser.options(section):
+                if opt == 'target' or opt.startswith('target.'):
+                    offset = True
+                    number(sget(parser, section, opt), '%s %s' % (where, opt))
+                    tool = opt[len('target.'):].strip().upper()
+                    if opt != 'target' and tool not in tools:
+                        errors.append('%s %s 的機台 %s 不在 [tools] 裡' % (where, opt, tool))
+
+            def check_vals(vals, w):
+                if offset:
+                    check_offset_spec(w, dict(zip(SPEC_KEYS, vals)), errors)
+                else:
+                    check_order(vals, w)
+
+            check_vals(spec, where)
             overrides = {}
             for opt in parser.options(section):
+                if opt == 'target' or opt.startswith('target.'):
+                    continue
                 if '.' in opt:
                     base, tool = opt.split('.', 1)
                     tool = tool.upper()
@@ -497,7 +557,7 @@ def check_tool_select(errors, warnings):
                 elif opt not in TS_ITEM_KEYS:
                     warnings.append('%s 不認得的欄位：%s（會被忽略）' % (where, opt))
             for tool, vals in overrides.items():
-                check_order(vals, '%s 機台 %s' % (where, tool))
+                check_vals(vals, '%s 機台 %s' % (where, tool))
             for k in ('ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light'):
                 v = sget(parser, section, k)
                 if v and not RE_HEX.match(v):

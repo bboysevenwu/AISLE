@@ -471,13 +471,15 @@ params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
 single = On                        ; 是否畫單台機台趨勢
 newest = On                        ; 是否畫最新值排排站
 tbt    = On                        ; 是否畫歷史趨勢排排站
-ymin   = 0                         ; Y 軸下限（三張圖共用）
-ymax   = 6                         ; Y 軸上限（三張圖共用）
-newest_ymax = 5                    ; 只改最新值排排站的上限
-upper_oos = 5                      ; spec 線（可留空 = 不畫）
-upper_ooc = 4.5
-lower_ooc = 1
-lower_oos = 0.5
+single_ymin = 0                    ; 只設單台趨勢的 Y 軸（ymin / ymax 則是三張圖共用）
+single_ymax = 6
+target = 2.5                       ; 各機台 target（選用）：寫了任何 target → spec 改成「距離 target 多遠」
+target.APAN01 = 3                  ; 這台所有參數
+target.APAN02.M1BF_Z_C2 = 2.6      ; 這台的某個參數
+upper_oos = 1.5                    ; spec 線（可留空 = 不畫）；APAN01 → OOS 4.5
+upper_ooc = 1.2                    ; APAN01 → OOC 4.2
+lower_ooc = 1.2                    ; APAN01 → OOC 1.8
+lower_oos = 1.5                    ; APAN01 → OOS 1.5
 
 [plot.m1bf_ry]
 title  = "M1BF_Ry"
@@ -492,6 +494,11 @@ tbt_ymax = 6
 - 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
 - Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
 - spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
+- 各機台 target（偏移模式）：組內寫了任何一行 `target` / `target.<機台>` / `target.<機台>.<參數>`（含留空的 `target =`）時，四個 spec 改成距離 target 的偏移量（一律 >= 0，同側 OOS >= OOC，上下同一層不能同時為 0）
+  - target 取值順序：`target.<機台>.<參數>` → `target.<機台>` → `target` → 0；機台不分大小寫，寫了不存在的機台會被忽略；參數必須在 `params` 裡
+  - single：畫原始值，spec 線在所選機台的 `target + upper_xxx`、`target - lower_xxx`，另畫 target 線（青色點線）；同組參數 target 不同時每個參數各一組線，標籤加參數名稱
+  - newest / tbt：畫「值 - target」，各機台放在同一個基準比較，spec 線為 +偏移 / 0 / -偏移；tooltip 與資料表仍顯示原始值；`newest_ymin`、`tbt_ymax` 等是偏差值的範圍
+  - 沒寫任何 target 的組維持原本的絕對值 spec（例 m1bf_ry）
 - 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
 
 ### 資料來源：`charts/<名稱>.php`
@@ -719,6 +726,8 @@ lower_ooc =
 lower_oos =
 upper_oos.APAN03 = 6          ; 機台覆蓋：只有 APAN03 用不同的 spec，只寫要不同的那幾條
 upper_ooc.APAN03 = 5.5
+; target = 2.5                ; 各機台 target（選用），寫了就變偏移模式，見下方說明
+; target.APAN01 = 3
 href      = "?m=m1bf&tool={tool}"   ; 選用，可留空 = 沒有連結
 ooc_bg    = "#A0522D"         ; 選用，這個項目自己的 OOC 底色（還有 oos_bg、ooc_bg_light、oos_bg_light）
 ```
@@ -726,6 +735,9 @@ ooc_bg    = "#A0522D"         ; 選用，這個項目自己的 OOC 底色（還�
 - 表格依 `[category]` 的順序分組，同分類內依 `[item.*]` 的順序；同分類的分類格合併
 - spec 必須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`（機台覆蓋後也要符合），錯了頁面與 `check_config.py` 都會指出是哪一項
 - 有機台覆蓋的格子右上角有小三角，滑鼠移上去顯示那台實際用的 spec；超規一律用那台的 spec 判定
+- 各機台 target（偏移模式）：項目寫了任何一行 `target` / `target.<機台>`（含留空的 `target =`）時，spec 與機台覆蓋都改成距離 target 的偏移量（>= 0），判定用 `target + upper_xxx`、`target - lower_xxx`；target 取值 `target.<機台>` → `target` → 0，機台不分大小寫且必須在 `[tools]` 裡
+  - spec 欄顯示帶正負號的偏移量（例 `+1.5 / +1.2 / -1.2 / -1.5`），項目名稱旁標 `±T`；CSV 的 spec 欄同畫面，不另加 target 欄
+  - 格子 tooltip 顯示該台的 target 與換算後的 spec；target 與預設不同的機台也有右上角小三角
 
 **超規判定與底色**
 

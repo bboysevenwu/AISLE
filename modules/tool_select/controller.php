@@ -71,6 +71,10 @@ class ToolSelectController extends Controller
                 'decimals' => $it['decimals'],
                 'spec'     => $it['spec'],
                 'toolSpec' => (object) $it['toolSpec'],
+                'offset'   => $it['offset'],
+                'target'   => $it['target'],
+                'targets'  => (object) $it['targets'],
+                'abs'      => (object) $it['abs'],
                 'colors'   => (object) $it['colors'],
                 'href'     => $it['href'],
             );
@@ -122,8 +126,10 @@ class ToolSelectController extends Controller
             }
             $label = $it['label'] . ($it['unit'] !== '' ? ' (' . $it['unit'] . ')' : '');
             $line = array(self::safe($cfg['categories'][$it['category']]), self::safe($label));
-            foreach ($it['spec'] as $s) {
-                $line[] = $s === null ? '' : self::num($s, null);
+            foreach ($it['spec'] as $k => $s) {
+                // 偏移模式：與畫面相同，填帶正負號的偏移量（upper +、lower -）
+                $sign = $it['offset'] ? ($k < 2 ? '+' : '-') : '';
+                $line[] = $s === null ? '' : $sign . self::num($s, null);
             }
             $ooc = array();
             $oos = array();

@@ -1,0 +1,4384 @@
+#AISLE-UPDATE v1
+# AISLE single-file update. Apply on the server:
+#   python scripts/python/apply_update.py <this file>          (preview)
+#   python scripts/python/apply_update.py <this file> --apply  (apply)
+#@ from=c633f5f80108140511ef72681ef98300d134fbdc
+#@ to=32012af573b053273e245451d19650e9a15c1cd5
+#@ created=2026-11-20 16:36:18
+#@ note=PR #29 charts / 選機表各機台自訂 target（不需 SQL）。charts/M1BF.ini 與 config/tool_select/PAN.ini 是主機上的實際設定，沒有包含在內，需要 target 時自行加 target 設定（寫法見 README 或 charts/_template.ini）
+#@@@ FILE README.md sha1=adcf13ba4ab629fd452742b200ed87c97d259457 base=ad35d6ee77fdc53ef1c3de809afb1603a344a6b8 mode=644 enc=text nl=1
+# AISLE 系統架構
+
+多功能、模組化的內部網頁系統。依「身份」(EE / PE) 決定每位使用者能看到哪些功能頁面，介面採用駭客任務 (The Matrix) 綠色終端機風格。
+
+| 層級 | 技術 | 備註 |
+|---|---|---|
+| 後端 | PHP 5.4 | 不使用 5.5+ 語法；資料庫一律 PDO prepared statement |
+| 資料庫 | MariaDB 5.5 / 10.x | InnoDB、utf8mb4 |
+| 輔助腳本 | Python 2.7、Bash | 權限檢查、建帳號、備份、產生模組 |
+| 前端 | HTML5、jQuery 1.12.4、原生 Canvas | 不需要 Node / 建置工具 |
+
+---
+
+## 1. 資料夾結構
+
+```
+AISLE/
+├── .htaccess                  # 整包放在網站目錄下時，把請求在內部轉進 public/
+├── .gitignore
+├── README.md
+├── config/
+│   ├── app.ini.example        # 主設定範本（DB 連線、安全參數）→ 複製成 app.ini
+│   ├── config.ini             # ★ 身份 → 可用頁面清單、頁面路由、註冊名單
+│   ├── pending_issue.ini      # Pending Issue 的機型、分類、Sponsor、匯出開關、同步秒數（見第 11 節）
+│   ├── tool_board.ini         # 借機 / PM 看板共用設定：機型、類別顏色、可用率、PM JSON 路徑（見第 12 節）
+│   ├── tool_board/<機型>.ini  # 借機 / PM 看板各機型：機台清單、可編輯成員、WIP 處理方式
+│   ├── tool_select.ini        # 選機表共用設定：機型、超規底色、狀態底色（見第 13 節）
+│   └── tool_select/<機型>.ini # 選機表各機型：機台、分類、項目、spec（可依機台覆蓋）、數值 JSON 路徑
+├── charts/                    # ★ 每張圖表兩個同名檔案（見第 10 節）
+│   ├── _template.ini / .php   #   新圖表範本（_ 開頭不會被當成圖表）
+│   └── M1BF.ini / M1BF.php    #   範例：<名稱>.ini 畫什麼、<名稱>.php 寫 SQL
+├── core/                      # 框架核心（一般開發不需修改）
+│   ├── bootstrap.php          # 載入類別、設定、Session
+│   ├── auth_check.php         # ★ 共用權限檢查：所有功能頁面都經過這裡
+│   ├── App.php                # 路由：index.php?m=<頁面>&a=<動作>，依 config.ini 的 route 載入
+│   ├── Acl.php                # 讀 config.ini，判斷權限、產生選單
+│   ├── Auth.php               # 登入 / 登出 / 失敗鎖定 / 閒置登出
+│   ├── Registration.php       # 註冊驗證、依 EE 名單判定身份
+│   ├── guard.php              # 頁面內細部判斷 require_role() / has_role() / csrf_field() …
+│   ├── password_compat.php    # PHP 5.4 補上 password_hash() / password_verify()
+│   ├── Password.php           # 包裝 password_hash()，成本讀 app.ini
+│   ├── Security.php           # 安全亂數、常數時間比較、CSRF
+│   ├── Database.php           # PDO 單例 + 查詢捷徑
+│   ├── Controller.php         # 模組 Controller 基底類別
+│   ├── View.php               # 純 PHP 樣板
+│   └── helpers.php            # e() js() url() asset() audit() 等
+├── modules/                   # 功能模組（route = "module:<資料夾>"）
+│   ├── _template/             # 新模組樣板（_ 開頭不會被路由）
+│   ├── dashboard/             # EE + PE
+│   ├── shared_report/         # EE + PE（匯出限 PE，示範動作層級權限）
+│   ├── profile/               # EE + PE（改密碼）
+│   ├── ee_equipment/          # 只有 EE（示範 jQuery AJAX 刷新）
+│   ├── pe_recipe/             # 只有 PE
+│   ├── charts/                # 所有圖表共用（ECharts + AJAX，見第 10 節）
+│   ├── pending_issue/         # Pending Issue Control Table，只有 EE（見第 11 節）
+│   ├── tool_board/            # 機台借機與 PM 排程看板，EE 編輯 / PE 唯讀（見第 12 節）
+│   └── admin_users/           # 只有 ADMIN（建帳號、停用、重設密碼）
+│       ├── controller.php     #   class AdminUsersController extends Controller
+│       └── views/index.php    #   該模組的畫面
+├── pages/                     # 一般 PHP 頁面（route = "pages/xxx.php"）
+│   ├── ee_daily_check.php     #   範例：只有 EE
+│   ├── report_daily.php       #   範例：選單分類「共用報表」底下的 Report2
+│   └── report_weekly.php      #   範例：選單分類「共用報表」底下的 Report3
+├── templates/
+│   ├── layout.php             # 共用版面（頂部列、側邊選單、數位雨背景）
+│   ├── error.php
+│   └── auth/                  # 登入、註冊頁面樣板
+├── public/                    # ★ 唯一對外的目錄
+│   ├── index.php              # 功能模組入口
+│   ├── login.php              # 登入（GET 顯示 / POST 驗證，支援 AJAX）
+│   ├── register.php           # 註冊（含帳號即時檢查）
+│   ├── logout.php             # 登出（需 CSRF token）
+│   ├── legacy/pe_notice.php   # 獨立頁面範例（route = "public/..."），第一行 require auth_check.php
+│   ├── .htaccess
+│   └── assets/
+│       ├── css/matrix.css     # 駭客任務主題
+│       ├── css/matrix-light.css # 淺色版（body.theme-light 時覆寫顏色）
+│       ├── js/matrix-rain.js  # 數位雨 Canvas 動畫
+│       ├── js/app.js          # jQuery 共用：CSRF、選單分類收折、打字機效果、時鐘
+│       ├── js/auth.js         # 登入 / 註冊的前端驗證與非同步送出
+│       ├── js/charts.js       # 圖表頁的 ECharts 繪圖（所有圖表共用）
+│       └── vendor/            # jquery-1.12.4.min.js、echarts-5.4.3.min.js（執行 fetch_vendor.sh 下載）
+├── scripts/
+│   ├── python/check_config.py # 檢查 config.ini：身份、頁面、route 檔案、EE 名單
+│   ├── python/make_update.py  # 產生單檔更新（在有 git 的電腦執行）
+│   ├── python/apply_update.py # 在主機套用單檔更新，覆蓋前自動備份，可還原
+│   └── shell/
+│       ├── _common.sh         # 共用函式（讀 INI、產生暫存 mysql 設定）
+│       ├── create_user.sh     # 建立使用者（互動輸入密碼）
+│       ├── new_module.sh      # 由樣板產生新模組並登記到 config.ini
+│       ├── new_chart.sh       # 由範本產生新圖表 charts/<名稱>.ini + .php（見第 10 節）
+│       ├── backup_db.sh       # mysqldump 備份 + 自動清除舊檔
+│       └── fetch_vendor.sh    # 下載 jQuery、ECharts
+├── sql/
+│   ├── schema.sql             # 建表
+│   └── seed.sql               # 初始管理員
+├── storage/
+│   ├── logs/                  # PHP 錯誤紀錄（需可寫入）
+│   └── backups/               # 資料庫備份
+├── updates/                   # 單檔更新檔（見 docs/DEPLOY.md「不能 git pull 時的更新方式」）
+└── docs/screenshots/          # 介面截圖
+```
+
+只有 `public/` 對外開放。目前部署方式是整包放在 `/var/www/html/aisle/`，經 proxy 對外為 `http://sccproxyauth-a-dc1-38.scc.f18.tsmc.com/D1C1/aisle/`：根目錄 `.htaccess` 把所有請求在內部轉進 `public/`，網址不會出現 `public/`，`config/`、`core/`、`modules/` 等經由網址存取一律 404。網頁內所有連結、轉址與 Session cookie 路徑都由 `config/app.ini` 的 `base_url`（`"/D1C1/aisle"`）產生。
+
+---
+
+## 2. 資料庫
+
+`sql/schema.sql` 建立三張表：
+
+| 資料表 | 用途 |
+|---|---|
+| `users` | 帳號 `account`、密碼雜湊 `password_hash`、身份 `role`、啟用狀態、失敗次數與鎖定時間、強制改密碼旗標、最後登入時間與 IP |
+| `login_logs` | 每次登入嘗試（成功或失敗原因），供稽核與暴力破解追查 |
+| `audit_logs` | 模組操作紀錄，例如匯出報表、建立帳號、重設密碼 |
+
+設計重點：
+
+- **`role` 用 VARCHAR 而非 ENUM**：新增身份只要改 `config.ini`，不必 `ALTER TABLE`。
+- **`password_hash` 留 255 長度**：目前 bcrypt 固定 60 字元，保留未來更換演算法的空間。
+- **`created_at` 用 DATETIME 由程式寫入**：MariaDB 5.5 一張表只能有一個 TIMESTAMP 使用 `CURRENT_TIMESTAMP`，這個位置留給 `updated_at`。
+- 有索引的 VARCHAR 欄位長度 ≤ 191，避免舊版 InnoDB 在 utf8mb4 下超過 767 bytes 索引上限。
+
+### 密碼雜湊（PHP 5.4 的做法）
+
+`password_hash()` / `password_verify()` 是 PHP 5.5 才有的函式。`core/password_compat.php` 在函式不存在時補上同名函式：以 `crypt()` 搭配 `$2y$` bcrypt（PHP ≥ 5.3.7 支援），鹽來自 `openssl_random_pseudo_bytes`，驗證時使用常數時間比較。因此程式碼照標準 API 寫 `password_hash($pw, PASSWORD_BCRYPT)`，在 PHP 5.4 與 5.5+ 都能執行，雜湊格式也完全相同；日後升級 PHP 只要刪掉這個檔案，舊密碼不需重設。
+
+---
+
+## 3. 身份 → 頁面權限與路由（`config/config.ini` + `core/auth_check.php`）
+
+### config.ini
+
+```ini
+[roles]
+EE    = "EE 工程師"
+PE    = "PE 工程師"
+ADMIN = "系統管理員"
+
+; ★ 身份 → 可用頁面清單。同一頁面同時列在 EE 與 PE 就是兩者都能看；"*" = 全部
+[access]
+EE    = "dashboard, shared_report, report_daily, report_weekly, ee_equipment, ee_daily_check, profile"
+PE    = "dashboard, shared_report, report_daily, report_weekly, pe_recipe, pe_notice, profile"
+ADMIN = "*"
+
+; ★ 選單分類（選用）：可收折，頁面寫 group = "report" 就收在這底下
+[group.report]
+title = "共用報表 // REPORTS"
+order = 20
+open  = Off                           ; 預設收起；瀏覽器會記住使用者的展開狀態
+
+; ★ 頁面與路由
+[page.shared_report]
+title = "Report1 // 綜合報表"
+route = "module:shared_report"        ; modules/shared_report/controller.php
+group = "report"
+order = 1                             ; 分類內的排序
+action.export = "PE"                  ; EE、PE 都能看，只有 PE 能匯出
+
+[page.report_daily]
+title = "Report2 // 日報"
+route = "pages/report_daily.php"
+group = "report"
+order = 2
+
+[page.ee_daily_check]
+title = "每日點檢 // DAILY CHECK"
+route = "pages/ee_daily_check.php"    ; 一般 PHP 頁面
+
+[page.pe_notice]
+title = "製程公告 // NOTICE"
+route = "public/legacy/pe_notice.php" ; 既有的獨立頁面
+```
+
+選單分類只影響顯示：權限仍由 `[access]` 決定，某身份在分類裡看不到任何頁面時整個分類不會出現；目前所在頁面的分類一律展開；沒寫 `group` 的頁面照舊單層顯示。
+
+`route` 有三種寫法：
+
+| route | 程式位置 | 網址 | 適合 |
+|---|---|---|---|
+| `module:<資料夾>` | `modules/<資料夾>/controller.php` | `index.php?m=<代號>&a=<動作>` | 有多個動作、AJAX 的功能 |
+| `pages/xxx.php` | `pages/xxx.php` | `index.php?m=<代號>` | 單純頁面，不用寫 Controller，自動套用版面 |
+| `public/xxx.php` | `public/xxx.php` | 直接開啟該檔案 | 既有網站的舊頁面，只需在第一行加一行 require |
+
+### auth_check.php：所有頁面共用同一套檢查
+
+```
+使用者開啟頁面
+  ├─ index.php?m=xxx  →  App 路由 ──────────┐
+  └─ public/legacy/xxx.php（第一行 require）─┤
+                                             ▼
+                              core/auth_check.php
+                    1. 未登入           → 導向 login.php（AJAX 回 401）
+                    2. 頁面未登記在 config.ini → 403
+                    3. 首次登入未改密碼 → 導向個人設定
+                    4. 身份不在 [access] 清單、或不符 action.* → 403
+                                             ▼
+                          通過 → 依 route 載入頁面程式
+```
+
+既有頁面接上權限只要在第一行加入（依檔案位置調整 `../`）：
+
+```php
+<?php require_once dirname(__FILE__) . '/../../core/auth_check.php';
+// 通過檢查後才會執行到這裡；可用 $AUTH_USER、$AUTH_PAGE
+```
+
+auth_check.php 用「目前執行的檔案」對照 config.ini 的 route 找出頁面代號，所以頁面本身不用寫自己的代號或身份。檔案若沒登記在 config.ini，即使加了 require 也一律拒絕，避免漏設權限的頁面被看到。獨立頁面送出 POST 時會檢查 CSRF，舊表單請加上 `<?php echo csrf_field(); ?>`；若一時無法修改，可把 `[settings] direct_page_csrf` 設為 `Off`。
+
+權限一律在伺服器端檢查，隱藏選單只是介面效果；直接輸入網址也會得到 403。目前範例的結果：
+
+| 頁面 | EE | PE | ADMIN |
+|---|:-:|:-:|:-:|
+| 主控台 dashboard | ✓ | ✓ | ✓ |
+| 共用報表 › Report1 shared_report | ✓（不可匯出） | ✓ | ✓ |
+| 共用報表 › Report2 report_daily、Report3 report_weekly（pages/） | ✓ | ✓ | ✓ |
+| 個人設定 profile | ✓ | ✓ | ✓ |
+| 設備狀態 ee_equipment | ✓ | | ✓ |
+| 每日點檢 ee_daily_check（pages/） | ✓ | | ✓ |
+| 製程配方 pe_recipe | | ✓ | ✓ |
+| 製程公告 pe_notice（獨立頁面） | | ✓ | ✓ |
+| 圖表 › M1BF m1bf（module:charts） | ✓ | ✓ | ✓ |
+| 使用者管理 admin_users | | | ✓ |
+
+修改 config.ini 後執行 `python scripts/python/check_config.py`，會列出每個身份可用的頁面，並檢查拼字、route 檔案是否存在、獨立頁面有沒有 require auth_check.php。
+
+---
+
+## 4. 註冊、登入、登出與權限檢查
+
+### 流程
+
+| 檔案 | 方法 | 行為 |
+|---|---|---|
+| `public/register.php` | GET | 註冊頁 |
+| | GET `?check_account=xxx`（AJAX） | 回傳帳號是否可用 |
+| | POST | 驗證 → 依 EE 名單判定身份 → 寫入 `users`，並在 `audit_logs` 記錄身份來源 |
+| `public/login.php` | GET / POST | 驗證帳密，成功後 `session_regenerate_id()` 並把使用者與身份寫入 `$_SESSION['user']` |
+| `public/logout.php` | POST（或 `?_csrf=`） | 清除 Session 與 Cookie，導回 `login.php?bye=1` |
+
+登入與註冊表單由 `js/auth.js` 以 jQuery 做即時驗證，並用 `$.ajax` 非同步送出，伺服器回 JSON。瀏覽器關閉 JavaScript 時表單照常以一般 POST 送出，伺服器端也會做完整驗證。
+
+### 註冊時的身份判定（`config.ini` 的 `[register]` 與 `[ee_accounts]`）
+
+註冊表單只填帳號、顯示名稱與密碼。身份在註冊當下依 INI 名單判定，直接寫入 `users.role`：
+
+```ini
+[register]
+enabled          = On
+require_approval = Off     ; On = 註冊後需管理員啟用
+listed_role      = "EE"    ; 名單上的帳號
+unlisted_role    = "PE"    ; 名單外的帳號；設為 "" 則名單外不能註冊
+
+[ee_accounts]              ; EE 正面表列，一行一個帳號，不分大小寫
+account[] = "neo"
+account[] = "trinity"
+```
+
+- 名單只在註冊時讀取。之後增減名單，不會改變已經註冊的人的身份，要調整請直接改資料庫的 `users.role`。
+- ADMIN 永遠無法經由註冊取得；`listed_role`、`unlisted_role` 若設成 superuser 角色會被忽略。
+- `audit_logs` 會記錄每個帳號的身份來源（`ee_accounts` 或 `unlisted_role`）。
+- 改完名單可以執行 `python scripts/python/check_config.py`，它會列出名單內容，並檢查帳號格式與重複。
+
+### 共用權限檢查函式（`core/guard.php`）
+
+```php
+require_login();                    // 未登入 → 導向 login.php；AJAX 回 401
+require_role('PE');                 // 身份不符 → 403（ADMIN 一律通過）
+require_role('EE,PE');              // 多個身份用逗號
+if (has_role('EE,PE')) { ... }      // 只判斷、不中止
+if (can_access('shared_report', 'export')) { ... }   // 依 [access] 與 [page.xxx] 判斷
+echo csrf_field();                  // 表單的 CSRF 隱藏欄位
+current_user();  current_role();  is_logged_in();
+```
+
+頁面層級的權限由 `auth_check.php` 處理；這些函式用在頁面內更細的判斷，例如只對某身份顯示某個按鈕。
+
+---
+
+## 5. 新增功能頁面
+
+只需要改 config.ini，核心程式（`core/`）不用動：
+
+1. 放好頁面程式（擇一）：`pages/xxx.php`、`public/xxx.php`（第一行 require auth_check.php），或建立模組
+2. 在 `[access]` 把頁面代號加進能使用它的身份
+3. 新增 `[page.xxx]`，寫上 `title` 與 `route`
+4. （選用）要放進選單分類就加上 `group = "<分類代號>"`；新分類再加一段 `[group.<分類代號>]`
+
+例：新增一個 EE、PE 都能看的聯絡人頁面
+
+```ini
+[access]
+EE = "dashboard, ..., team_contacts"
+PE = "dashboard, ..., team_contacts"
+
+[page.team_contacts]
+title = "聯絡人 // CONTACTS"
+route = "pages/team_contacts.php"
+order = 60
+```
+
+需要多個動作或 AJAX 時用模組，腳本會產生程式骨架並自動完成上面第 2、3 步：
+
+```bash
+# 產生 modules/ee_alarm/，加入 EE、PE 的 [access] 清單並新增 [page.ee_alarm]
+bash scripts/shell/new_module.sh ee_alarm "EE,PE" "警報中心 // ALARMS" 35
+```
+
+產生的骨架：
+
+```php
+<?php
+class EeAlarmController extends Controller
+{
+    public function indexAction()          // index.php?m=ee_alarm
+    {
+        $this->render('index', array('message' => '...'));
+    }
+
+    public function listAction()           // index.php?m=ee_alarm&a=list
+    {
+        $rows = Database::fetchAll('SELECT ... WHERE x = ?', array($x));
+        $this->json(array('ok' => true, 'rows' => $rows));
+    }
+}
+```
+
+Controller 可用的方法：`render()`、`json()`、`redirect()`、`can('動作')`、`isPost()`、`input()`、`query()`、`flash()`。View 中輸出變數一律用 `e($var)`；要放進 `<script>` 用 `js($var)`。
+
+---
+
+## 6. 安全機制
+
+- bcrypt 密碼雜湊，提高 `bcrypt_cost` 後使用者下次登入自動升級雜湊
+- 連續失敗 5 次鎖定 15 分鐘（`app.ini` 可調），帳號不存在時也執行一次 bcrypt，避免從回應時間猜出帳號
+- 登入成功 `session_regenerate_id()`，閒置 30 分鐘自動登出，Cookie 設 HttpOnly
+- 所有 POST（含 jQuery AJAX，透過 `X-CSRF-Token` 標頭）都檢查 CSRF token；登出也需要 token，避免被外部連結強制登出
+- 註冊無法取得 ADMIN 身份；可開啟 `require_approval` 讓新帳號需管理員啟用，或把 `unlisted_role` 設為空字串只開放名單內帳號註冊
+- 首次登入或被管理員重設密碼後強制改密碼
+- 所有 SQL 使用 PDO prepared statement，`ATTR_EMULATE_PREPARES = false`
+
+---
+
+## 7. PHP 5.4 相容規範
+
+可以用：`array()` 與 `[]` 短陣列、closure、`http_response_code()`、`JSON_UNESCAPED_UNICODE`、`session_status()`。
+
+不能用：
+
+| 不能用 | 版本 | 替代寫法 |
+|---|---|---|
+| `password_hash()` / `password_verify()` | 5.5 | 已由 `core/password_compat.php` 補上，可直接使用 |
+| `finally`、`yield`、`::class`、`array_column()`、`empty(函式())` | 5.5 | try/catch、迴圈、字串類別名稱、先存變數 |
+| `hash_equals()`、`...$args`、`const` 運算式 | 5.6 | `Security::equals()` |
+| `??`、`<=>`、純量 type hint、回傳型別、`random_bytes()` | 7.0 | `array_get()`、`Security::randomBytes()` |
+| `?->`、`match`、`fn() =>` | 8.0 | 一般寫法 |
+
+---
+
+## 8. 部署步驟
+
+完整的逐步說明（環境需求、Apache 設定、驗證方式）見 [docs/DEPLOY.md](docs/DEPLOY.md)。順序摘要：
+
+1. 確認 PHP 5.4（pdo_mysql、openssl）、MariaDB、Apache、Python 2.7
+2. `git clone -b main` 到 `/var/www/html/aisle/`
+3. `mysql -u root -p < sql/schema.sql`
+4. 建立 `aisle_app` 資料庫帳號
+5. `mysql -u root -p < sql/seed.sql`
+6. `config/app.ini`（複製範本，填 DB 帳密，`base_url = "/D1C1/aisle"`）
+7. `config/config.ini`（EE 名單、註冊設定、各身份頁面）
+8. `python scripts/python/check_config.py`
+9. `bash scripts/shell/fetch_vendor.sh`（下載 jQuery、ECharts）
+10. 目錄權限（storage 可寫）
+11. Apache 開啟 `mod_rewrite`，`/var/www/html/aisle` 設 `AllowOverride All`
+12. 經 proxy 確認網址正常、設定檔無法從網址下載
+13. `admin` / `Neo@Zion2026` 首次登入並改密碼
+14. 註冊測試帳號，驗證 EE / PE 權限
+15.（選用）接入既有舊頁面
+16. 設定每日備份 crontab
+
+---
+
+## 9. 駭客任務主題
+
+| 元素 | 檔案 | 說明 |
+|---|---|---|
+| 數位雨背景 | `js/matrix-rain.js` | Canvas 半形片假名雨，約 20fps；系統設定「減少動態」時改為靜態畫面 |
+| CRT 掃描線 | `css/matrix.css` `.crt-overlay` | 全畫面細橫線疊層 |
+| 終端機面板 | `.panel` `.terminal` | 綠框黑底、亮綠標題列 |
+| 打字機效果 | `AISLE.typewriter()` | 登入頁標語、主控台訊息 |
+| 標題故障效果 | `.glitch` | 滑鼠移上時文字抖動 |
+| 狀態燈 | `.led-run/idle/down` | 綠、暗綠、閃爍紅 |
+| 身份徽章 | `.role-EE/PE/ADMIN` | EE 亮綠、PE 薄荷綠、ADMIN 紅藥丸 |
+
+色票：`#00ff41` 主綠、`#00b82e` 中綠、`#008f11` 暗綠、`#001a07` 面板底、`#ff3b3b` 警示紅。CSS 未使用 CSS 變數，以相容較舊的瀏覽器。
+
+截圖見 `docs/screenshots/`。
+
+### 風格切換（深色 / 淺色）
+
+上方列（登入、註冊頁在右上角）有 `[ ☀ 淺色 ]` / `[ ☾ 深色 ]` 按鈕，可在「駭客任務」與「淺色底的駭客任務」之間切換，不用重新整理。
+
+| 項目 | 說明 |
+|---|---|
+| 預設 | 深色（駭客任務） |
+| 記憶方式 | cookie `aisle_theme`（`light` / 沒有＝深色），path 為 `base_url` + `/`，一年；每台電腦各自記憶，不寫資料庫 |
+| 套用 | PHP 的 `current_theme()` 讀 cookie，`templates/layout.php` 輸出時就在 `<html>`、`<body>` 加上 `theme-light`，換頁不會閃爍 |
+| 樣式 | `css/matrix-light.css` 全部是 `body.theme-light ...` 覆寫規則，`matrix.css` 本身不變 |
+| 數位雨 / 圖表 | `matrix-rain.js` 依 body class 換色；`charts.js` 收到 `aisle:theme` 事件後換配色並用快取重畫 |
+
+淺色版色票：`#f2fbf4` 底色、`#00591a` 主文字、`#008f11` 強調、`#2e6b3c` 次要文字、`#c62828` 警示紅。
+新頁面請不要在 HTML 寫死顏色（`style="color:..."`），改用 class，淺色版才會跟著變。
+
+---
+
+## 10. 圖表（charts）
+
+多張圖表（BSLr、M1BF、CDM、BMMF…）共用同一個模組 `modules/charts`，每張圖表是選單「圖表 // CHARTS」底下的一頁。圖表使用 ECharts 5.4.3（`public/assets/vendor/` 有檔案時用本機的，否則走 jsDelivr CDN）。
+
+每張圖表只由兩個同名檔案定義，新增圖表不需要改任何程式：
+
+| 檔案 | 內容 |
+|---|---|
+| `charts/<名稱>.ini` | 畫什麼、怎麼畫：`[page]` 整頁設定、`[plot.<代號>]` 每組圖 |
+| `charts/<名稱>.php` | 部署者寫 SQL，整理成資料格式（`class <名稱>Chart extends ChartSource`） |
+| `config/config.ini` | `[page.<小寫名稱>]`，`route = "module:charts"`、`group = "charts"`；哪些身份看得到寫在 `[access]` |
+
+頁面代號 = 圖表名稱轉小寫：`[page.bslr]` → `charts/BSLr.ini`、`charts/BSLr.php`，網址 `index.php?m=bslr`。
+
+| 區塊 | 內容 |
+|---|---|
+| 全域選擇器 | 起訖日期（快捷按鈕由 `quick_days` 設定）、單台機台 |
+| single 單台機台趨勢 | 所選機台，每組一張圖，組內每個參數一條線；X 軸時間 |
+| Newest_TBT 最新值排排站 | 每組一張長條圖，X 軸機台、每個參數一根長條，取每台在區間內的最後一個值；機型篩選（`model.<機型>`）；點長條會切換上方的單台機台 |
+| TBT 歷史趨勢排排站 | 每組一張圖，每台一個區段（依機台名稱排序），區段內依時間排序；圖例可開關機台，下方可拖曳縮放 |
+
+### 新增一張圖表
+
+```bash
+bash scripts/shell/new_chart.sh CDM      # 建立 charts/CDM.ini、charts/CDM.php，並印出 config.ini 要貼的區段
+```
+
+1. 編輯 `charts/CDM.ini` 的 `[plot.xxx]`；此時 `source = sample`，用範例資料就能看到完整畫面
+2. 編輯 `charts/CDM.php` 寫 `tools()`、`series()` 的 SQL，寫好把 ini 改成 `source = php`
+3. 把腳本印出的 `[page.cdm]` 貼進 `config/config.ini`，並把 `cdm` 加到 `[access]` 要看得到的身份
+4. `python scripts/python/check_config.py` 檢查
+
+### 設定檔：`charts/<名稱>.ini`
+
+```ini
+[page]
+source       = php          ; php = 用 <名稱>.php 查資料庫；sample = 內建範例資料
+default_days = 60           ; 預設顯示最近幾天
+max_days     = 366          ; 一次最多查幾天
+quick_days   = "7, 30, 90"  ; 快速區間按鈕
+model.1980   = "PAN"        ; 機台代號含 PAN → 機型 1980（不設定就沒有機型下拉選單）
+model.2000   = "PAP"
+
+[db]                        ; 這張圖表的資料庫連線；ip 留空 = 使用 AISLE 自己的資料庫
+ip       = "10.x.x.x"       ; 帳號密碼只填在主機上，repo 裡一律留空
+port     = 3306
+name     = "資料庫名稱"
+user     = "唯讀帳號"
+password = "密碼"
+charset  = "utf8mb4"
+
+[plot.m1bf_z]
+title  = "M1BF_Z"
+params = "M1BF_Z_C1, M1BF_Z_C2"   ; 畫在同一張圖的參數
+single = On                        ; 是否畫單台機台趨勢
+newest = On                        ; 是否畫最新值排排站
+tbt    = On                        ; 是否畫歷史趨勢排排站
+single_ymin = 0                    ; 只設單台趨勢的 Y 軸（ymin / ymax 則是三張圖共用）
+single_ymax = 6
+target = 2.5                       ; 各機台 target（選用）：寫了任何 target → spec 改成「距離 target 多遠」
+target.APAN01 = 3                  ; 這台所有參數
+target.APAN02.M1BF_Z_C2 = 2.6      ; 這台的某個參數
+upper_oos = 1.5                    ; spec 線（可留空 = 不畫）；APAN01 → OOS 4.5
+upper_ooc = 1.2                    ; APAN01 → OOC 4.2
+lower_ooc = 1.2                    ; APAN01 → OOC 1.8
+lower_oos = 1.5                    ; APAN01 → OOS 1.5
+
+[plot.m1bf_ry]
+title  = "M1BF_Ry"
+params = "M1BF_Ry_C1, M1BF_Ry_C2"
+newest = Off                       ; 這組不顯示最新值排排站
+tbt_ymin = 0                       ; 只設歷史趨勢排排站的上下限，單台趨勢維持自動
+tbt_ymax = 6
+```
+
+- 每個 `[plot.<代號>]` 是一組，頁面依檔案順序畫圖；`single` / `newest` / `tbt` 省略時為 On
+- 某區塊沒有任何一組開啟時，整個區塊不顯示
+- 可選 `unit` 設定 Y 軸名稱（預設 `Data`）；`connect = On` 讓線跨過空值連起來（參數來自取樣時間不同的 table 時使用）
+- Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
+- spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
+- 各機台 target（偏移模式）：組內寫了任何一行 `target` / `target.<機台>` / `target.<機台>.<參數>`（含留空的 `target =`）時，四個 spec 改成距離 target 的偏移量（一律 >= 0，同側 OOS >= OOC，上下同一層不能同時為 0）
+  - target 取值順序：`target.<機台>.<參數>` → `target.<機台>` → `target` → 0；機台不分大小寫，寫了不存在的機台會被忽略；參數必須在 `params` 裡
+  - single：畫原始值，spec 線在所選機台的 `target + upper_xxx`、`target - lower_xxx`，另畫 target 線（青色點線）；同組參數 target 不同時每個參數各一組線，標籤加參數名稱
+  - newest / tbt：畫「值 - target」，各機台放在同一個基準比較，spec 線為 +偏移 / 0 / -偏移；tooltip 與資料表仍顯示原始值；`newest_ymin`、`tbt_ymax` 等是偏差值的範圍
+  - 沒寫任何 target 的組維持原本的絕對值 spec（例 m1bf_ry）
+- 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
+
+### 資料來源：`charts/<名稱>.php`
+
+```php
+<?php
+class BSLrChart extends ChartSource
+{
+    public function tools()
+    {
+        $rows = $this->fetchAll('SELECT DISTINCT tool_id FROM bslr_x_data');
+        $tools = array();
+        foreach ($rows as $r) {
+            $tools[] = $r['tool_id'];
+        }
+        return $tools;
+    }
+
+    public function series($tools, $params, $start, $end)
+    {
+        $where = 'tool_id IN (' . $this->in($tools) . ')
+                  AND data_time >= ? AND data_time < DATE_ADD(?, INTERVAL 1 DAY)';
+        $bind  = array_merge($tools, array($start, $end));
+
+        // 長表（tool_id, data_time, param, value）
+        $a = self::pivot($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, param, value
+               FROM bslr_x_data WHERE ' . $where, $bind), 'tool_id', 'd', 'param', 'value');
+
+        // 寬表，欄位 c1 / c2 對應參數 BSLr_Y_C1 / BSLr_Y_C2
+        $b = self::wide($this->fetchAll(
+            'SELECT tool_id, DATE_FORMAT(data_time, \'%Y-%m-%d %H:%i:%s\') AS d, c1, c2
+               FROM bslr_y_summary WHERE ' . $where, $bind),
+            'tool_id', 'd', array('BSLr_Y_C1' => 'c1', 'BSLr_Y_C2' => 'c2'));
+
+        return self::merge($a, $b);   // 不同 table 的結果依機台 + 時間合併
+    }
+}
+```
+
+| 工具（`modules/charts/ChartSource.php`） | 用途 |
+|---|---|
+| `$this->fetchAll($sql, $bind)` | prepared statement 查詢，值一律用 `?` 綁定 |
+| `$this->in($list)` | 產生 `IN (...)` 用的 `?,?,?` |
+| `self::pivot($rows, 機台欄, 時間欄, 參數欄, 值欄)` | 長表（一列一個參數值）→ 資料格式 |
+| `self::wide($rows, 機台欄, 時間欄, 參數 => 欄位)` | 寬表（每個參數一個欄位）→ 資料格式 |
+| `self::merge($a, $b, ...)` | 多個 table 的結果合併，對不到的位置補 null |
+| `$this->machineOf($tool)` / `$this->machinesOf($tools)` / `$this->toolOf($machine)` | tool_id 與 machine_id 互換（要先實作 `machines()`） |
+| `self::table($name)` | 組出來的 table 名稱（例 `'M1BF_' . $machineId`）檢查後加反引號；table 名稱不能用 `?` 綁定，一定要經過它 |
+
+**table 用 machine_id 時**（例 table `M1BF_HP23`，`HP23` 是 `APAN01` 的 machine_id）：在 `<名稱>.php` 實作 `machines()`，回傳 `array('APAN01' => 'HP23', ...)`（可寫死或從對照表查）。實作後 `tools()` 可以省略（預設用 `machines()` 的 tool_id），`series()` 回傳的 key 也可以直接是 machine_id，controller 會自動換成 tool_id；網頁上的機台名稱一律是 tool_id。範例見 `charts/_template.php` 的寫法 4（每台一個 table）、寫法 5（machine_id 欄位）。
+
+資料庫連線在各圖表自己的 `charts/<名稱>.ini` 的 `[db]`（ip / port / name / user / password / charset）；`ip` 留空時使用 AISLE 自己的 `[database]`。帳號密碼只在主機上的檔案填寫，**不要 commit 到 GitHub**（repo 裡一律留空）。`charts/` 從網址讀不到（根目錄 `.htaccess`），`[db]` 也不會送到瀏覽器。
+
+### 資料格式與載入
+
+後端 `index.php?m=<頁面代號>&a=tbt&start=&end=` 回傳區間內全部機台、ini 用到的全部參數：
+
+```json
+{
+  "APAN01": { "Date": ["2026-01-01", "2026-01-02"],
+              "Data": { "M1BF_Z_C1": [1.0, 2.0], "M1BF_Z_C2": [1.1, 2.1], "M1BF_Ry_C1": [1.0, 2.0], "M1BF_Ry_C2": [1.1, 2.1] } }
+}
+```
+
+- 選用 `"Url": [...]`（與 `Date` 等長）：單台機台趨勢圖點擊數據點會在瀏覽器新分頁開啟該時間點的網址，tooltip 會提示「點擊數據點開啟連結」，資料表多一欄 URL。只接受 `http://`、`https://` 或 `/` 開頭的網址（其他如 `javascript:` 一律忽略）；`pivot()` / `wide()` 最後多給網址欄位名稱即可產生，`merge()` 會保留。沒有 `Url` 時與原本相同
+- 每個參數陣列與 `Date` 等長，沒有值的位置是 `null`；排序、型別、補 null、只留 ini 用到的參數由 controller 統一處理，`<名稱>.php` 不需要先排好
+- 進入頁面時只呼叫一次，所有圖都從這份資料取得。切換機台、切換機型只在瀏覽器端重畫，不再向後端要資料；只有改日期區間（查詢 / 快速區間）才重新取
+- 編碼：**顏色 = 機台**（同機型內依序取色，跟著機台走，篩選後不變）、**線型 / 長條紋理 = 參數**（組內第 1 個參數實線，第 2 個虛線、斜線紋理…）
+- 每張圖都有「資料表」按鈕可切換成表格檢視
+- 網址參數（選用）：`&tool=APAN01` 預選「單台機台趨勢」的機台並捲到該區塊（機台不在清單時忽略）；`&days=30` 預設區間改成最近 30 天（不超過 `max_days`）。選機表點數值格就是用這個（見第 13 節）
+- 錯誤處理：設定錯誤直接顯示在頁面上；資料庫 / SQL 錯誤只在 `debug = 1` 時顯示內容，否則寫到 PHP error log
+
+![charts](docs/screenshots/charts.png)
+
+## 11. Pending Issue Control Table（`?m=pending_issue`）
+
+追蹤各機台的 pending issue。只有 **EE** 能進入：所有 EE 都能查詢、匯出；**新增、編輯（含上傳圖片）只限列在 `config/pending_issue.ini` `[editors]` 的 EE 帳號**，其他 EE 打開 issue 是唯讀；**刪除只有 ADMIN**。**ADMIN** 全部可以（含刪除、看已刪除、還原），PE 看不到選單、直接開網址會 403。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.pending_issue]` | 頁面登記；`action.delete` / `action.trash` / `action.restore` = `"ADMIN"`（刪除、看已刪除、還原） |
+| `config/pending_issue.ini` | 可新增 / 編輯的 EE 帳號（`[editors]`）、機型、分類、狀態名稱、Sponsor 身份、匯出開關、圖片上限、輪詢 / 閒置秒數 |
+| `modules/pending_issue/` | controller + view |
+| `public/assets/js/pending_issue.js` | 表格、篩選、Sponsor 元件、貼圖、輪詢、衝突視窗 |
+| `sql/migrations/20261110_pending_issue.sql` | 建表（`pending_issues`、`pending_issue_status_logs`、`pending_issue_images`、`pending_issue_presence`） |
+| `storage/uploads/pending_issue/<年月>/` | 圖片檔（網址無法直接讀取） |
+
+**欄位**：機台（必填，機型依代號自動判定，例 `APAN01` → 1980 (PAN)）、機型、分類（PE/YED HL / 選機表 / Aging parts / Others）、Issue 描述（必填）、Initial date、狀態（Open / Monitor / Close）、Sponsor（AISLE 使用者）、Check point date、Remark、圖片。
+
+**畫面**
+
+- 上方機型頁籤（括號內是未結案筆數），下方是分類 × 狀態統計，點數字直接套用篩選
+- 篩選：Issue 狀態（多選，預設 Open + Monitor）、分類（多選）、機台、Sponsor、關鍵字、只看 Check point 逾期；條件寫在網址上，重新整理或分享網址都會保留
+- 點欄位標題排序（第三次點回預設：Open → Monitor → Close、Check point 早的在前）；Check point 已過且未 Close 顯示紅字「逾期 N 天」
+- **Sponsor**：點 ▼ 展開清單，或直接打字篩選（比對帳號與顯示名稱、不分大小寫），↑↓ / Enter / Esc 操作；只能選清單裡的人（`[sponsor] roles` 的啟用帳號）
+- **狀態紀錄**：每次狀態改變都寫進 `pending_issue_status_logs`（誰、何時、從哪個狀態），表格顯示最後改狀態的人，編輯視窗有完整歷程
+- **圖片**：編輯視窗中 Ctrl+V 貼上截圖、拖曳或選檔；只收 PNG / JPG / GIF（以檔案內容判斷）。圖片經 `?a=image` 檢查權限後才輸出：未存檔的暫存圖只有上傳者、已刪除 issue 的圖只有 ADMIN 看得到
+- **軟刪除（只有 ADMIN）**：刪除只標記 `deleted_at`；EE 的編輯視窗沒有刪除按鈕，直接呼叫也會 403。ADMIN 勾「顯示已刪除」後可以還原
+- **匯出 CSV**：匯出目前篩選與排序的結果（UTF-8 BOM，Excel 直接開）；`[export] enabled = Off` 時按鈕隱藏、網址回 404
+- **IE11**：開啟頁面時跳出警告視窗（IE11 無法貼上截圖，拖曳與選檔可用）
+
+**多人同時操作**
+
+- 樂觀鎖：每筆有 `version`，存檔時比對。別人先存過 → 回 409，視窗列出「你的版本 / 最新版本」不同的欄位，可選 **覆蓋（用我的版本）**、**載入最新** 或取消。覆蓋時仍會比對版本，不會蓋掉自己沒看過的第三人修改
+- 每 `poll_seconds`（預設 10）秒輪詢一次，同步別人的新增 / 修改 / 刪除，並顯示「某某 編輯中」；別人改了你正在編輯的那筆，視窗上方會立刻提示
+- 閒置 `idle_seconds`（預設 300）秒沒操作，或分頁切到背景，就暫停輪詢（右上角顯示「⏸ 已暫停同步」），讓登入依 `session_idle` 照常逾時；有操作時立即恢復。不設人數上限
+
+![pending issue](docs/screenshots/pending_issue.png)
+
+## 12. 機台借機與 PM 排程看板（`?m=tool_board`）
+
+Tool Reservation & Maintenance Management Board。上方機型頁籤 **1980 (PAN) / 2000 (PAP) / YSM (POV)**，每個機型分開維護與設定；左欄 Tool ID，右邊是今天前 3 天到後 60 天（共 64 天）的日格子，第一列是該機型每日預估可用率。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.tool_board]` | 頁面登記；EE、PE 都在 `[access]`；`action.save` / `action.move` / `action.delete` = `"EE"` |
+| `config/tool_board.ini` | 共用：機型清單、時間視窗、格寬、預設起頭時間、Action 類別（名稱 / Hex 顏色 / 是否算停機 / 預設時數 / 預設 WIP）、可用率公式與門檻、PM JSON 路徑、輪詢秒數 |
+| `config/tool_board/<機型>.ini` | 各機型：`[tools]` 機台清單、`[editors]` 可編輯的 EE 帳號、`[wip.<代碼>]` WIP 處理方式（名稱 / 字色 / 粗體）；也可覆蓋共用的 `[category.*]`、`[availability]` |
+| `modules/tool_board/` | controller、設定讀取（BoardConfig）、可用率（Availability）、PM 讀取（PmSource）、view |
+| `modules/tool_board/formulas/` | （選用）自訂可用率公式，一個公式一個檔 |
+| `public/assets/js/tool_board.js` | 看板、右鍵選單、表單、拖曳、輪詢、衝突視窗 |
+| `sql/migrations/20261111_tool_board.sql` | 建表（`tool_board_actions`、`tool_board_locks`、`tool_board_action_log`、`tool_board_presence`） |
+| `storage/cache/` | PM JSON 解析快取（檔案改變才重新解析） |
+
+**權限**
+
+| 身份 | 看 | 新增 / 修改 / 拖曳 / 刪除 |
+|---|---|---|
+| ADMIN | 全部機型 | 全部機型 |
+| EE（列在該機型 `[editors]`） | 全部機型 | 只有列名的機型（頁籤上有 ✎） |
+| EE（沒列名）、PE | 全部機型 | 唯讀（雙擊色塊可檢視） |
+
+後端每個寫入動作都會檢查，不只是隱藏按鈕。
+
+**操作**
+
+- 在格子上按右鍵 →「新增 Action」：類別、WIP 處理方式（單選，選項來自目前機型的 `[wip.*]`）、開始 / 結束（日期 + 時:分，新增時預帶點的那天 `default_start_time`，可自行調整；改開始時間時結束時間跟著平移、時長不變）、**時長（小時）**（直接 key in 小時數，可有小數如 1.5，結束時間自動換算；快捷 4h / 8h / 12h / 24h；反過來改結束時間，時長也會跟著更新；新增時換類別會帶入該類別的 `default_hours`）、是否需要 Monitor（時數，快捷 2h / 4h）、是否需要 Pilot（時數，快捷 12h / 24h）、備註
+- 色塊右鍵：編輯 / 複製 / 刪除；雙擊色塊 = 編輯；編輯視窗下方有異動紀錄（誰、何時、新增 / 修改 / 拖曳）
+- **拖曳**：拖色塊中間 = 整段搬移；拖左右邊緣 = 改開始或結束（色塊太窄時只能整段搬移）。預設以「天」對齊（保留原本的時分），按住 **Shift** 以 1 小時對齊；拖曳時旁邊顯示即時起訖，重疊會變紅、放開後還原
+- **全螢幕**：看板標題列右邊 `[ ⛶ 全螢幕 ]`（或在頁面上按 **F**）把頁籤 + 看板放大到整個螢幕，右鍵選單、表單都照常可用；按 `[ 🗗 恢復 ]`、Esc 或再按 F 回到原本大小。瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗
+- 開始時間最早只能到今天往前 3 天（`days_before`），方便補登實際時間；再更早的不能新增或修改
+
+**畫法**
+
+- 色塊背景色 = 類別的 `color`；文字色 = WIP 的 `text_color`（例 Purge WIP 紅字粗體）
+- 有 Monitor / Pilot 時，色塊上顯示 `Mon: 4h | Pilot: 12h`（太窄時 `M4 P12`），並在 Action 結束後接著畫 Monitor 尾巴（深色斜線）、再畫 Pilot 尾巴（淡色斜線）
+- 今天整欄醒目底色加粗框，紅色直線是「現在」；過去的日子加斜線底紋
+- 同一台**不允許時間重疊**，判斷時包含 Monitor / Pilot 尾巴（伺服器檢查）
+
+**每日預估可用率**
+
+- 預設：`Σ(每台當天可用時數) / (該機型機台數 × 24h) × 100%`；停機時段 = `counts_down = On` 的類別的 Action 本體 ＋ Monitor 尾巴（`count_monitor`，預設算）＋ Pilot 尾巴（`count_pilot`，預設不算，因為 Pilot 有在跑貨）
+- 低於 `alert_below`（預設 80）紅底，其他不上色（舊設定的 `warn_below` 已不使用，寫了也忽略）；滑鼠移上去顯示可用時數、目前的公式與門檻，圖例也會顯示
+- 換公式：在 `modules/tool_board/formulas/` 新增 `<名稱>.php`（`class <名稱>Availability extends AvailabilityFormula`），設定 `formula = "<名稱>"`，範例見該資料夾的 README.txt
+- **每個機型各自設定**：`config/tool_board.ini` 的 `[availability]` 是預設值，機型檔 `config/tool_board/<機型>.ini` 加 `[availability]` 只寫要改的項目即可，例：
+  ```ini
+  ; config/tool_board/PAP.ini
+  [availability]
+  formula     = "pap_hours"   ; → modules/tool_board/formulas/PapHours.php 的 PapHoursAvailability
+  alert_below = 85            ; 這個機型低於 85 紅底
+  count_pilot = On            ; 這個機型 Pilot 也算停機
+  ```
+  某個機型的公式檔載入失敗時，只有該機型改用預設公式並提示錯誤，其他機型不受影響。改完執行 `python scripts/python/check_config.py`，會逐一列出每個機型實際使用的公式與門檻
+
+**PM 射程**
+
+- `config/tool_board.ini` `[pm] json_path` 指定一個 JSON 檔（三個機型共用，各機型只顯示自己的機台）：
+  ```json
+  {"APAN01": {"PM":     {"window_start_date": "2026-06-01 09:30", "first_due": "2026-06-10 09:30", "due_date": "2026-06-17 09:30", "period": "week26"},
+              "AMC_PM": {"window_start_date": "2026-07-01 09:30", "first_due": "2026-07-10 09:30", "due_date": "2026-07-17 09:30"}}}
+  ```
+- `period`（PM 週期，選填）：同機型 PM 週期不同時使用。有的話射程上顯示 `PM · week26`，滑鼠提示也會加上 `（week26）`；沒有這個 key（或空白）時維持只顯示 `PM`。文字最多 32 字
+- 不匯入資料庫：每次讀取比對檔案修改時間與大小，有變才重新解析，下一次輪詢就更新所有人的畫面
+- 產生端請用 Python `json.dump` 輸出；若是單引號（Python dict 印法，含 `u'..'`、`True/False/None`）也會自動轉換，但畫面會提示
+- 格式錯誤的項目略過，畫面顯示略過筆數（原因只有 ADMIN 看得到）；檔案不存在或整個壞掉時看板照常運作，只顯示警告
+- 畫法：射程（window_start_date → due_date）淡色斜線底帶、到點日 ▼ 橘線、最後到期日 ! 紅線；射程內已有 PM 類別的 Action → 綠色（已排），已到點未排 → 橘框，已過最後到期日未排 → 紅色閃爍
+- 在射程上按右鍵「依此 PM 新增 Action」：類別帶 PM、開始時間 = 到點日、記下 PM 類型；有 period 時備註預填 `週期：week26`（可改）
+
+**多人同時操作**（不需要 WebSocket，沿用 Pending Issue 的做法）
+
+- 樂觀鎖：每筆有 `version`，存檔 / 拖曳 / 刪除時比對；別人先改過 → 409，視窗列出「你的版本 / 最新版本」，可選 **覆蓋（用我的版本）**、**使用最新版本** 或取消
+- 重疊檢查在交易內先鎖住該機台（`tool_board_locks`），兩個人同時把不同 Action 排進同一段時間時，後到的會被擋下
+- 每 `poll_seconds`（預設 5）秒輪詢：同步別人的新增 / 修改 / 拖曳 / 刪除、可用率、PM 檔更新；顯示同機型的線上使用者，以及「🔒 某某 編輯中 / 拖曳中」
+- 閒置 `idle_seconds` 或分頁在背景時暫停輪詢，讓登入照常逾時
+- IE11 開啟時跳出警告（拖曳在 IE11 無法正常使用）
+
+![tool board](docs/screenshots/tool_board.png)
+
+![tool board form](docs/screenshots/tool_board_form.png)
+
+![tool board fullscreen](docs/screenshots/tool_board_fullscreen.png)
+
+## 13. 設備選機表（`?m=tool_select`）
+
+Tool Selection Matrix。上方機型頁籤 **1980 (PAN) / 2000 (PAP) / YSM (POV)**；表格欄位 `分類 | 項目 | uOOS | uOOC | lOOC | lOOS | 各機台`，數值超出 OOC / OOS 時格子上底色。EE、PE 都能看（唯讀），也都能匯出 CSV。
+
+| 檔案 | 用途 |
+|---|---|
+| `config/config.ini` `[page.tool_select]` | 頁面登記；EE、PE 都在 `[access]`；`action.export = "EE,PE"` |
+| `config/tool_select.ini` | 共用：機型清單、超規底色（暗色 / 亮色主題各一組）、狀態文字底色 |
+| `config/tool_select/<機型>.ini` | 各機型：`[page]` 數值 JSON 路徑、`[tools]` 機台、`[category]` 分類、`[item.<代號>]` 項目 |
+| `modules/tool_select/` | controller（頁面 / 資料 / 匯出）、設定讀取（SelectConfig）、JSON 讀取（ValueSource）、view |
+| `public/assets/js/tool_select.js` | 表格、篩選、超規判斷、機台下拉選單 |
+| `storage/cache/` | JSON 解析快取（檔案改變才重新解析） |
+
+不需要建資料表，也不連資料庫。
+
+**項目設定**（`config/tool_select/<機型>.ini`）
+
+```ini
+[category]
+focus = "Focus"
+ovl   = "OVL"
+
+[item.m1bf_ry]
+category  = "focus"           ; 必填，[category] 的代號
+label     = "M1BF Ry"         ; 顯示名稱
+key       = "M1BF_Ry"         ; JSON 裡的名稱（省略 = 代號），不分大小寫
+unit      = "nm"              ; 選用
+decimals  = 2                 ; 選用，顯示幾位小數
+upper_oos = 5.5               ; spec 四條都選用，留空 = 不判斷那一條
+upper_ooc = 5
+lower_ooc =
+lower_oos =
+upper_oos.APAN03 = 6          ; 機台覆蓋：只有 APAN03 用不同的 spec，只寫要不同的那幾條
+upper_ooc.APAN03 = 5.5
+; target = 2.5                ; 各機台 target（選用），寫了就變偏移模式，見下方說明
+; target.APAN01 = 3
+href      = "?m=m1bf&tool={tool}"   ; 選用，可留空 = 沒有連結
+ooc_bg    = "#A0522D"         ; 選用，這個項目自己的 OOC 底色（還有 oos_bg、ooc_bg_light、oos_bg_light）
+```
+
+- 表格依 `[category]` 的順序分組，同分類內依 `[item.*]` 的順序；同分類的分類格合併
+- spec 必須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`（機台覆蓋後也要符合），錯了頁面與 `check_config.py` 都會指出是哪一項
+- 有機台覆蓋的格子右上角有小三角，滑鼠移上去顯示那台實際用的 spec；超規一律用那台的 spec 判定
+- 各機台 target（偏移模式）：項目寫了任何一行 `target` / `target.<機台>`（含留空的 `target =`）時，spec 與機台覆蓋都改成距離 target 的偏移量（>= 0），判定用 `target + upper_xxx`、`target - lower_xxx`；target 取值 `target.<機台>` → `target` → 0，機台不分大小寫且必須在 `[tools]` 裡
+  - spec 欄顯示帶正負號的偏移量（例 `+1.5 / +1.2 / -1.2 / -1.5`），項目名稱旁標 `±T`；CSV 的 spec 欄同畫面，不另加 target 欄
+  - 格子 tooltip 顯示該台的 target 與換算後的 spec；target 與預設不同的機台也有右上角小三角
+
+**超規判定與底色**
+
+| 判定 | 條件 | 底色 |
+|---|---|---|
+| OOS | 大於 `upper_oos` 或小於 `lower_oos` | `oos_bg`（預設紅） |
+| OOC | 不是 OOS，且大於 `upper_ooc` 或小於 `lower_ooc` | `ooc_bg`（預設橘黃） |
+| 正常 | 其他（**剛好等於界限算正常**） | 無 |
+
+- 顏色：`config/tool_select.ini [color]` 是全站預設（`*_light` 給亮色主題），項目可用同名欄位覆蓋；文字依底色深淺自動用黑或白
+- 非數字的值（例 `Down`、`PM`）當作狀態，不判斷 spec，依 `[status]` 上底色
+
+**數值 JSON**（`[page] json_path`，每個機型各自一個檔）
+
+```json
+{"updated": "2026-11-15 08:00",
+ "data": {"APAN01": {"M1BF_Ry": 3.21, "LUSU": "Down", "SAMOS": {"v": -3.4, "t": "2026-11-15 07:30"}},
+          "APAN02": {"M1BF_Ry": 5.12}}}
+```
+
+- 機台 → 項目 → 值；值可以是數字、數字字串、狀態文字，或 `{"v": 值, "t": "資料時間"}`（`t` 顯示在滑鼠提示）
+- `updated` 顯示在表格右上（省略時顯示檔案修改時間）；也可以省略 `data` 這一層直接 `{"APAN01": {...}}`
+- JSON 裡多的機台 / 項目忽略；ini 有、JSON 沒有的顯示 `-`
+- 不自動刷新，按標題列 `[ ⟳ 重新整理 ]` 重新讀取；檔案沒變時用快取
+- 產生端請用 Python `json.dump`；單引號（Python dict 印法）也會自動轉換，但畫面會提示
+- JSON 還沒準備好時 `sample = On` 用內建範例值先看畫面
+
+**篩選**（全部在瀏覽器端即時套用，條件依機型記在瀏覽器）
+
+- 分類：多選下拉；關鍵字：比對分類與項目名稱，空白分隔多個 = 任一符合
+- 機台：下拉選單，可搜尋（例輸入 `05`），有全選 / 全不選 / 反選（搜尋中只作用在搜尋結果）；沒勾的機台整欄隱藏
+- 「只顯示有超規的項目」：只留在已勾選機台中至少一台超出 OOC 的項目
+- 表頭、分類 / 項目 / 四個 spec 欄固定不捲動
+- **全螢幕**：標題列 `[ ⛶ 全螢幕 ]`（或在頁面上按 **F**）把頁籤 + 選機表放大到整個螢幕，篩選、下拉選單照常可用；按 **Esc**（有開著的下拉選單時先收起選單，再按一次 Esc）或 `[ 🗗 恢復 ]` 回到原本大小。瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗
+
+**連結到 charts**
+
+- `href = "?m=m1bf"`：點項目名稱在新分頁開 chart 頁（自動接上 `base_url`，proxy 前綴下也正常）
+- `href = "?m=m1bf&tool={tool}"`：點**數值格**時 `{tool}` 換成那一欄的機台，chart 頁會預選那台並捲到「單台機台趨勢」；點項目名稱時 `{tool}` 換成空白
+- 也可以寫 `/...` 或 `http(s)://...`；其他寫法（例 `javascript:`）不接受
+
+**匯出 CSV**：`[ 匯出 CSV ]` 匯出目前篩選結果（顯示的項目 × 勾選的機台），最後兩欄列出該項目的 OOC 機台、OOS 機台；UTF-8 BOM，Excel 直接開。
+
+![tool select](docs/screenshots/tool_select.png)
+
+![tool select tool menu](docs/screenshots/tool_select_tool_menu.png)
+#@@@ FILE charts/_template.ini sha1=c522ca2edf4d4b74f18c440e51d607d0d6203818 base=3577c5aed6ebabbae6fcfa4100ad998fc69202e9 mode=644 enc=text nl=1
+; =====================================================================
+; chart 設定檔範本：複製成 charts/<名稱>.ini（或用 scripts/shell/new_chart.sh <名稱>）
+; ---------------------------------------------------------------------
+; 每張 chart 有兩個同名檔案：
+;   charts/<名稱>.ini   本檔：畫什麼、怎麼畫、連哪個資料庫
+;   charts/<名稱>.php   部署者寫 SQL、整理成資料格式
+; 並在 config/config.ini 加一個頁面（頁面代號 = 名稱轉小寫）：
+;   [page.<小寫名稱>]  route = "module:charts"  group = "charts"
+; 存檔後重新整理頁面即生效。
+;
+; 寫法注意：字串一律加雙引號；[plot.<代號>] 的代號只能用小寫英文、數字、底線
+; =====================================================================
+
+; ---------------------------------------------------------------------
+; [page] 整頁設定（都可省略）
+;   source        php    = 用 charts/<名稱>.php 查資料庫（預設）
+;                 sample = 內建範例資料，SQL 還沒寫好時先看畫面
+;   default_days  進頁面預設顯示最近幾天（預設 60）
+;   max_days      一次最多查幾天（預設 366）
+;   quick_days    快速區間按鈕（預設 "7, 30, 90"）
+;   model.<機型>  機台代號包含這個字（不分大小寫）就屬於這個機型，
+;                 用在「最新值排排站」的機型篩選與機台配色；不設定就沒有機型下拉選單
+; ---------------------------------------------------------------------
+[page]
+source       = sample
+default_days = 60
+max_days     = 366
+quick_days   = "7, 30, 90"
+model.1980   = "PAN"
+model.2000   = "PAP"
+
+; ---------------------------------------------------------------------
+; [db] 這張 chart 查資料用的資料庫連線（charts/<名稱>.php 的 fetchAll 使用）
+;   ip        資料庫主機 IP 或名稱。留空 = 直接使用 AISLE 自己的資料庫（config/app.ini 的 [database]），
+;             這時 name / user / password 也要留空
+;   port      預設 3306
+;   name      資料庫名稱（可留空，SQL 裡寫成 資料庫.table）
+;   user / password   建議使用只有 SELECT 權限的帳號；一律加雙引號，密碼不要含 " 字元
+;   charset   預設 utf8mb4
+;
+; ★ 安全性：帳號密碼只在主機上的檔案填寫，不要填進 GitHub 上的版本（repo 裡一律留空）。
+;   網址讀不到 charts/ 目錄（根目錄 .htaccess 會擋），密碼也不會送到瀏覽器。
+;   建議主機上執行 chmod 640 charts/*.ini（擁有者 / 群組讓 Apache 讀得到即可）
+; ---------------------------------------------------------------------
+[db]
+ip       = ""
+port     = 3306
+name     = ""
+user     = ""
+password = ""
+charset  = "utf8mb4"
+
+; ---------------------------------------------------------------------
+; [plot.<代號>] 一組圖：params 列出的參數畫在同一張圖上
+; 頁面三個區塊會依本檔的順序，各自為每一組畫一張圖：
+;   single  單台機台趨勢          （上方選擇的那一台，每個參數一條線）
+;   newest  最新值排排站          （每台在區間內的最後一筆，每個參數一根長條）
+;   tbt     歷史趨勢排排站        （每台一個區段，每個參數一條線）
+;
+; 欄位：
+;   title   圖表標題
+;   params  參數名稱，逗號分隔，必須與 <名稱>.php 回傳的 Data 裡的 key 一致（區分大小寫）
+;   unit    Y 軸名稱（選用，預設 "Data"）
+;   single / newest / tbt   On / Off，省略時為 On
+;   connect On = 線跨過沒有值的時間點連起來（選用，預設 Off = 斷開）。
+;           參數來自取樣時間不同的 table（merge 合併）時，其他參數的時間點會是空值，建議設 On
+;   ymin / ymax         Y 軸下限 / 上限（選用，套用到該組三張圖；不設或留空 = 自動）
+;   single_ymin / single_ymax、newest_ymin / newest_ymax、tbt_ymin / tbt_ymax
+;                       只設定某一區塊的上下限，優先於 ymin / ymax
+;   超出上下限的資料會被裁切，不會畫出圖外
+;   upper_oos / upper_ooc / lower_ooc / lower_oos
+;                       spec 線（選用，留空 = 不畫），三個區塊都會畫成水平線：
+;                       OOS（規格界限）紅色實線、OOC（管制界限）橘色虛線
+;                       有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+;                       Y 軸自動時會把 spec 線納入範圍；有設 ymin / ymax 時，超出範圍的線不會畫出
+;   target / target.<機台> / target.<機台>.<參數>
+;                       ★ 各機台 target（選用）。這組有寫任何一行 target（含留空的 target =）就變成「偏移模式」：
+;                         upper_oos / upper_ooc / lower_ooc / lower_oos 改成「距離 target 多遠」，一律填 >= 0 的數字，
+;                         線畫在 target + upper_xxx 與 target - lower_xxx；同側 OOS 要 >= OOC，上下同一層不能同時為 0
+;                       target              整組預設（省略或留空 = 0）
+;                       target.APAN01       這台所有參數的 target（機台名稱不分大小寫；寫了不存在的機台會被忽略）
+;                       target.APAN01.<參數> 這台某個參數另外指定（參數必須在 params 裡，區分大小寫）
+;                       取值順序：target.<機台>.<參數> → target.<機台> → target → 0
+;                       偏移模式時：
+;                         single  畫原始值，spec 線依所選機台的 target 算，並畫 target 線（青色點線）；
+;                                 同組參數 target 不同時每個參數各一組線，標籤前面加參數名稱
+;                         newest / tbt  畫「值 - target」（各機台放在同一個基準比較），spec 線為 +偏移 / 0 / -偏移；
+;                                 tooltip 與資料表仍顯示原始值；newest_ymin / tbt_ymin 等是偏差值的範圍
+;                       沒寫任何 target 的組維持原本的絕對值 spec
+; ---------------------------------------------------------------------
+[plot.example]
+title  = "EXAMPLE"
+params = "EXAMPLE_C1, EXAMPLE_C2"
+unit   = "Data"
+single = On
+newest = On
+tbt    = On
+upper_oos =
+upper_ooc =
+lower_ooc =
+lower_oos =
+#@@@ FILE modules/charts/ChartConfig.php sha1=d5c41f1a1b6ea57fc8dce5de4aa46c0e6dcbf266 base=23df6522ba2d9e3bbce47f9a42ffb7d67ea02b18 mode=644 enc=text nl=1
+<?php
+/**
+ * 讀取一張 chart 的設定檔 charts/<名稱>.ini
+ *
+ * 每張 chart（BSLr、M1BF、CDM…）在 charts/ 底下有兩個同名檔案：
+ *   charts/<名稱>.ini   畫什麼、怎麼畫（本類別讀取）
+ *   charts/<名稱>.php   部署者寫 SQL、整理成資料格式（見 ChartSource.php）
+ *
+ * config/config.ini 的頁面代號 = chart 名稱轉小寫：[page.bslr] → charts/BSLr.ini
+ * 以 _ 開頭的檔案（_template.ini）是範本，不會被當成 chart。
+ *
+ * ini 格式：
+ *   [page]          整頁設定：source、default_days、max_days、quick_days、model.<機型> = "<機台名稱包含的字>"
+ *   [db]            這張 chart 查資料用的資料庫連線：ip、port、name、user、password、charset
+ *                   ip 沒填（或沒有 [db]）時沿用 AISLE 自己的資料庫（config/app.ini 的 [database]）
+ *   [plot.<代號>]   一組圖：title、params、unit、single / newest / tbt、connect、ymin / ymax、<區塊>_ymin / <區塊>_ymax、
+ *                   spec 線 upper_oos / upper_ooc / lower_ooc / lower_oos（可留空）、
+ *                   target / target.<機台> / target.<機台>.<參數>（有寫任何一行 → 偏移模式）
+ *
+ * $cfg->plots() 回傳（依檔案順序）：
+ *   array(
+ *     array('id' => 'm1bf_z', 'title' => 'M1BF_Z', 'params' => array('M1BF_Z_C1', 'M1BF_Z_C2'),
+ *           'unit' => 'Data', 'single' => true, 'newest' => true, 'tbt' => true, 'connect' => false,
+ *           'limits' => array('single' => array('min' => 0, 'max' => 5), 'newest' => array(...), 'tbt' => array(...)),
+ *           'spec'   => array('upper_oos' => 6, 'upper_ooc' => 5, 'lower_ooc' => null, 'lower_oos' => null),
+ *           'offset' => true, 'target' => 0,
+ *           'targets' => array('apan01' => array('*' => 27, 'M1BF_Z_C2' => 26.5))),
+ *     ...
+ *   )
+ *   min / max 為 null 表示自動；spec 為 null 表示不畫線
+ *   offset = false：spec 是絕對值（沒寫任何 target 的組，維持原本行為）
+ *   offset = true ：spec 是距離 target 的偏移量（一律 >= 0），線畫在 target ± 偏移；
+ *                   targets 的機台一律小寫（比對不分大小寫），'*' = 該台所有參數
+ *
+ * [db] 只給伺服器端的 ChartSource 使用，不會出現在 plots()，不會送到瀏覽器。
+ */
+class ChartConfig
+{
+    const NAME_PATTERN = '/^[A-Za-z][A-Za-z0-9_]{0,31}$/';
+
+    /** chart 名稱，例 BSLr */
+    public $name;
+    /** charts/<名稱>.ini 的完整路徑 */
+    public $file;
+
+    private $page = array();
+    private $db = array();
+    private $plots = array();
+    private $models = array();
+
+    public static function dir()
+    {
+        return AISLE_ROOT . '/charts';
+    }
+
+    /** charts/ 底下所有 chart 名稱（不含 _ 開頭的範本） */
+    public static function names()
+    {
+        $names = array();
+        $files = glob(self::dir() . '/*.ini');
+        foreach ($files ? $files : array() as $f) {
+            $name = basename($f, '.ini');
+            if (preg_match(self::NAME_PATTERN, $name)) {
+                $names[] = $name;
+            }
+        }
+        sort($names);
+        return $names;
+    }
+
+    /** 頁面代號 → chart 名稱（不分大小寫比對檔名），找不到回傳 null */
+    public static function nameForPage($pageKey)
+    {
+        foreach (self::names() as $name) {
+            if (strtolower($name) === strtolower($pageKey)) {
+                return $name;
+            }
+        }
+        return null;
+    }
+
+    public function __construct($name)
+    {
+        if (!preg_match(self::NAME_PATTERN, $name)) {
+            throw new RuntimeException('chart 名稱格式錯誤：' . $name);
+        }
+        $this->name = $name;
+        $this->file = self::dir() . '/' . $name . '.ini';
+        $label = 'charts/' . $name . '.ini';
+        if (!is_file($this->file)) {
+            throw new RuntimeException('找不到 ' . $label);
+        }
+        $ini = parse_ini_file($this->file, true);
+        if ($ini === false) {
+            throw new RuntimeException($label . ' 解析失敗，請檢查引號與語法');
+        }
+
+        foreach ($ini as $section => $conf) {
+            if ($section === 'page') {
+                $this->page = $conf;
+                continue;
+            }
+            if ($section === 'db') {
+                $this->db = $conf;
+                continue;
+            }
+            if (!preg_match('/^plot\.([a-z][a-z0-9_]{0,63})$/', $section, $m)) {
+                throw new RuntimeException($label . ' 區段名稱錯誤：[' . $section . ']，應為 [page]、[db] 或 [plot.<小寫代號>]');
+            }
+            $this->plots[] = $this->plot($m[1], $conf, $label, $section);
+        }
+        if (!$this->plots) {
+            throw new RuntimeException($label . ' 沒有任何 [plot.xxx] 圖');
+        }
+
+        foreach ($this->page as $k => $v) {
+            if (strpos($k, 'model.') === 0 && substr($k, 6) !== '' && trim((string) $v) !== '') {
+                $this->models[substr($k, 6)] = trim((string) $v);
+            }
+        }
+
+        $this->checkPage($label);
+        $this->checkDb($label);
+    }
+
+    // ------------------------------------------------------------------
+    // [page]
+
+    /** php = 用 charts/<名稱>.php 查資料庫；sample = 內建範例資料 */
+    public function source()
+    {
+        $v = strtolower(trim((string) array_get($this->page, 'source', 'php')));
+        return $v === 'sample' ? 'sample' : 'php';
+    }
+
+    public function defaultDays()
+    {
+        return (int) array_get($this->page, 'default_days', 60);
+    }
+
+    public function maxDays()
+    {
+        return (int) array_get($this->page, 'max_days', 366);
+    }
+
+    /** 快速區間按鈕的天數 */
+    public function quickDays()
+    {
+        $out = array();
+        foreach (explode(',', (string) array_get($this->page, 'quick_days', '7, 30, 90')) as $d) {
+            $d = (int) trim($d);
+            if ($d > 0) {
+                $out[] = $d;
+            }
+        }
+        return $out;
+    }
+
+    /** 機型 => 機台名稱包含的字，例 array('1980' => 'PAN', '2000' => 'PAP')；沒設定時為空陣列 */
+    public function models()
+    {
+        return $this->models;
+    }
+
+    /** 機台屬於哪個機型：依 [page] 的順序，名稱包含該字（不分大小寫）的第一個機型；都不符合回傳 '' */
+    public function modelOf($tool)
+    {
+        foreach ($this->models as $model => $needle) {
+            if (stripos($tool, $needle) !== false) {
+                return (string) $model;
+            }
+        }
+        return '';
+    }
+
+    // ------------------------------------------------------------------
+    // [db]
+
+    /**
+     * 這張 chart 的資料庫連線設定；ip 沒填時回傳 null（沿用 AISLE 自己的資料庫）
+     * 回傳 array('ip', 'port', 'name', 'user', 'password', 'charset')
+     */
+    public function db()
+    {
+        $ip = trim((string) array_get($this->db, 'ip', ''));
+        if ($ip === '') {
+            return null;
+        }
+        $port = trim((string) array_get($this->db, 'port', ''));
+        $charset = trim((string) array_get($this->db, 'charset', ''));
+        return array(
+            'ip'       => $ip,
+            'port'     => $port === '' ? 3306 : (int) $port,
+            'name'     => trim((string) array_get($this->db, 'name', '')),
+            'user'     => (string) array_get($this->db, 'user', ''),
+            'password' => (string) array_get($this->db, 'password', ''),
+            'charset'  => $charset === '' ? 'utf8mb4' : $charset,
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // [plot.xxx]
+
+    public function plots()
+    {
+        return $this->plots;
+    }
+
+    /** 所有圖用到的參數（不重複，依出現順序） */
+    public function params()
+    {
+        $out = array();
+        foreach ($this->plots as $g) {
+            foreach ($g['params'] as $p) {
+                if (!in_array($p, $out, true)) {
+                    $out[] = $p;
+                }
+            }
+        }
+        return $out;
+    }
+
+    // ------------------------------------------------------------------
+
+    private function checkPage($label)
+    {
+        $source = strtolower(trim((string) array_get($this->page, 'source', 'php')));
+        if (!in_array($source, array('php', 'sample'), true)) {
+            throw new RuntimeException($label . ' [page] source 只能是 php 或 sample');
+        }
+        foreach (array('default_days', 'max_days') as $k) {
+            if (array_key_exists($k, $this->page) && (!ctype_digit(trim((string) $this->page[$k])) || (int) $this->page[$k] < 1)) {
+                throw new RuntimeException($label . ' [page] ' . $k . ' 必須是正整數');
+            }
+        }
+        if ($this->defaultDays() > $this->maxDays()) {
+            throw new RuntimeException($label . ' [page] default_days 不可大於 max_days');
+        }
+    }
+
+    private function checkDb($label)
+    {
+        $allowed = array('ip', 'port', 'name', 'user', 'password', 'charset');
+        foreach ($this->db as $k => $v) {
+            if (!in_array($k, $allowed, true)) {
+                throw new RuntimeException($label . ' [db] 不認得的欄位：' . $k . '（可用：' . implode('、', $allowed) . '）');
+            }
+        }
+        $ip = trim((string) array_get($this->db, 'ip', ''));
+        if ($ip !== '' && !preg_match('/^[A-Za-z0-9._:-]+$/', $ip)) {
+            throw new RuntimeException($label . ' [db] ip 格式錯誤（只能是 IP 或主機名稱）');
+        }
+        $port = trim((string) array_get($this->db, 'port', ''));
+        if ($port !== '' && (!ctype_digit($port) || (int) $port < 1 || (int) $port > 65535)) {
+            throw new RuntimeException($label . ' [db] port 必須是 1 ~ 65535 的整數');
+        }
+        foreach (array('name', 'charset') as $k) {
+            $v = trim((string) array_get($this->db, $k, ''));
+            if ($v !== '' && !preg_match('/^[A-Za-z0-9_$-]+$/', $v)) {
+                throw new RuntimeException($label . ' [db] ' . $k . ' 只能有英文、數字、底線、$、-');
+            }
+        }
+        if (trim((string) array_get($this->db, 'ip', '')) === '') {
+            foreach (array('name', 'user', 'password') as $k) {
+                if (trim((string) array_get($this->db, $k, '')) !== '') {
+                    throw new RuntimeException($label . ' [db] 有填 ' . $k . ' 但沒有填 ip（ip 留空 = 使用 AISLE 自己的資料庫）');
+                }
+            }
+        }
+    }
+
+    private function plot($id, $conf, $label, $section)
+    {
+        $params = array();
+        foreach (explode(',', (string) array_get($conf, 'params', '')) as $p) {
+            $p = trim($p);
+            if ($p !== '' && !in_array($p, $params, true)) {
+                $params[] = $p;
+            }
+        }
+        if (!$params) {
+            throw new RuntimeException($label . ' [' . $section . '] 沒有設定 params');
+        }
+        $out = array(
+            'id'     => $id,
+            'title'  => (string) array_get($conf, 'title', $id),
+            'params' => $params,
+            'unit'   => (string) array_get($conf, 'unit', 'Data'),
+            'single' => self::flag($conf, 'single'),
+            'newest' => self::flag($conf, 'newest'),
+            'tbt'    => self::flag($conf, 'tbt'),
+            'connect' => self::flag($conf, 'connect', false),
+            'limits' => array(
+                'single' => self::limits($conf, 'single', $label, $section),
+                'newest' => self::limits($conf, 'newest', $label, $section),
+                'tbt'    => self::limits($conf, 'tbt', $label, $section),
+            ),
+        );
+        $t = self::targets($conf, $params, $label, $section);
+        $out['spec'] = self::spec($conf, $label, $section, $t['offset']);
+        return array_merge($out, $t);
+    }
+
+    /**
+     * target：寫了任何一行 target / target.<機台> / target.<機台>.<參數>（含留空的 target =）→ 偏移模式
+     * 取值順序：target.<機台>.<參數> → target.<機台> → target → 0
+     * 機台不分大小寫（存成小寫）；參數必須在這組的 params 裡（區分大小寫）
+     * 機台不檢查是否存在（機台清單是執行時從資料庫取得），不存在的機台就用不到
+     */
+    private static function targets($conf, $params, $label, $section)
+    {
+        $offset = false;
+        $default = 0.0;
+        $targets = array();
+        foreach ($conf as $k => $v) {
+            $k = (string) $k;
+            if ($k !== 'target' && strpos($k, 'target.') !== 0) {
+                continue;
+            }
+            $offset = true;
+            $raw = trim((string) $v);
+            if ($raw !== '' && !is_numeric($raw)) {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 必須是數字或留空：' . $raw);
+            }
+            if ($k === 'target') {
+                if ($raw !== '') {
+                    $default = (float) $raw;
+                }
+                continue;
+            }
+            $rest = explode('.', substr($k, 7), 2);
+            $tool = strtolower(trim($rest[0]));
+            $param = isset($rest[1]) ? trim($rest[1]) : '*';
+            if ($tool === '' || $param === '') {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 格式錯誤，應為 target.<機台> 或 target.<機台>.<參數>');
+            }
+            if ($param !== '*' && !in_array($param, $params, true)) {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 的參數 ' . $param .
+                    ' 不在 params 裡（區分大小寫：' . implode(', ', $params) . '）');
+            }
+            if ($raw === '') {
+                continue;   // 留空 = 沒寫，往下一層找
+            }
+            if (!isset($targets[$tool])) {
+                $targets[$tool] = array();
+            }
+            $targets[$tool][$param] = (float) $raw;
+        }
+        return array('offset' => $offset, 'target' => $default, 'targets' => $targets);
+    }
+
+    /**
+     * spec 線：upper_oos / upper_ooc / lower_ooc / lower_oos，沒設定或空字串為 null（不畫線）
+     * 絕對值模式：有填的值必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+     * 偏移模式  ：都是距離 target 的偏移量，必須 >= 0；同側 OOS >= OOC；上下同一層不能同時為 0
+     */
+    private static function spec($conf, $label, $section, $offset = false)
+    {
+        $keys = array('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos');
+        $out = array();
+        foreach ($keys as $k) {
+            $out[$k] = null;
+            if (array_key_exists($k, $conf) && trim((string) $conf[$k]) !== '') {
+                $raw = trim((string) $conf[$k]);
+                if (!is_numeric($raw)) {
+                    throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 必須是數字或留空：' . $raw);
+                }
+                $out[$k] = (float) $raw;
+            }
+        }
+        if ($offset) {
+            self::checkOffsetSpec($out, $label . ' [' . $section . '] ');
+            return $out;
+        }
+        // 由上到下：upper_oos >= upper_ooc > lower_ooc >= lower_oos（同一側的 OOC 與 OOS 可以相等）
+        for ($i = 0; $i < count($keys); $i++) {
+            for ($j = $i + 1; $j < count($keys); $j++) {
+                $a = $out[$keys[$i]];
+                $b = $out[$keys[$j]];
+                if ($a === null || $b === null) {
+                    continue;
+                }
+                $sameSide = substr($keys[$i], 0, 5) === substr($keys[$j], 0, 5);
+                if ($sameSide ? $a < $b : $a <= $b) {
+                    throw new RuntimeException($label . ' [' . $section . '] ' . $keys[$i] . '（' . $a . '）必須' .
+                        ($sameSide ? '大於等於 ' : '大於 ') . $keys[$j] . '（' . $b . '）');
+                }
+            }
+        }
+        return $out;
+    }
+
+    private static function checkOffsetSpec($s, $where)
+    {
+        foreach ($s as $k => $v) {
+            if ($v !== null && $v < 0) {
+                throw new RuntimeException($where . '有寫 target 時 ' . $k . ' 是距離 target 的偏移量，必須 >= 0（例 lower_ooc = 1.5 表示 target - 1.5）');
+            }
+        }
+        foreach (array('upper', 'lower') as $side) {
+            $oos = $s[$side . '_oos'];
+            $ooc = $s[$side . '_ooc'];
+            if ($oos !== null && $ooc !== null && $oos < $ooc) {
+                throw new RuntimeException($where . $side . '_oos（' . $oos . '）必須大於等於 ' . $side . '_ooc（' . $ooc . '）');
+            }
+        }
+        foreach (array('ooc', 'oos') as $lv) {
+            if ($s['upper_' . $lv] === 0.0 && $s['lower_' . $lv] === 0.0) {
+                throw new RuntimeException($where . 'upper_' . $lv . ' 與 lower_' . $lv . ' 不能同時為 0');
+            }
+        }
+    }
+
+    /**
+     * Y 軸上下限：<區塊>_ymin / <區塊>_ymax 優先，沒有時用整組的 ymin / ymax，都沒有（或空字串）為自動
+     */
+    private static function limits($conf, $kind, $label, $section)
+    {
+        $out = array();
+        foreach (array('min', 'max') as $k) {
+            $v = null;
+            foreach (array($kind . '_y' . $k, 'y' . $k) as $key) {
+                if (array_key_exists($key, $conf) && trim((string) $conf[$key]) !== '') {
+                    $raw = trim((string) $conf[$key]);
+                    if (!is_numeric($raw)) {
+                        throw new RuntimeException($label . ' [' . $section . '] ' . $key . ' 必須是數字：' . $raw);
+                    }
+                    $v = (float) $raw;
+                    break;
+                }
+            }
+            $out[$k] = $v;
+        }
+        if ($out['min'] !== null && $out['max'] !== null && $out['min'] >= $out['max']) {
+            throw new RuntimeException($label . ' [' . $section . '] ' . $kind . ' 的 Y 軸下限必須小於上限');
+        }
+        return $out;
+    }
+
+    /** On / Off；未設定時為 $default。parse_ini_file 會把 On 轉成 "1"、Off 轉成 "" */
+    private static function flag($conf, $key, $default = true)
+    {
+        if (!array_key_exists($key, $conf)) {
+            return $default;
+        }
+        $v = strtolower(trim((string) $conf[$key]));
+        return !($v === '' || $v === '0' || $v === 'off' || $v === 'false' || $v === 'no');
+    }
+}
+#@@@ FILE modules/tool_select/SelectConfig.php sha1=517b074ba69b555cbd34800668d28d84cc3a1f9b base=cfcaf5a49d5635d299c18e1a81b88d3c1d15b730 mode=644 enc=text nl=1
+<?php
+/**
+ * 讀取選機表設定：config/tool_select.ini（共用）+ config/tool_select/<機型>.ini（機型專屬）
+ *
+ *   ToolSelectConfig::shared()       共用設定（機型、超規底色、狀態底色）
+ *   ToolSelectConfig::models()       機型代碼 => 顯示名稱
+ *   ToolSelectConfig::forModel($m)   該機型的機台、分類、項目（含每台的有效 spec）
+ *   ToolSelectConfig::judge($v, $s)  數值 + spec → '' | 'ooc' | 'oos'
+ *
+ * 每次請求只讀一次檔案。設定錯誤丟 ToolSelectConfigException，頁面會顯示訊息
+ */
+class ToolSelectConfigException extends RuntimeException
+{
+}
+
+class ToolSelectConfig
+{
+    /** spec 四條的 key，順序 = 表格欄位順序 */
+    public static $SPEC_KEYS = array('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos');
+    public static $COLOR_KEYS = array('ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light');
+
+    private static $shared = null;
+    private static $models = array();
+
+    public static function shared()
+    {
+        if (self::$shared !== null) {
+            return self::$shared;
+        }
+        $ini = self::parse(AISLE_ROOT . '/config/tool_select.ini', 'config/tool_select.ini');
+
+        $models = array();
+        foreach (array_get($ini, 'models', array()) as $k => $v) {
+            $k = strtoupper(trim($k));
+            if (preg_match('/^[A-Z0-9_]{1,16}$/', $k)) {
+                $models[$k] = (string) $v;
+            }
+        }
+        if (!$models) {
+            throw new ToolSelectConfigException('config/tool_select.ini 的 [models] 沒有任何機型');
+        }
+
+        $defaults = array(
+            'ooc_bg' => '#7A5A00', 'oos_bg' => '#8B0000', 'ooc_bg_light' => '#FFE08A', 'oos_bg_light' => '#FF9C9C',
+        );
+        $colorIni = array_get($ini, 'color', array());
+        $colors = array();
+        foreach ($defaults as $k => $d) {
+            $colors[$k] = self::color(array_get($colorIni, $k, ''), $d);
+        }
+
+        $status = array();
+        foreach (array_get($ini, 'status', array()) as $k => $v) {
+            $c = self::color($v, '');
+            $k = trim((string) $k);
+            if ($k !== '' && $c !== '') {
+                $status[strtolower($k)] = $c;
+            }
+        }
+
+        self::$shared = array('models' => $models, 'colors' => $colors, 'status' => $status);
+        return self::$shared;
+    }
+
+    public static function models()
+    {
+        $s = self::shared();
+        return $s['models'];
+    }
+
+    /**
+     * 該機型的設定
+     * @return array array(
+     *   'model', 'label', 'json_path', 'sample',
+     *   'tools'      => array('APAN01', ...),
+     *   'categories' => array(代號 => 名稱),
+     *   'items'      => array(array('id','category','label','key','unit','decimals',
+     *                               'spec' => array(4 個值或 null), 'toolSpec' => array(機台 => array(4)),
+     *                               'offset' => bool, 'target' => 預設 target, 'targets' => array(機台 => target),
+     *                               'abs' => array(機台 => array(4))  偏移模式時每台換算後的絕對 spec,
+     *                               'colors' => array(覆蓋的顏色), 'href'), ...))  已依分類排序
+     *   偏移模式（項目有寫任何一行 target / target.<機台>）：spec 與機台覆蓋都是距離 target 的偏移量
+     */
+    public static function forModel($model)
+    {
+        if (isset(self::$models[$model])) {
+            return self::$models[$model];
+        }
+        $shared = self::shared();
+        if (!isset($shared['models'][$model])) {
+            throw new ToolSelectConfigException('沒有這個機型：' . $model);
+        }
+        $rel = 'config/tool_select/' . $model . '.ini';
+        $ini = self::parse(AISLE_ROOT . '/' . $rel, $rel);
+
+        $page = array_get($ini, 'page', array());
+
+        // 機台：大寫、去重複，保留順序
+        $tools = array();
+        foreach ((array) array_get(array_get($ini, 'tools', array()), 'tool', array()) as $t) {
+            $t = strtoupper(trim((string) $t));
+            if ($t !== '' && preg_match('/^[A-Z0-9][A-Z0-9_.\-]{0,63}$/', $t) && !in_array($t, $tools, true)) {
+                $tools[] = $t;
+            }
+        }
+
+        $categories = array();
+        foreach (array_get($ini, 'category', array()) as $code => $label) {
+            $code = trim((string) $code);
+            if (!preg_match('/^[a-z0-9_]{1,32}$/', $code)) {
+                throw new ToolSelectConfigException($rel . ' [category] 的代號「' . $code . '」只能用小寫英文、數字、底線');
+            }
+            $categories[$code] = (string) $label;
+        }
+
+        $items = array();
+        $order = 0;
+        foreach ($ini as $section => $v) {
+            if (strpos($section, 'item.') !== 0 || !is_array($v)) {
+                continue;
+            }
+            $id = substr($section, 5);
+            $where = $rel . ' [' . $section . ']';
+            if (!preg_match('/^[a-z0-9_]{1,64}$/', $id)) {
+                throw new ToolSelectConfigException($where . '：項目代號只能用小寫英文、數字、底線');
+            }
+            $cat = trim((string) array_get($v, 'category', ''));
+            if (!isset($categories[$cat])) {
+                throw new ToolSelectConfigException($where . '：category「' . $cat . '」不在 [category] 裡');
+            }
+
+            $spec = array();
+            foreach (self::$SPEC_KEYS as $k) {
+                $spec[] = self::number(array_get($v, $k, ''), $where . ' ' . $k);
+            }
+
+            // target：target = 預設、target.APAN01 = 這台；寫了任何一行（含留空）→ 偏移模式
+            $offset = false;
+            $target = 0.0;
+            $targets = array();
+            foreach ($v as $k => $val) {
+                $k = (string) $k;
+                if ($k === 'target') {
+                    $offset = true;
+                    $n = self::number($val, $where . ' target');
+                    $target = $n === null ? 0.0 : $n;
+                } elseif (strpos($k, 'target.') === 0) {
+                    $offset = true;
+                    $tool = strtoupper(trim(substr($k, 7)));
+                    if (!in_array($tool, $tools, true)) {
+                        throw new ToolSelectConfigException($where . '：' . $k . ' 的機台 ' . $tool . ' 不在 [tools] 裡');
+                    }
+                    $n = self::number($val, $where . ' ' . $k);
+                    if ($n !== null) {
+                        $targets[$tool] = $n;
+                    }
+                }
+            }
+            self::checkSpec($spec, $where, $offset);
+
+            // 機台覆蓋：upper_oos.APAN03 = 6
+            $toolSpec = array();
+            foreach ($v as $k => $val) {
+                if (strpos($k, '.') === false || strpos($k, 'target.') === 0) {
+                    continue;
+                }
+                list($base, $tool) = explode('.', $k, 2);
+                $idx = array_search($base, self::$SPEC_KEYS, true);
+                if ($idx === false) {
+                    throw new ToolSelectConfigException($where . '：不認得的欄位 ' . $k . '（機台覆蓋只能用 upper_oos / upper_ooc / lower_ooc / lower_oos / target）');
+                }
+                $tool = strtoupper(trim($tool));
+                if (!in_array($tool, $tools, true)) {
+                    throw new ToolSelectConfigException($where . '：' . $k . ' 的機台 ' . $tool . ' 不在 [tools] 裡');
+                }
+                if (!isset($toolSpec[$tool])) {
+                    $toolSpec[$tool] = $spec;
+                }
+                $toolSpec[$tool][$idx] = self::number($val, $where . ' ' . $k);
+            }
+            foreach ($toolSpec as $tool => $s) {
+                self::checkSpec($s, $where . ' 機台 ' . $tool, $offset);
+            }
+
+            // 偏移模式：每台換算成絕對 spec（target + upper、target - lower），判斷邏輯不用改
+            $abs = array();
+            if ($offset) {
+                foreach ($tools as $tool) {
+                    $s = isset($toolSpec[$tool]) ? $toolSpec[$tool] : $spec;
+                    $t = isset($targets[$tool]) ? $targets[$tool] : $target;
+                    $abs[$tool] = array(
+                        $s[0] === null ? null : round($t + $s[0], 10),
+                        $s[1] === null ? null : round($t + $s[1], 10),
+                        $s[2] === null ? null : round($t - $s[2], 10),
+                        $s[3] === null ? null : round($t - $s[3], 10),
+                    );
+                }
+            }
+
+            $colors = array();
+            foreach (self::$COLOR_KEYS as $k) {
+                if (array_key_exists($k, $v) && trim((string) $v[$k]) !== '') {
+                    $c = self::color($v[$k], '');
+                    if ($c === '') {
+                        throw new ToolSelectConfigException($where . '：' . $k . ' 必須是 Hex 顏色，例 "#7A0000"');
+                    }
+                    $colors[$k] = $c;
+                }
+            }
+
+            $href = trim((string) array_get($v, 'href', ''));
+            if ($href !== '' && !self::validHref($href)) {
+                throw new ToolSelectConfigException($where . '：href 只能是 "?m=..."、"/..." 或 http(s):// 開頭');
+            }
+
+            $dec = trim((string) array_get($v, 'decimals', ''));
+            $key = trim((string) array_get($v, 'key', ''));
+            $items[] = array(
+                'id'       => $id,
+                'category' => $cat,
+                'label'    => trim((string) array_get($v, 'label', '')) !== '' ? trim((string) $v['label']) : $id,
+                'key'      => $key !== '' ? $key : $id,
+                'unit'     => trim((string) array_get($v, 'unit', '')),
+                'decimals' => $dec === '' ? null : max(0, min(8, (int) $dec)),
+                'spec'     => $spec,
+                'toolSpec' => $toolSpec,
+                'offset'   => $offset,
+                'target'   => $target,
+                'targets'  => $targets,
+                'abs'      => $abs,
+                'colors'   => $colors,
+                'href'     => $href,
+                '_cat'     => array_search($cat, array_keys($categories), true),
+                '_order'   => $order++,
+            );
+        }
+
+        // 依分類順序排，同分類保留 ini 順序（usort 不穩定，所以比兩個欄位）
+        usort($items, function ($a, $b) {
+            if ($a['_cat'] !== $b['_cat']) {
+                return $a['_cat'] < $b['_cat'] ? -1 : 1;
+            }
+            return $a['_order'] < $b['_order'] ? -1 : 1;
+        });
+        foreach ($items as $i => $it) {
+            unset($items[$i]['_cat'], $items[$i]['_order']);
+        }
+
+        self::$models[$model] = array(
+            'model'      => $model,
+            'label'      => $shared['models'][$model],
+            'json_path'  => trim((string) array_get($page, 'json_path', '')),
+            'sample'     => (bool) array_get($page, 'sample', false),
+            'tools'      => $tools,
+            'categories' => $categories,
+            'items'      => $items,
+        );
+        return self::$models[$model];
+    }
+
+    /** 該項目在某台機台的有效 spec（絕對值；偏移模式時已換算成 target ± 偏移） */
+    public static function specOf($item, $tool)
+    {
+        if (!empty($item['offset'])) {
+            return isset($item['abs'][$tool]) ? $item['abs'][$tool] : array(null, null, null, null);
+        }
+        return isset($item['toolSpec'][$tool]) ? $item['toolSpec'][$tool] : $item['spec'];
+    }
+
+    /**
+     * 超規判定（剛好等於界限算正常）
+     * @param float|null $v
+     * @param array $s array(upper_oos, upper_ooc, lower_ooc, lower_oos)，null = 不判斷
+     */
+    public static function judge($v, $s)
+    {
+        if ($v === null) {
+            return '';
+        }
+        if (($s[0] !== null && $v > $s[0]) || ($s[3] !== null && $v < $s[3])) {
+            return 'oos';
+        }
+        if (($s[1] !== null && $v > $s[1]) || ($s[2] !== null && $v < $s[2])) {
+            return 'ooc';
+        }
+        return '';
+    }
+
+    /** href：?m=...、/...、http(s)://...（不接受 //host 與 javascript: 等） */
+    public static function validHref($href)
+    {
+        if (preg_match('/[\s"\'<>\\\\]/', $href)) {
+            return false;
+        }
+        return (bool) preg_match('#^(\?|/(?!/)|https?://)#i', $href);
+    }
+
+    // ------------------------------------------------------------------
+
+    private static function parse($file, $label)
+    {
+        if (!is_file($file)) {
+            throw new ToolSelectConfigException('找不到設定檔 ' . $label);
+        }
+        $ini = @parse_ini_file($file, true);
+        if ($ini === false) {
+            throw new ToolSelectConfigException('INI 解析失敗：' . $label . '（字串請加雙引號）');
+        }
+        return $ini;
+    }
+
+    private static function number($value, $where)
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+        if (!is_numeric($value)) {
+            throw new ToolSelectConfigException($where . ' 必須是數字或留空（目前是「' . $value . '」）');
+        }
+        return (float) $value;
+    }
+
+    /** lower_oos <= lower_ooc < upper_ooc <= upper_oos（只比有填的） */
+    private static function checkOrder($s, $where)
+    {
+        list($uoos, $uooc, $looc, $loos) = $s;
+        $bad = ($loos !== null && $looc !== null && $loos > $looc)
+            || ($looc !== null && $uooc !== null && $looc >= $uooc)
+            || ($uooc !== null && $uoos !== null && $uooc > $uoos)
+            || ($loos !== null && $uoos !== null && $loos >= $uoos)
+            || ($loos !== null && $uooc !== null && $loos >= $uooc)
+            || ($looc !== null && $uoos !== null && $looc >= $uoos);
+        if ($bad) {
+            throw new ToolSelectConfigException($where . '：spec 必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos');
+        }
+    }
+
+    private static function checkSpec($s, $where, $offset)
+    {
+        if ($offset) {
+            self::checkOffset($s, $where);
+        } else {
+            self::checkOrder($s, $where);
+        }
+    }
+
+    /** 偏移模式：都是距離 target 的偏移量，必須 >= 0；同側 OOS >= OOC；上下同一層不能同時為 0 */
+    private static function checkOffset($s, $where)
+    {
+        list($uoos, $uooc, $looc, $loos) = $s;
+        foreach ($s as $i => $x) {
+            if ($x !== null && $x < 0) {
+                throw new ToolSelectConfigException($where . '：有寫 target 時 ' . self::$SPEC_KEYS[$i] .
+                    ' 是距離 target 的偏移量，必須 >= 0（例 lower_ooc = 1.5 表示 target - 1.5）');
+            }
+        }
+        if (($uoos !== null && $uooc !== null && $uoos < $uooc) || ($loos !== null && $looc !== null && $loos < $looc)) {
+            throw new ToolSelectConfigException($where . '：有寫 target 時，同一側的 OOS 偏移量必須大於等於 OOC');
+        }
+        if (($uooc === 0.0 && $looc === 0.0) || ($uoos === 0.0 && $loos === 0.0)) {
+            throw new ToolSelectConfigException($where . '：upper 與 lower 同一層的偏移量不能同時為 0');
+        }
+    }
+
+    private static function color($value, $default)
+    {
+        $value = trim((string) $value);
+        return preg_match('/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/', $value) ? strtoupper($value) : $default;
+    }
+}
+#@@@ FILE modules/tool_select/controller.php sha1=6ac6f8469c40291c0e02947faf9f599c3b0d3907 base=78d2defffc56316623690080783dbd27396a71ea mode=644 enc=text nl=1
+<?php
+/**
+ * 設備選機表（Tool Selection Matrix）
+ *
+ * 共用設定 config/tool_select.ini；機型專屬 config/tool_select/<機型>.ini（機台、分類、項目、spec、JSON 路徑）
+ * 頁面唯讀；匯出 CSV 由 config/config.ini 的 [page.tool_select] action.export 決定哪些身份可用
+ *
+ *   index    頁面（表格、篩選都由 tool_select.js 處理）
+ *   data     GET  該機型：機台、分類、項目（含每台有效 spec）、數值、資料時間
+ *   export   GET  CSV：目前篩選的項目 × 機台（items=id,id&tools=T1,T2；不給 = 全部）
+ */
+require_once dirname(__FILE__) . '/SelectConfig.php';
+require_once dirname(__FILE__) . '/ValueSource.php';
+
+class ToolSelectController extends Controller
+{
+    public function indexAction()
+    {
+        $error = '';
+        $models = array();
+        try {
+            foreach (ToolSelectConfig::models() as $m => $label) {
+                $modelError = '';
+                try {
+                    ToolSelectConfig::forModel($m);
+                } catch (ToolSelectConfigException $e) {
+                    $modelError = $e->getMessage();
+                }
+                $models[] = array('key' => $m, 'label' => $label, 'error' => $modelError);
+            }
+        } catch (ToolSelectConfigException $e) {
+            $error = $e->getMessage();
+        }
+
+        $this->render('index', array(
+            'error'  => $error,
+            'models' => $models,
+            'config' => array(
+                'urls'      => array(
+                    'data'   => url($this->module, 'data'),
+                    'export' => url($this->module, 'export'),
+                    'base'   => base_url() . '/index.php',
+                ),
+                'models'    => $models,
+                'model'     => strtoupper($this->query('model')),
+                'canExport' => $this->can('export'),
+            ),
+        ));
+    }
+
+    public function dataAction()
+    {
+        $cfg = $this->modelConfig();
+        if ($cfg === null) {
+            return;
+        }
+        $shared = ToolSelectConfig::shared();
+        $vals = ToolSelectValues::forModel($cfg);
+
+        $categories = array();
+        foreach ($cfg['categories'] as $code => $label) {
+            $categories[] = array('code' => $code, 'label' => $label);
+        }
+        $items = array();
+        foreach ($cfg['items'] as $it) {
+            $items[] = array(
+                'id'       => $it['id'],
+                'category' => $it['category'],
+                'label'    => $it['label'],
+                'unit'     => $it['unit'],
+                'decimals' => $it['decimals'],
+                'spec'     => $it['spec'],
+                'toolSpec' => (object) $it['toolSpec'],
+                'offset'   => $it['offset'],
+                'target'   => $it['target'],
+                'targets'  => (object) $it['targets'],
+                'abs'      => (object) $it['abs'],
+                'colors'   => (object) $it['colors'],
+                'href'     => $it['href'],
+            );
+        }
+
+        $this->json(array(
+            'ok'         => true,
+            'model'      => $cfg['model'],
+            'label'      => $cfg['label'],
+            'tools'      => $cfg['tools'],
+            'categories' => $categories,
+            'items'      => $items,
+            'values'     => (object) $vals['values'],
+            'status'     => $vals['status'],
+            'message'    => $vals['message'],
+            'updated'    => $vals['updated'],
+            'colors'     => $shared['colors'],
+            'statusColors' => (object) $shared['status'],
+            'serverTime' => date('Y-m-d H:i:s'),
+        ));
+    }
+
+    public function exportAction()
+    {
+        $cfg = $this->modelConfig();
+        if ($cfg === null) {
+            return;
+        }
+        $vals = ToolSelectValues::forModel($cfg);
+        $values = $vals['values'];
+
+        $tools = $this->pick($this->query('tools'), $cfg['tools'], true);
+        $ids = array();
+        foreach ($cfg['items'] as $it) {
+            $ids[] = $it['id'];
+        }
+        $wanted = array_flip($this->pick($this->query('items'), $ids, false));
+
+        $filename = 'tool_select_' . $cfg['model'] . '_' . date('Ymd_Hi') . '.csv';
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Cache-Control: private, no-store');
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM，Excel 直接開不會亂碼
+        fputcsv($out, array_merge(array('分類', '項目', 'uOOS', 'uOOC', 'lOOC', 'lOOS'), $tools, array('OOC 機台', 'OOS 機台')));
+        foreach ($cfg['items'] as $it) {
+            if (!isset($wanted[$it['id']])) {
+                continue;
+            }
+            $label = $it['label'] . ($it['unit'] !== '' ? ' (' . $it['unit'] . ')' : '');
+            $line = array(self::safe($cfg['categories'][$it['category']]), self::safe($label));
+            foreach ($it['spec'] as $k => $s) {
+                // 偏移模式：與畫面相同，填帶正負號的偏移量（upper +、lower -）
+                $sign = $it['offset'] ? ($k < 2 ? '+' : '-') : '';
+                $line[] = $s === null ? '' : $sign . self::num($s, null);
+            }
+            $ooc = array();
+            $oos = array();
+            foreach ($tools as $tool) {
+                $cell = isset($values[$it['id']][$tool]) ? $values[$it['id']][$tool] : null;
+                if ($cell === null) {
+                    $line[] = '';
+                    continue;
+                }
+                if ($cell['v'] === null) {
+                    $line[] = self::safe($cell['s']);
+                    continue;
+                }
+                $line[] = self::num($cell['v'], $it['decimals']);
+                $j = ToolSelectConfig::judge($cell['v'], ToolSelectConfig::specOf($it, $tool));
+                if ($j === 'oos') {
+                    $oos[] = $tool;
+                } elseif ($j === 'ooc') {
+                    $ooc[] = $tool;
+                }
+            }
+            $line[] = implode(' ', $ooc);
+            $line[] = implode(' ', $oos);
+            fputcsv($out, $line);
+        }
+        fclose($out);
+    }
+
+    // ------------------------------------------------------------------
+
+    /** 讀 ?model= 對應的機型設定；錯誤時已輸出 JSON 並回傳 null */
+    private function modelConfig()
+    {
+        $model = strtoupper($this->query('model'));
+        try {
+            $models = ToolSelectConfig::models();
+            if (!isset($models[$model])) {
+                $this->json(array('ok' => false, 'error' => '沒有這個機型：' . $model), 404);
+                return null;
+            }
+            return ToolSelectConfig::forModel($model);
+        } catch (ToolSelectConfigException $e) {
+            $this->json(array('ok' => false, 'error' => $e->getMessage()), 500);
+            return null;
+        }
+    }
+
+    /** 逗號分隔的清單 → 只留 $all 裡有的，依 $all 的順序；空白 = 全部 */
+    private function pick($param, $all, $upper)
+    {
+        if ($param === '') {
+            return $all;
+        }
+        $want = array();
+        foreach (explode(',', $param) as $v) {
+            $v = trim($v);
+            $want[$upper ? strtoupper($v) : $v] = true;
+        }
+        $out = array();
+        foreach ($all as $v) {
+            if (isset($want[$v])) {
+                $out[] = $v;
+            }
+        }
+        return $out;
+    }
+
+    private static function num($v, $decimals)
+    {
+        if ($decimals !== null) {
+            return number_format($v, $decimals, '.', '');
+        }
+        // 去掉浮點數尾巴（0.1 + 0.2 之類），最多 10 位有效小數
+        return rtrim(rtrim(sprintf('%.10F', $v), '0'), '.');
+    }
+
+    /** 避免 Excel 把 = + - @ 開頭的文字當公式執行 */
+    private static function safe($s)
+    {
+        $s = (string) $s;
+        return ($s !== '' && strpos('=+-@', $s[0]) !== false) ? "'" . $s : $s;
+    }
+}
+#@@@ FILE public/assets/js/charts.js sha1=25be214439fc03989851c6512888b1f2df0966d2 base=15c6153fea6ba260ec858f0f5c952eb8860efd2d mode=644 enc=text nl=1
+/*
+ * charts 頁面 (jQuery 1.12 + ECharts 5)，所有 chart（BSLr、M1BF…）共用
+ *
+ * 三個區塊：single 單台趨勢 / newest 最新值排排站 / tbt 歷史趨勢排排站
+ * 每個區塊依 charts/<名稱>.ini 的 [plot.xxx] 各畫一張圖（CFG.groups），
+ * 同一組的參數（例 M1BF_Z_C1、M1BF_Z_C2）畫在同一張圖上。
+ *
+ * 後端回傳格式：
+ *   { "APAN01": { "Date": [...], "Data": { "M1BF_Z_C1": [...], "M1BF_Z_C2": [...] } }, ... }
+ *   每個參數陣列與 Date 等長，沒有值的位置是 null
+ *   選用 "Url": [...]（與 Date 等長）：單台趨勢圖點擊數據點時在新分頁開啟該網址
+ *
+ * 資料載入方式：
+ *   進入頁面時只呼叫一次 tbt，取回日期區間內「全部機台、全部參數」的資料存在 cache，所有圖都從這份資料取得：
+ *     TBT 直接畫；single 取出所選機台；Newest_TBT 取每台每個參數在區間內的最後一個值（再依機型篩選）
+ *   之後切換機台、切換機型只用 cache 重畫，不再發 request；
+ *   只有改日期區間（查詢 / 快速區間）才會重新取 tbt。
+ *
+ * 編碼方式：顏色 = 機台，線型 / 長條紋理 = 參數（同組第 1 個參數實線無紋理，第 2 個虛線斜紋…）
+ * 只用 ES5 語法，避免舊瀏覽器出錯
+ */
+(function ($, window) {
+    'use strict';
+
+    var CFG = window.AISLE_CHARTS;
+    if (!$ || !CFG) {
+        return;
+    }
+
+    // ---------- 主題 ----------
+    // 機台顏色：8 色類別色盤（已用 dataviz validate_palette.js 檢查深色底 #001406：
+    // 亮度、彩度、色盲區分、對比全部通過）。同機型內依序取色，APAN01 與 APAP01 同色，
+    // 以 X 軸機台名稱區分。顏色跟著機台走，篩選後不會變色。
+    var PALETTE = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+    // 參數：線型與長條紋理，依參數在組內的順序取用
+    var LINE_TYPES = ['solid', 'dashed', 'dotted', [10, 4, 2, 4], [2, 6]];
+    var LINE_NAMES = ['實線', '虛線', '點線', '點劃線', '稀點線'];
+    var DECALS = [
+        null,
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'circle', symbolSize: 0.6, dashArrayX: [[4, 4]], dashArrayY: [4, 0], color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [2, 4], rotation: -Math.PI / 4, color: 'rgba(0,0,0,0.5)' },
+        { symbol: 'rect', symbolSize: 1, dashArrayX: [1, 0], dashArrayY: [1, 3], rotation: 0, color: 'rgba(0,0,0,0.5)' }
+    ];
+    // 文字、格線、軸線等依畫面風格切換（body.theme-light = 淺色）；機台色盤兩種風格共用
+    // （PALETTE 另以淺色底 #ffffff 檢查過，同樣全部通過）
+    var THEMES = {
+        dark: {
+            INK: '#00ff41',                 // 主要文字
+            INK_DIM: '#00b82e',             // 次要文字
+            GRID: '#0a2a12',                // 格線
+            AXIS: '#00661a',                // 軸線
+            NEUTRAL: '#7dffb0',             // 圖例中代表「參數」的中性色
+            BAND: 'rgba(0, 255, 65, 0.05)', // TBT 交錯底色
+            INACTIVE: '#1f4a2a',            // 圖例關閉的項目
+            TIP_BG: 'rgba(0, 10, 3, 0.95)',
+            TIP_SHADOW: 'box-shadow: 0 0 12px rgba(0,255,65,0.3);',
+            MASK: 'rgba(0, 0, 0, 0.6)',
+            HOVER: 'rgba(0,255,65,0.06)',
+            ZOOM_FILL: 'rgba(0,255,65,0.12)',
+            ZOOM_AREA: 'rgba(0,255,65,0.08)',
+            OOS: '#ff3b3b',                 // spec 線：OOS（規格界限）
+            OOC: '#ffb000',                 // spec 線：OOC（管制界限）
+            TARGET: '#4dd0e1'               // target 線（ini 有寫 target 的組）
+        },
+        light: {
+            INK: '#00591a',
+            INK_DIM: '#2e6b3c',
+            GRID: '#dcefe1',
+            AXIS: '#8fbf9a',
+            NEUTRAL: '#2e6b3c',
+            BAND: 'rgba(0, 143, 17, 0.06)',
+            INACTIVE: '#b5cdb9',
+            TIP_BG: 'rgba(255, 255, 255, 0.97)',
+            TIP_SHADOW: 'box-shadow: 0 2px 10px rgba(0,80,20,0.18);',
+            MASK: 'rgba(255, 255, 255, 0.7)',
+            HOVER: 'rgba(0,143,17,0.08)',
+            ZOOM_FILL: 'rgba(0,143,17,0.15)',
+            ZOOM_AREA: 'rgba(0,143,17,0.10)',
+            OOS: '#c62828',
+            OOC: '#b26a00',
+            TARGET: '#00838f'
+        }
+    };
+    var T, INK, INK_DIM, GRID, AXIS, NEUTRAL, BAND;
+    function setTheme(name) {
+        T = THEMES[name] || THEMES.dark;
+        INK = T.INK;
+        INK_DIM = T.INK_DIM;
+        GRID = T.GRID;
+        AXIS = T.AXIS;
+        NEUTRAL = T.NEUTRAL;
+        BAND = T.BAND;
+    }
+    setTheme($('body').hasClass('theme-light') ? 'light' : 'dark');
+    // spec 線的顏色依風格取 T.OOS / T.OOC，畫圖時才查（切換風格後會跟著變）
+    var SPEC_KEYS = [
+        { key: 'upper_oos', label: 'OOS', colorKey: 'OOS', type: 'solid' },
+        { key: 'upper_ooc', label: 'OOC', colorKey: 'OOC', type: 'dashed' },
+        { key: 'lower_ooc', label: 'OOC', colorKey: 'OOC', type: 'dashed' },
+        { key: 'lower_oos', label: 'OOS', colorKey: 'OOS', type: 'solid' }
+    ];
+    var FONT = '"Share Tech Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
+
+    var COLOR = {};
+    (function assignColors() {
+        var counter = {};
+        $.each(CFG.tools, function (i, tool) {
+            var model = CFG.models[tool] || '';
+            counter[model] = counter[model] || 0;
+            COLOR[tool] = PALETTE[counter[model] % PALETTE.length];
+            counter[model]++;
+        });
+    })();
+
+    var GROUPS = {};
+    $.each(CFG.groups, function (i, g) { GROUPS[g.id] = g; });
+
+    function colorOf(tool) { return COLOR[tool] || NEUTRAL; }
+    function lineTypeOf(i) { return LINE_TYPES[i % LINE_TYPES.length]; }
+    function decalOf(i) { return DECALS[i % DECALS.length]; }
+    function shortName(param, group) {
+        // 圖例只顯示參數名稱與組標題不同的部分，例 M1BF_Z 組內的 M1BF_Z_C1 → C1
+        var prefix = group.title + '_';
+        return param.indexOf(prefix) === 0 && param.length > prefix.length ? param.substring(prefix.length) : param;
+    }
+
+    function baseOption() {
+        return {
+            backgroundColor: 'transparent',
+            textStyle: { color: INK, fontFamily: FONT },
+            animationDuration: 400,
+            tooltip: {
+                backgroundColor: T.TIP_BG,
+                borderColor: INK_DIM,
+                borderWidth: 1,
+                textStyle: { color: INK, fontFamily: FONT, fontSize: 13 },
+                extraCssText: T.TIP_SHADOW
+            },
+            grid: { left: 50, right: 24, top: 40, bottom: 40, containLabel: false }
+        };
+    }
+
+    /**
+     * Y 軸；config 有設上下限就固定，否則自動（自動時會把 spec 線納入範圍）。kind = single / newest / tbt
+     * lines = specLines() 的結果。偏移模式的 newest / tbt 畫的是「值 - target」，軸名稱加註
+     */
+    function valueAxis(group, kind, lines) {
+        var lim = (group.limits && group.limits[kind]) || {};
+        var axis = {
+            type: 'value',
+            name: (group.unit || 'Data') + (group.offset && kind !== 'single' ? '（- target）' : ''),
+            nameTextStyle: { color: INK_DIM },
+            axisLine: { show: false },
+            axisTick: { show: false },
+            axisLabel: { color: INK_DIM },
+            splitLine: { lineStyle: { color: GRID } },
+            scale: kind !== 'newest'
+        };
+        if (group.offset && kind !== 'single') {
+            axis.nameTextStyle.align = 'left';   // 名稱較長，靠左對齊才不會被裁掉
+        }
+        var spec = $.map(lines, function (l) { return l.value; });
+        if (lim.min !== null && lim.min !== undefined) {
+            axis.min = lim.min;
+        } else if (spec.length) {
+            axis.min = function (v) { return specBounds(v, spec, kind).min; };
+        }
+        if (lim.max !== null && lim.max !== undefined) {
+            axis.max = lim.max;
+        } else if (spec.length) {
+            axis.max = function (v) { return specBounds(v, spec, kind).max; };
+        }
+        return axis;
+    }
+
+    // ---------- target（偏移模式） ----------
+    // ini 有寫任何一行 target 的組 group.offset = true：spec 是距離 target 的偏移量，
+    //   single：畫原始值，spec 線在 target ± 偏移，另畫 target 線
+    //   newest / tbt：畫「值 - target」，所有機台共用 +偏移 / 0 / -偏移 的水平線
+    // 取值順序：target.<機台>.<參數> → target.<機台> → target → 0（機台不分大小寫）
+
+    /** 某台機台、某個參數的 target；不是偏移模式時為 0 */
+    function targetOf(group, tool, param) {
+        if (!group.offset) {
+            return 0;
+        }
+        var t = group.targets ? group.targets[String(tool).toLowerCase()] : null;
+        if (t && t.hasOwnProperty(param)) {
+            return t[param];
+        }
+        if (t && t.hasOwnProperty('*')) {
+            return t['*'];
+        }
+        return group.target || 0;
+    }
+
+    /** 扣掉 target 的偏差，去掉浮點誤差（28.2 - 27 = 1.2 而不是 1.1999999） */
+    function minus(v, t) {
+        return parseFloat((v - t).toPrecision(12));
+    }
+
+    /** newest / tbt 的資料點：偏移模式時畫偏差，原始值放在 raw 給 tooltip 用 */
+    function plotPoint(group, tool, param, v) {
+        if (v === null || v === undefined) {
+            return null;
+        }
+        if (!group.offset) {
+            return v;
+        }
+        return { value: minus(v, targetOf(group, tool, param)), raw: v };
+    }
+
+    /** tooltip 顯示的原始值 */
+    function rawOf(p) {
+        return p.data && typeof p.data === 'object' && p.data.hasOwnProperty('raw') ? p.data.raw : p.value;
+    }
+
+    /**
+     * 這張圖要畫的 spec 線：[{ key, value, text, colorKey, type }]
+     *   絕對值模式：ini 的四條線（三個區塊相同）
+     *   偏移模式 single：依所選機台每個參數的 target 算出 target ± 偏移與 target 線；
+     *                    各參數 target 相同時只有一組線，不同時每個參數各一組，標籤加參數簡稱
+     *   偏移模式 newest / tbt：+偏移 / 0（target）/ -偏移
+     */
+    function specLines(group, kind, tool) {
+        var lines = [];
+        function add(t, prefix) {
+            $.each(SPEC_KEYS, function (i, k) {
+                var v = group.spec ? group.spec[k.key] : null;
+                if (v === null || v === undefined) {
+                    return;
+                }
+                if (group.offset) {
+                    v = k.key.indexOf('upper') === 0 ? minus(t, -v) : minus(t, v);
+                }
+                lines.push({ key: k.key, value: v, text: prefix + k.label + ' ' + fmtNum(v), colorKey: k.colorKey, type: k.type });
+            });
+            if (group.offset) {
+                lines.push({ key: 'target', value: t, text: prefix + 'Target ' + fmtNum(t), colorKey: 'TARGET', type: 'dotted' });
+            }
+        }
+        if (!group.offset) {
+            add(0, '');
+        } else if (kind !== 'single') {
+            add(0, '');
+        } else {
+            var order = [];
+            var byTarget = {};
+            $.each(group.params, function (i, p) {
+                var t = targetOf(group, tool, p);
+                var key = String(t);
+                if (!byTarget.hasOwnProperty(key)) {
+                    byTarget[key] = { t: t, names: [] };
+                    order.push(key);
+                }
+                byTarget[key].names.push(shortName(p, group));
+            });
+            $.each(order, function (i, key) {
+                add(byTarget[key].t, order.length > 1 ? byTarget[key].names.join(',') + ' ' : '');
+            });
+        }
+        return lines;
+    }
+
+    function fmtNum(v) {
+        return String(parseFloat(Number(v).toPrecision(10)));
+    }
+
+    /** 資料範圍 v（{min, max}）加上 spec 線後的 Y 軸上下限，取整到刻度間距 */
+    function specBounds(v, spec, kind) {
+        var lo = Math.min.apply(null, spec);
+        var hi = Math.max.apply(null, spec);
+        if (isFinite(v.min)) {
+            lo = Math.min(lo, v.min);
+        }
+        if (isFinite(v.max)) {
+            hi = Math.max(hi, v.max);
+        }
+        if (kind === 'newest') {   // 長條圖從 0 開始
+            lo = Math.min(lo, 0);
+            hi = Math.max(hi, 0);
+        }
+        var span = hi - lo;
+        if (span <= 0) {
+            span = Math.abs(hi) || 1;
+        }
+        var step = niceStep(span / 5);
+        var min = Math.floor(lo / step) * step;
+        var max = Math.ceil(hi / step) * step;
+        return { min: +min.toFixed(10), max: +max.toFixed(10) };
+    }
+
+    function niceStep(x) {
+        var p = Math.pow(10, Math.floor(Math.log(x) / Math.LN10));
+        var f = x / p;
+        return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+    }
+
+    /** spec 水平線：放在一條沒有資料的輔助 series 上；沒有線時回傳 null */
+    function specSeries(specs) {
+        var lines = [];
+        $.each(specs, function (i, l) {
+            lines.push({
+                name: l.key,
+                yAxis: l.value,
+                lineStyle: { color: T[l.colorKey], type: l.type, width: 1.5 },
+                label: {
+                    show: true,
+                    position: l.key.indexOf('lower') === 0 ? 'insideEndBottom' : 'insideEndTop',
+                    color: T[l.colorKey],
+                    fontFamily: FONT,
+                    formatter: l.text
+                }
+            });
+        });
+        if (!lines.length) {
+            return null;
+        }
+        return {
+            name: '_spec',
+            type: 'line',
+            data: [],
+            silent: true,
+            markLine: { silent: true, symbol: 'none', animation: false, data: lines }
+        };
+    }
+
+    /** 有 spec 時把輔助 series 加到 series 陣列最後 */
+    function pushSpec(series, specs) {
+        var s = specSeries(specs);
+        if (s) {
+            series.push(s);
+        }
+    }
+
+    function axisLine() {
+        return { lineStyle: { color: AXIS } };
+    }
+
+    function legendBase(data) {
+        return {
+            type: 'scroll',
+            top: 0,
+            data: data,
+            textStyle: { color: INK, fontFamily: FONT },
+            pageTextStyle: { color: INK },
+            pageIconColor: INK,
+            pageIconInactiveColor: AXIS,
+            inactiveColor: T.INACTIVE,
+            itemWidth: 26,
+            itemHeight: 10
+        };
+    }
+
+    function fmt(v) {
+        return v === null || v === undefined ? '-' : AISLE.escape(v);
+    }
+
+    // ---------- 圖表盒 ----------
+    // boxes['tbt:m1bf_z'] = { kind, group, $el, chart, shown }
+    var boxes = {};
+    var cache = { tbt: null };
+    var request = null;
+
+    function eachBox(kind, fn) {
+        $.each(boxes, function (key, box) {
+            if (!kind || box.kind === kind) {
+                fn(box);
+            }
+        });
+    }
+
+    function showMessage(chart, text) {
+        chart.clear();
+        chart.setOption({
+            title: {
+                text: text,
+                left: 'center',
+                top: 'middle',
+                textStyle: { color: INK_DIM, fontSize: 14, fontWeight: 'normal', fontFamily: FONT }
+            }
+        });
+    }
+
+    function loadingOpts() {
+        return { text: 'LOADING...', color: INK, textColor: INK, maskColor: T.MASK, fontFamily: FONT };
+    }
+
+    /** 把資料畫到圖表盒；沒有資料時顯示 NO DATA，並更新資料表 */
+    function show(box, data, draw) {
+        box.shown = data;
+        box.urlInfo = null;
+        if ($.isEmptyObject(data)) {
+            showMessage(box.chart, '> 查無資料 // NO DATA');
+        } else {
+            draw(box, data);
+        }
+        renderTable(box);
+    }
+
+    /** 資料表檢視：機台 / 時間 / 該組每個參數一欄 */
+    function renderTable(box) {
+        var params = box.group.params;
+        var head = '<tr><th>TOOL</th><th>DATE</th>';
+        $.each(params, function (i, p) { head += '<th>' + AISLE.escape(p) + '</th>'; });
+        head += '</tr>';
+        var rows = [];
+        var withUrl = false;
+        $.each(box.shown, function (tool, s) {
+            if ($.isArray(s.Url)) {
+                withUrl = true;
+            }
+        });
+        if (withUrl) {
+            head = head.replace(/<\/tr>$/, '<th>URL</th></tr>');
+        }
+        $.each(box.shown, function (tool, s) {
+            if (!$.isArray(s.Date)) {
+                // newest：各參數的日期分開存，值後面附上日期
+                var tr0 = '<tr><td>' + AISLE.escape(tool) + '</td><td>LATEST</td>';
+                $.each(params, function (j, p) {
+                    tr0 += '<td>' + fmt(s.Data[p][0]) + (s.Date[p][0] ? ' <span class="dim">(' + AISLE.escape(s.Date[p][0]) + ')</span>' : '') + '</td>';
+                });
+                rows.push(tr0 + '</tr>');
+                return;
+            }
+            for (var i = 0; i < s.Date.length; i++) {
+                var tr = '<tr><td>' + AISLE.escape(tool) + '</td><td>' + AISLE.escape(s.Date[i]) + '</td>';
+                for (var j = 0; j < params.length; j++) {
+                    tr += '<td>' + fmt(s.Data[params[j]] ? s.Data[params[j]][i] : null) + '</td>';
+                }
+                if (withUrl) {
+                    var u = $.isArray(s.Url) ? safeUrl(s.Url[i]) : null;
+                    tr += '<td>' + (u ? '<a href="' + AISLE.escape(u) + '" target="_blank" rel="noopener noreferrer">開啟</a>' : '-') + '</td>';
+                }
+                rows.push(tr + '</tr>');
+            }
+        });
+        box.$el.find('.cd-table').html(rows.length
+            ? '<table class="table"><thead>' + head + '</thead><tbody>' + rows.join('') + '</tbody></table>'
+            : '<p class="dim">&gt; 查無資料</p>');
+    }
+
+    // ---------- 1. single：所選機台，組內每個參數一條線 ----------
+    function drawSingle(box, data) {
+        var group = box.group;
+        var tool;
+        for (tool in data) {
+            if (data.hasOwnProperty(tool)) {
+                break;
+            }
+        }
+        var s = data[tool];
+        var urls = $.isArray(s.Url) ? s.Url : null;
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var points = [];
+            var col = s.Data[param] || [];
+            for (var i = 0; i < s.Date.length; i++) {
+                points.push([s.Date[i], col[i] === undefined ? null : col[i]]);
+            }
+            series.push({
+                name: param,
+                type: 'line',
+                data: points,
+                connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
+                showSymbol: points.length <= 45,
+                symbolSize: 8,
+                color: colorOf(tool),
+                lineStyle: { width: 2, type: lineTypeOf(pi) },
+                emphasis: { focus: 'series' }
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        // tooltip 標題一律顯示完整時間（後端已統一成 Y-m-d H:i:s）；有 Url 時多一行提示，點數據點開新分頁（見 bindUrlClick）
+        opt.tooltip.formatter = function (params) {
+            var html = '';
+            var idx = null;
+            $.each(params, function (i, p) {
+                if (p.seriesName === '_spec') {
+                    return;
+                }
+                if (!html) {
+                    html = AISLE.escape(s.Date[p.dataIndex]);
+                    idx = p.dataIndex;
+                }
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(p.value[1]) + '</b>';
+            });
+            if (urls && idx !== null && safeUrl(urls[idx])) {
+                html += '<br><span style="color:' + INK_DIM + '">&gt; 點擊數據點開啟連結</span>';
+            }
+            return html;
+        };
+        if (urls) {
+            box.urlInfo = { dates: s.Date, urls: urls, cols: $.map(group.params, function (p) { return [s.Data[p] || []]; }) };
+        }
+        opt.xAxis = {
+            type: 'time',
+            axisLine: axisLine(),
+            axisLabel: { color: INK_DIM, hideOverlap: true, formatter: '{yyyy}-{MM}-{dd} {HH}:{mm}:{ss}' },
+            splitLine: { show: false }
+        };
+        var specs = specLines(group, 'single', tool);
+        opt.yAxis = valueAxis(group, 'single', specs);
+        opt.dataZoom = [{ type: 'inside' }];
+        pushSpec(series, specs);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 2. newest：X 軸機台，組內每個參數一根長條 ----------
+    function drawNewest(box, data) {
+        var group = box.group;
+        var tools = [];
+        $.each(data, function (tool) { tools.push(tool); });
+        var series = [];
+        $.each(group.params, function (pi, param) {
+            var bars = [];
+            $.each(tools, function (ti, tool) {
+                var s = data[tool];
+                var style = { color: colorOf(tool), borderRadius: [4, 4, 0, 0] };
+                if (decalOf(pi)) {
+                    style.decal = decalOf(pi);
+                }
+                var v = s.Data[param][0];
+                var bar = { value: v, raw: v, date: s.Date[param][0], itemStyle: style };
+                if (group.offset && v !== null && v !== undefined) {
+                    bar.value = minus(v, targetOf(group, tool, param));   // 偏移模式畫「值 - target」
+                }
+                bars.push(bar);
+            });
+            // series 的 itemStyle 只決定圖例的樣子（中性色 + 該參數的紋理），每根長條另用機台色
+            var legendStyle = { color: NEUTRAL };
+            if (decalOf(pi)) {
+                legendStyle.decal = decalOf(pi);
+            }
+            series.push({
+                name: param,
+                type: 'bar',
+                data: bars,
+                barMaxWidth: 28,
+                barGap: '15%',
+                itemStyle: legendStyle,
+                emphasis: { focus: 'series', itemStyle: { shadowBlur: 12, shadowColor: INK } },
+                cursor: 'pointer'
+            });
+        });
+        var opt = baseOption();
+        opt.legend = legendBase(group.params.slice(0));
+        opt.legend.formatter = function (name) { return shortName(name, group); };
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'shadow', shadowStyle: { color: T.HOVER } };
+        opt.tooltip.formatter = function (params) {
+            if (!params.length) {
+                return '';
+            }
+            var html = '<b>' + AISLE.escape(params[0].name) + '</b>';
+            $.each(params, function (i, p) {
+                html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(rawOf(p)) + '</b>' +
+                    ' <span style="color:' + INK_DIM + '">(' + fmt(p.data.date) + ')</span>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: tools,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
+        };
+        var specs = specLines(group, 'newest');
+        opt.yAxis = valueAxis(group, 'newest', specs);
+        pushSpec(series, specs);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+    }
+
+    // ---------- 3. TBT ----------
+    // X 軸為類別軸：每台機台佔一段，段內依時間排列。每台每個參數一條 series，
+    // 同一台的 series 用同一個名稱，所以圖例以機台為單位開關；其他段落填 null，
+    // 所以每台只畫在自己的區段，相鄰機台以交錯底色分隔。
+    function drawTbt(box, data) {
+        var group = box.group;
+        var keys = [];      // 類別值（唯一）："APAN01|2026-01-01"
+        var segments = [];  // { tool, from, to }
+        $.each(data, function (tool, s) {
+            var from = keys.length;
+            for (var i = 0; i < s.Date.length; i++) {
+                keys.push(tool + '|' + s.Date[i]);
+            }
+            segments.push({ tool: tool, from: from, to: keys.length - 1 });
+        });
+
+        var centers = {};
+        var bands = [];
+        $.each(segments, function (i, seg) {
+            centers[Math.floor((seg.from + seg.to) / 2)] = seg.tool;
+            if (i % 2 === 1) {
+                bands.push([{ xAxis: keys[seg.from] }, { xAxis: keys[seg.to] }]);
+            }
+        });
+
+        var series = [];
+        var legend = [];
+        var paramOf = [];   // seriesIndex → 參數名稱（tooltip 用）
+        $.each(segments, function (i, seg) {
+            var s = data[seg.tool];
+            legend.push(seg.tool);
+            $.each(group.params, function (pi, param) {
+                var col = s.Data[param] || [];
+                var arr = new Array(keys.length);
+                for (var k = 0; k < keys.length; k++) {
+                    arr[k] = null;
+                }
+                for (var j = 0; j < s.Date.length; j++) {
+                    arr[seg.from + j] = plotPoint(group, seg.tool, param, col[j]);   // 偏移模式為「值 - target」
+                }
+                paramOf.push(param);
+                series.push({
+                    name: seg.tool,
+                    type: 'line',
+                    data: arr,
+                    connectNulls: !!group.connect,   // ini 的 connect = On：跳過空值把線連起來
+                    showSymbol: false,
+                    symbolSize: 8,
+                    color: colorOf(seg.tool),
+                    lineStyle: { width: 2, type: lineTypeOf(pi) },
+                    emphasis: { focus: 'series' }
+                });
+            });
+        });
+        // 交錯底色放在一條不顯示的輔助 series 上
+        series.push({
+            name: '_bands',
+            type: 'line',
+            data: [],
+            silent: true,
+            markArea: { silent: true, itemStyle: { color: BAND }, data: bands }
+        });
+
+        // 機台名稱轉 90 度：X 軸下方的高度依最長的名稱計算（名稱 + 刻度間距 + 縮放拉桿），
+        // 圖表高度同步加高，資料區不會因為名稱變長而被壓縮
+        var labelPx = 0;
+        $.each(segments, function (i, seg) { labelPx = Math.max(labelPx, textWidth(seg.tool)); });
+        var bottom = Math.max(70, Math.ceil(labelPx) + 52);
+        fitHeight(box, bottom - 70);
+
+        var opt = baseOption();
+        opt.grid.top = 64;
+        opt.grid.bottom = bottom;
+        opt.legend = legendBase(legend);
+        opt.tooltip.trigger = 'axis';
+        opt.tooltip.axisPointer = { type: 'line', lineStyle: { color: INK_DIM, type: 'dashed' } };
+        opt.tooltip.formatter = function (params) {
+            var html = '';
+            $.each(params, function (i, p) {
+                if (p.seriesName === '_bands' || p.seriesName === '_spec' || p.value === null || p.value === undefined) {
+                    return;
+                }
+                if (!html) {
+                    html = p.marker + AISLE.escape(p.seriesName) + '<br>' + AISLE.escape(String(p.name).split('|')[1]);
+                }
+                html += '<br>' + AISLE.escape(paramOf[p.seriesIndex]) + '：<b>' + fmt(rawOf(p)) + '</b>';
+            });
+            return html;
+        };
+        opt.xAxis = {
+            type: 'category',
+            data: keys,
+            boundaryGap: false,
+            axisLine: axisLine(),
+            axisTick: { show: false },
+            axisLabel: {
+                color: INK,
+                rotate: 90,
+                interval: function (idx) { return centers.hasOwnProperty(idx); },
+                formatter: function (v) { return String(v).split('|')[0]; }
+            },
+            splitLine: { show: false }
+        };
+        var specs = specLines(group, 'tbt');
+        opt.yAxis = valueAxis(group, 'tbt', specs);
+        opt.dataZoom = [
+            { type: 'inside' },
+            {
+                type: 'slider', height: 18, bottom: 12,
+                borderColor: AXIS, fillerColor: T.ZOOM_FILL,
+                handleStyle: { color: INK_DIM }, moveHandleStyle: { color: INK_DIM },
+                dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: T.ZOOM_AREA } },
+                textStyle: { color: INK_DIM },
+                labelFormatter: function (i, v) { return String(v).replace('|', ' '); }
+            }
+        ];
+        pushSpec(series, specs);
+        opt.series = series;
+        box.chart.clear();
+        box.chart.setOption(opt);
+
+        var styles = $.map(group.params, function (p, i) {
+            return shortName(p, group) + ' ' + LINE_NAMES[i % LINE_NAMES.length];
+        });
+        box.$el.find('.cd-box-info').text(segments.length + ' 台 · ' + keys.length + ' 個時間點 · ' + styles.join(' / '));
+    }
+
+    /** 文字在圖表字型下的寬度（px），用來計算轉 90 度後需要的高度 */
+    var measureCtx = null;
+    function textWidth(text) {
+        if (measureCtx === null) {
+            var c = document.createElement('canvas');
+            measureCtx = c.getContext ? c.getContext('2d') : false;
+        }
+        if (!measureCtx) {
+            return String(text).length * 8;
+        }
+        measureCtx.font = '12px ' + FONT;
+        return measureCtx.measureText(String(text)).width;
+    }
+
+    /** 圖表高度 = CSS 原本的高度 + extra（px）；高度有變時通知 ECharts 重新排版 */
+    function fitHeight(box, extra) {
+        var $c = box.$el.find('.cd-chart');
+        var before = $c.height();
+        $c.css('height', '');                       // 先還原，讀 CSS（含手機版）的原始高度
+        var h = $c.height() + Math.max(0, extra);
+        $c.height(h);
+        if (h !== before) {
+            box.chart.resize();
+        }
+    }
+
+    // ---------- single 點擊數據點開啟 Url ----------
+    /** 只接受 http://、https:// 或 / 開頭（不含 //）的網址，其他回傳 null（後端已過濾，這裡再擋一次） */
+    function safeUrl(u) {
+        if (typeof u !== 'string') {
+            return null;
+        }
+        u = $.trim(u);
+        return /^https?:\/\/\S+$/i.test(u) || /^\/(?!\/)\S*$/.test(u) ? u : null;
+    }
+
+    /** 滑鼠位置最近、且有網址的數據點（距離 14px 內），回傳網址或 null */
+    function urlAt(box, x, y) {
+        var info = box.urlInfo;
+        if (!info || !box.chart.containPixel('grid', [x, y])) {
+            return null;
+        }
+        var best = null;
+        var bestDist = 14 * 14;
+        for (var i = 0; i < info.dates.length; i++) {
+            var u = safeUrl(info.urls[i]);
+            if (!u) {
+                continue;
+            }
+            for (var c = 0; c < info.cols.length; c++) {
+                var v = info.cols[c][i];
+                if (v === null || v === undefined) {
+                    continue;
+                }
+                var pt = box.chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [info.dates[i], v]);
+                if (!pt) {
+                    continue;
+                }
+                var d = (pt[0] - x) * (pt[0] - x) + (pt[1] - y) * (pt[1] - y);
+                if (d <= bestDist) {
+                    bestDist = d;
+                    best = u;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** single 圖：點擊數據點在新分頁開啟網址；滑過有網址的點顯示手指游標。沒有 Url 時不做任何事 */
+    function bindUrlClick(box) {
+        var zr = box.chart.getZr();
+        zr.on('mousemove', function (e) {
+            if (box.urlInfo && urlAt(box, e.offsetX, e.offsetY)) {
+                zr.setCursorStyle('pointer');
+            }
+        });
+        zr.on('click', function (e) {
+            var u = urlAt(box, e.offsetX, e.offsetY);
+            if (u) {
+                var w = window.open(u, '_blank');
+                if (w) {
+                    w.opener = null;
+                }
+            }
+        });
+    }
+
+    // ---------- 從 cache 取出各圖要的資料 ----------
+    /** 只保留某組的參數（有 Url 時一併帶上） */
+    function pick(s, params) {
+        var out = { Date: s.Date, Data: {} };
+        $.each(params, function (i, p) { out.Data[p] = s.Data[p] || []; });
+        if ($.isArray(s.Url)) {
+            out.Url = s.Url;
+        }
+        return out;
+    }
+
+    function showTbt() {
+        eachBox('tbt', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) { data[tool] = pick(s, box.group.params); });
+            show(box, data, drawTbt);
+        });
+    }
+
+    /** 單台機台：從 cache.tbt 取出，不發 request */
+    function showSingle() {
+        var tool = $('#cd-tool').val();
+        $('.cd-single-title').text(tool ? '· ' + tool : '');
+        if (!cache.tbt || !tool) {
+            return;
+        }
+        eachBox('single', function (box) {
+            var data = {};
+            if (cache.tbt[tool]) {
+                data[tool] = pick(cache.tbt[tool], box.group.params);
+            }
+            show(box, data, drawSingle);
+        });
+    }
+
+    /**
+     * 最新值：每台每個參數在區間內最後一個非 null 的值，再依機型篩選，不發 request
+     * 各參數最後一筆的日期可能不同，所以 Date 也依參數分開存：
+     *   { Date: { param: [日期] }, Data: { param: [值] } }
+     */
+    function showNewest() {
+        if (!cache.tbt) {
+            return;
+        }
+        var model = $('#cd-model').val() || 'All';  // ini 沒設定機型時沒有下拉選單
+        eachBox('newest', function (box) {
+            var data = {};
+            $.each(cache.tbt, function (tool, s) {
+                if (model !== 'All' && CFG.models[tool] !== model) {
+                    return;
+                }
+                var latest = { Date: {}, Data: {} };
+                var any = false;
+                $.each(box.group.params, function (pi, p) {
+                    var col = s.Data[p] || [];
+                    latest.Date[p] = [null];
+                    latest.Data[p] = [null];
+                    for (var i = col.length - 1; i >= 0; i--) {
+                        if (col[i] !== null && col[i] !== undefined) {
+                            latest.Date[p] = [s.Date[i]];
+                            latest.Data[p] = [col[i]];
+                            any = true;
+                            break;
+                        }
+                    }
+                });
+                if (any) {
+                    data[tool] = latest;
+                }
+            });
+            show(box, data, drawNewest);
+        });
+    }
+
+    // ---------- 選擇器 ----------
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function isDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s); }
+
+    function range() {
+        var start = $.trim($('#cd-start').val());
+        var end = $.trim($('#cd-end').val());
+        var $msg = $('#cd-msg').text('');
+        if (!isDate(start) || !isDate(end)) {
+            $msg.text('> 日期格式需為 YYYY-MM-DD');
+            return null;
+        }
+        if (start > end) {
+            $msg.text('> 起始日期不可晚於結束日期');
+            return null;
+        }
+        return { start: start, end: end };
+    }
+
+    /** 取日期區間內全部機台、全部參數的資料（所有圖共用），進頁面與改日期時呼叫 */
+    function loadRange() {
+        var r = range();
+        if (!r) {
+            return;
+        }
+        if (request) {
+            request.abort();
+        }
+        eachBox(null, function (box) { box.chart.showLoading('default', loadingOpts()); });
+        request = $.ajax({ url: CFG.urls.tbt, data: { start: r.start, end: r.end }, dataType: 'json', cache: false })
+            .done(function (res) {
+                cache.tbt = res || {};
+                eachBox(null, function (box) { box.chart.hideLoading(); });
+                showTbt();
+                showSingle();
+                showNewest();
+            })
+            .fail(function (xhr, status) {
+                if (status === 'abort') {
+                    return;
+                }
+                var msg = (xhr.responseJSON && xhr.responseJSON.error) || ('HTTP ' + xhr.status);
+                eachBox(null, function (box) {
+                    box.chart.hideLoading();
+                    showMessage(box.chart, '> ERROR: ' + msg);
+                });
+            });
+    }
+
+    $(function () {
+        if (!window.echarts) {
+            $('.cd-chart').html('<p class="text-red">&gt; ECharts 載入失敗：請確認可連到 CDN，或執行 scripts/shell/fetch_vendor.sh 放到 public/assets/vendor/</p>');
+            return;
+        }
+        $('.cd-box').each(function () {
+            var $el = $(this);
+            var kind = $el.data('kind');
+            var group = GROUPS[$el.data('group')];
+            boxes[kind + ':' + group.id] = {
+                kind: kind,
+                group: group,
+                $el: $el,
+                chart: window.echarts.init($el.find('.cd-chart')[0]),
+                shown: {},
+                urlInfo: null
+            };
+            if (kind === 'single') {
+                bindUrlClick(boxes[kind + ':' + group.id]);
+            }
+        });
+
+        if (!CFG.tools.length) {
+            eachBox(null, function (box) { showMessage(box.chart, '> 沒有任何機台 // NO TOOLS'); });
+            return;
+        }
+
+        $('#cd-filters').on('submit', function () {
+            loadRange();
+            return false;
+        });
+        $('#cd-tool').on('change', showSingle);
+        $('#cd-model').on('change', showNewest);
+        $('.cd-quick').on('click', 'button', function () {
+            var days = parseInt($(this).data('days'), 10);
+            var end = new Date();
+            var start = new Date(end.getTime() - (days - 1) * 86400000);
+            $('#cd-start').val(ymd(start));
+            $('#cd-end').val(ymd(end));
+            loadRange();
+        });
+
+        // 點最新值長條 → 切換單台機台
+        eachBox('newest', function (box) {
+            box.chart.on('click', function (p) {
+                if (p.componentType === 'series' && p.name) {
+                    $('#cd-tool').val(p.name);
+                    showSingle();
+                    var $first = $('.cd-box[data-kind="single"]').first();
+                    if ($first.length) {
+                        $('html, body').animate({ scrollTop: $first.offset().top - 80 }, 200);
+                    }
+                }
+            });
+        });
+
+        function boxOf(el) {
+            var $el = $(el).closest('.cd-box');
+            return boxes[$el.data('kind') + ':' + $el.data('group')];
+        }
+        $('.cd-legend-all').on('click', function () {
+            boxOf(this).chart.dispatchAction({ type: 'legendAllSelect' });
+        });
+        $('.cd-legend-none').on('click', function () {
+            var box = boxOf(this);
+            $.each(box.shown, function (tool) {
+                box.chart.dispatchAction({ type: 'legendUnSelect', name: tool });
+            });
+        });
+        $('.cd-table-btn').on('click', function () {
+            boxOf(this).$el.find('.cd-table').toggle();
+        });
+
+        // 切換畫面風格：換配色後用 cache 重畫，不重新取資料
+        $(document).on('aisle:theme', function (e, theme) {
+            setTheme(theme);
+            if (cache.tbt) {
+                showTbt();
+                showSingle();
+                showNewest();
+            }
+        });
+
+        var resizeTimer = null;
+        $(window).on('resize', function () {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                eachBox(null, function (box) { box.chart.resize(); });
+            }, 150);
+        });
+
+        loadRange();
+
+        // 網址帶 &tool=（例如從選機表點數值格過來）：捲到單台機台趨勢
+        if (CFG.focusTool) {
+            var $single = $('.cd-box[data-kind="single"]').first();
+            if ($single.length) {
+                $('html, body').scrollTop($single.offset().top - 80);
+            }
+        }
+    });
+})(window.jQuery, window);
+#@@@ FILE public/assets/js/tool_select.js sha1=169efd5bb35349accb206b9b2520e956280a0efd base=58b53df61fcdf7709fc06d6c90f3fde4ebe17cc7 mode=644 enc=text nl=1
+/*
+ * AISLE 設備選機表（jQuery 1.12，ES5 寫法）
+ *   - 機型頁籤：每個機型各自的機台、分類、項目、spec、數值
+ *   - 項目篩選（列）：分類多選下拉 + 關鍵字；機台篩選（欄）：可搜尋的多選下拉
+ *   - 數值超出 OOC / OOS 依設定上底色；項目名稱 / 數值格可連到 chart（href 的 {tool} 換成機台）
+ *   - 篩選全部在瀏覽器端進行，條件依機型記在 localStorage
+ *   - 全螢幕：標題列按鈕或快捷鍵 F；Esc 恢復（瀏覽器不允許全螢幕時改成鋪滿瀏覽器視窗）
+ * 設定由 view 放在 window.TOOL_SELECT
+ */
+(function ($) {
+    if (!$ || !window.TOOL_SELECT) {
+        return;
+    }
+    var CFG = window.TOOL_SELECT;
+    var MODEL_KEY = 'aisle.tool_select.model';
+    var FILTER_KEY = 'aisle.tool_select.filter.';
+    var SPEC_NAMES = ['uOOS', 'uOOC', 'lOOC', 'lOOS'];
+
+    var state = {
+        model: '',
+        data: null,
+        request: null,
+        // 存「被取消勾選的」分類 / 機台，設定檔之後新增的分類、機台預設會顯示
+        hiddenCats: {},
+        hiddenTools: {},
+        q: '',
+        oocOnly: false
+    };
+    var catDd = null, toolDd = null;
+
+    // ==================================================================
+    // 小工具
+    // ==================================================================
+    function esc(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function store(key, value) {
+        try {
+            if (value === undefined) {
+                return window.localStorage.getItem(key);
+            }
+            window.localStorage.setItem(key, value);
+        } catch (e) { /* 私密模式等：不記憶 */ }
+        return null;
+    }
+    function isLight() { return $('body').hasClass('theme-light'); }
+    function keys(obj) {
+        var out = [];
+        $.each(obj, function (k, v) { if (v) { out.push(k); } });
+        return out;
+    }
+    function toSet(list) {
+        var o = {};
+        $.each(list || [], function (i, v) { o[v] = true; });
+        return o;
+    }
+
+    /** 數字顯示：有 decimals 就固定位數，否則去掉浮點數尾巴 */
+    function fmt(v, decimals) {
+        if (v === null || v === undefined) {
+            return '-';
+        }
+        if (decimals !== null && decimals !== undefined) {
+            return v.toFixed(decimals);
+        }
+        return String(parseFloat(v.toPrecision(10)));
+    }
+    function specText(v) { return v === null || v === undefined ? '-' : String(parseFloat(v.toPrecision(10))); }
+
+    /** 剛好等於界限算正常 */
+    function judge(v, s) {
+        if (v === null || v === undefined) {
+            return '';
+        }
+        if ((s[0] !== null && v > s[0]) || (s[3] !== null && v < s[3])) {
+            return 'oos';
+        }
+        if ((s[1] !== null && v > s[1]) || (s[2] !== null && v < s[2])) {
+            return 'ooc';
+        }
+        return '';
+    }
+    /** 偏移模式的 spec 欄：upper 加 +、lower 加 - */
+    function specCell(item, k) {
+        var v = item.spec[k];
+        if (!item.offset || v === null || v === undefined) {
+            return specText(v);
+        }
+        return (k < 2 ? '+' : '-') + specText(v);
+    }
+    /** 偏移模式：該台的 target */
+    function targetOf(item, tool) {
+        return item.targets && item.targets.hasOwnProperty(tool) ? item.targets[tool] : item.target;
+    }
+    /** 某台的有效 spec（絕對值）；偏移模式時伺服器已換算成 target ± 偏移 */
+    function specOf(item, tool) {
+        if (item.offset) {
+            return item.abs && item.abs[tool] ? item.abs[tool] : [null, null, null, null];
+        }
+        return item.toolSpec && item.toolSpec[tool] ? item.toolSpec[tool] : item.spec;
+    }
+
+    /** 依底色亮度決定文字用黑或白 */
+    function textOn(hex) {
+        var h = hex.replace('#', '');
+        if (h.length === 3) {
+            h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+        }
+        var r = parseInt(h.substr(0, 2), 16), g = parseInt(h.substr(2, 2), 16), b = parseInt(h.substr(4, 2), 16);
+        return (r * 299 + g * 587 + b * 114) / 1000 > 140 ? '#000000' : '#FFFFFF';
+    }
+    function bgOf(item, level) {
+        var k = level + '_bg' + (isLight() ? '_light' : '');
+        return (item.colors && item.colors[k]) || state.data.colors[k];
+    }
+
+    /** href：{tool} 換成機台（點項目名稱時為空白）；?m=... 接上網站路徑前綴 */
+    function hrefOf(item, tool) {
+        if (!item.href) {
+            return '';
+        }
+        var h = item.href.replace(/\{tool\}/g, tool ? encodeURIComponent(tool) : '');
+        return h.charAt(0) === '?' ? CFG.urls.base + h : h;
+    }
+
+    // ==================================================================
+    // 多選下拉（分類、機台共用）
+    // ==================================================================
+    /**
+     * opts: { search: bool, noun: '台', placeholder, onChange(hiddenSet) }
+     * setOptions(list[{value,label}], hiddenSet)
+     */
+    function MultiDropdown($root, opts) {
+        var self = this;
+        this.$root = $root;
+        this.opts = opts;
+        this.list = [];
+        this.hidden = {};
+        $root.html(
+            '<button type="button" class="ts-dd-btn"><span class="ts-dd-text"></span> <span class="ts-dd-caret">▾</span></button>' +
+            '<div class="ts-dd-panel" style="display:none">' +
+            (opts.search ? '<input type="text" class="ts-dd-search" placeholder="' + esc(opts.placeholder || '搜尋') + '" autocomplete="off">' : '') +
+            '<div class="ts-dd-actions">' +
+            '<button type="button" class="btn btn-sm" data-act="all">全選</button>' +
+            '<button type="button" class="btn btn-sm" data-act="none">全不選</button>' +
+            '<button type="button" class="btn btn-sm" data-act="invert">反選</button>' +
+            '</div><div class="ts-dd-list"></div></div>'
+        );
+        this.$btn = $root.find('.ts-dd-btn');
+        this.$panel = $root.find('.ts-dd-panel');
+        this.$list = $root.find('.ts-dd-list');
+        this.$search = $root.find('.ts-dd-search');
+
+        this.$btn.on('click', function () {
+            var open = self.$panel.is(':visible');
+            $('.ts-dd-panel').hide();
+            if (!open) {
+                self.$panel.show();
+                self.$search.val('');
+                self.filterList();
+                self.$search.focus();
+            }
+        });
+        this.$search.on('input keyup', function () { self.filterList(); });
+        this.$list.on('change', 'input', function () {
+            self.hidden[this.value] = !this.checked;
+            self.changed();
+        });
+        $root.find('.ts-dd-actions').on('click', 'button', function () {
+            var act = $(this).data('act');
+            // 搜尋中只作用在看得到的項目
+            self.$list.find('label:visible input').each(function () {
+                var on = act === 'all' ? true : (act === 'none' ? false : !this.checked);
+                this.checked = on;
+                self.hidden[this.value] = !on;
+            });
+            self.changed();
+        });
+    }
+    MultiDropdown.prototype.setOptions = function (list, hidden) {
+        var html = '';
+        this.list = list;
+        this.hidden = {};
+        for (var i = 0; i < list.length; i++) {
+            var v = list[i].value;
+            if (hidden[v]) {
+                this.hidden[v] = true;
+            }
+            html += '<label class="ts-dd-item" data-text="' + esc(String(list[i].label).toLowerCase()) + '">' +
+                '<input type="checkbox" value="' + esc(v) + '"' + (hidden[v] ? '' : ' checked') + '> ' + esc(list[i].label) + '</label>';
+        }
+        this.$list.html(html || '<div class="dim">（無）</div>');
+        this.updateText();
+    };
+    MultiDropdown.prototype.selected = function () {
+        var out = [];
+        for (var i = 0; i < this.list.length; i++) {
+            if (!this.hidden[this.list[i].value]) {
+                out.push(this.list[i]);
+            }
+        }
+        return out;
+    };
+    MultiDropdown.prototype.filterList = function () {
+        var q = $.trim(this.$search.val() || '').toLowerCase();
+        this.$list.find('label').each(function () {
+            $(this).toggle(q === '' || $(this).attr('data-text').indexOf(q) >= 0);
+        });
+    };
+    MultiDropdown.prototype.updateText = function () {
+        var sel = this.selected(), n = this.list.length, text;
+        if (sel.length === n) {
+            text = '全部' + (n ? ' ' + n + ' ' + this.opts.noun : '');
+        } else if (!sel.length) {
+            text = '未選擇';
+        } else if (sel.length <= 2) {
+            text = $.map(sel, function (o) { return o.label; }).join(', ');
+        } else {
+            text = sel[0].label + ', ' + sel[1].label + ' +' + (sel.length - 2) + '（' + sel.length + ' / ' + n + '）';
+        }
+        this.$btn.find('.ts-dd-text').text(text);
+        this.$btn.toggleClass('is-filtered', sel.length !== n);
+    };
+    MultiDropdown.prototype.changed = function () {
+        this.updateText();
+        this.opts.onChange(this.hidden);
+    };
+
+    // 點下拉以外的地方收起（Esc 在下面的全螢幕區塊一起處理）
+    $(document).on('mousedown', function (e) {
+        if (!$(e.target).closest('.ts-dd').length) {
+            $('.ts-dd-panel').hide();
+        }
+    });
+
+    // ==================================================================
+    // 全螢幕 / 恢復（做法同借機看板）
+    //   優先用瀏覽器全螢幕 API；瀏覽器不允許時改成「頁面內最大化」（蓋滿瀏覽器視窗）
+    //   Esc：先收起開著的下拉選單，再按一次離開全螢幕
+    // ==================================================================
+    var FS_TEXT = { off: '[ ⛶ 全螢幕 ]', on: '[ 🗗 恢復 ]' };
+    function rootEl() { return document.getElementById('ts-root'); }
+    function fsElement() {
+        return document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+    }
+    function isFull() { return $('#ts-root').hasClass('ts-full'); }
+    function fitWrap() {
+        var $wrap = $('#ts-wrap');
+        if (isFull()) {
+            var top = $wrap.offset().top - $(window).scrollTop();
+            $wrap.css('max-height', Math.max(200, $(window).height() - top - 16) + 'px');
+        } else {
+            $wrap.css('max-height', '');
+        }
+    }
+    function setFull(on, nativeFs) {
+        $('#ts-root').toggleClass('ts-full', on).toggleClass('ts-full-native', on && !!nativeFs);
+        $('body').toggleClass('ts-body-full', on);
+        $('#ts-fs').text(on ? FS_TEXT.on : FS_TEXT.off).attr('title', on ? '恢復正常大小（Esc）' : '選機表全螢幕（快捷鍵 F）');
+        setTimeout(fitWrap, 0);
+    }
+    function enterFull() {
+        var el = rootEl();
+        var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+        if (!req) {
+            setFull(true, false);
+            return;
+        }
+        try {
+            var p = req.call(el);
+            if (p && p.then) {
+                p.then(null, function () { setFull(true, false); });   // 被瀏覽器或政策擋下：頁面內最大化
+            }
+        } catch (err) {
+            setFull(true, false);
+        }
+    }
+    function exitFull() {
+        if (fsElement()) {
+            var ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+            if (ex) {
+                ex.call(document);
+                return;
+            }
+        }
+        setFull(false);
+    }
+    function toggleFull() {
+        if (isFull()) {
+            exitFull();
+        } else {
+            enterFull();
+        }
+    }
+    $(document).on('fullscreenchange webkitfullscreenchange MSFullscreenChange', function () {
+        var el = fsElement();
+        if (el && el === rootEl()) {
+            setFull(true, true);
+        } else if (!el && $('#ts-root').hasClass('ts-full-native')) {
+            setFull(false);
+        }
+    });
+    $(document).on('keydown', function (e) {
+        if (e.ctrlKey || e.altKey || e.metaKey) {
+            return;
+        }
+        if (e.which === 27) {
+            // 先收起下拉選單；沒有開著的下拉選單時離開全螢幕
+            // （瀏覽器全螢幕時多數瀏覽器自己會處理 Esc，這裡再補一次，收不到也沒關係）
+            if ($('.ts-dd-panel:visible').length) {
+                $('.ts-dd-panel').hide();
+            } else if (isFull()) {
+                exitFull();
+            }
+            return;
+        }
+        if ($(e.target).is('input, textarea, select')) {
+            return;
+        }
+        if ((e.key === 'f' || e.key === 'F' || e.which === 70) && !e.shiftKey) {
+            e.preventDefault();
+            toggleFull();
+        }
+    });
+    $(window).on('resize', fitWrap);
+
+    // ==================================================================
+    // 篩選條件記憶
+    // ==================================================================
+    function loadFilter(model) {
+        var f = null;
+        try {
+            f = JSON.parse(store(FILTER_KEY + model) || 'null');
+        } catch (e) { f = null; }
+        f = f || {};
+        state.hiddenCats = toSet(f.hiddenCats);
+        state.hiddenTools = toSet(f.hiddenTools);
+        state.q = typeof f.q === 'string' ? f.q : '';
+        state.oocOnly = !!f.oocOnly;
+    }
+    function saveFilter() {
+        if (!state.model) {
+            return;
+        }
+        store(FILTER_KEY + state.model, JSON.stringify({
+            hiddenCats: keys(state.hiddenCats),
+            hiddenTools: keys(state.hiddenTools),
+            q: state.q,
+            oocOnly: state.oocOnly
+        }));
+    }
+
+    // ==================================================================
+    // 載入
+    // ==================================================================
+    function selectModel(model) {
+        var ok = false;
+        $.each(CFG.models, function (i, m) { if (m.key === model) { ok = true; } });
+        if (!ok) {
+            model = CFG.models.length ? CFG.models[0].key : '';
+        }
+        if (!model) {
+            $('#ts-wrap').html('<div class="dim ts-empty">&gt; 沒有任何機型</div>');
+            return;
+        }
+        state.model = model;
+        store(MODEL_KEY, model);
+        $('#ts-tabs .pi-tab').removeClass('active').filter('[data-model="' + model + '"]').addClass('active');
+        if (window.history && window.history.replaceState) {
+            var url = window.location.href.replace(/([?&])model=[^&#]*(&)?/, function (all, p, amp) { return amp ? p : ''; })
+                .replace(/[?&]$/, '').replace(/#.*$/, '');
+            window.history.replaceState(null, '', url + (url.indexOf('?') >= 0 ? '&' : '?') + 'model=' + encodeURIComponent(model));
+        }
+        loadFilter(model);
+        $('#ts-q').val(state.q);
+        $('#ts-ooc-only').prop('checked', state.oocOnly);
+        load();
+    }
+
+    function load() {
+        if (state.request) {
+            state.request.abort();
+        }
+        $('#ts-error').hide();
+        $('#ts-refresh').prop('disabled', true);
+        state.request = $.ajax({ url: CFG.urls.data, data: { model: state.model }, dataType: 'json', cache: false })
+            .done(function (res) {
+                state.data = res;
+                $('#ts-title').text('TOOL SELECT // ' + res.label);
+                $('#ts-updated').text(res.updated ? '資料時間 ' + res.updated : '');
+                if (res.message) {
+                    $('#ts-msg').text('> ' + res.message).show();
+                } else {
+                    $('#ts-msg').hide();
+                }
+                catDd.setOptions($.map(res.categories, function (c) { return { value: c.code, label: c.label }; }), state.hiddenCats);
+                toolDd.setOptions($.map(res.tools, function (t) { return { value: t, label: t }; }), state.hiddenTools);
+                state.hiddenCats = $.extend({}, catDd.hidden);
+                state.hiddenTools = $.extend({}, toolDd.hidden);
+                renderLegend();
+                render();
+            })
+            .fail(function (xhr, status) {
+                if (status === 'abort') {
+                    return;
+                }
+                state.data = null;
+                var msg = (xhr.responseJSON && xhr.responseJSON.error) || ('HTTP ' + xhr.status);
+                $('#ts-error').text('> ' + msg).show();
+                $('#ts-msg').hide();
+                $('#ts-wrap').html('');
+                $('#ts-summary').text('');
+            })
+            .always(function () {
+                $('#ts-refresh').prop('disabled', false);
+            });
+    }
+
+    // ==================================================================
+    // 畫表格
+    // ==================================================================
+    function visibleTools() {
+        var out = [];
+        $.each(state.data.tools, function (i, t) {
+            if (!state.hiddenTools[t]) {
+                out.push(t);
+            }
+        });
+        return out;
+    }
+
+    function visibleItems(tools) {
+        var d = state.data;
+        var catLabel = {};
+        $.each(d.categories, function (i, c) { catLabel[c.code] = c.label; });
+        var words = $.grep($.trim(state.q).toLowerCase().split(/\s+/), function (w) { return w !== ''; });
+        return $.grep(d.items, function (it) {
+            if (state.hiddenCats[it.category]) {
+                return false;
+            }
+            if (words.length) {
+                var text = (catLabel[it.category] + ' ' + it.label).toLowerCase();
+                var hit = false;
+                for (var i = 0; i < words.length; i++) {
+                    if (text.indexOf(words[i]) >= 0) {
+                        hit = true;
+                        break;
+                    }
+                }
+                if (!hit) {
+                    return false;
+                }
+            }
+            if (state.oocOnly) {
+                var vals = d.values[it.id] || {};
+                for (var j = 0; j < tools.length; j++) {
+                    var c = vals[tools[j]];
+                    if (c && judge(c.v, specOf(it, tools[j])) !== '') {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return true;
+        });
+    }
+
+    function cellHtml(it, tool, c) {
+        var s = specOf(it, tool);
+        var ovr = !!(it.toolSpec && it.toolSpec[tool]) ||
+            !!(it.offset && it.targets && it.targets.hasOwnProperty(tool) && it.targets[tool] !== it.target);
+        var cls = ['ts-v'], style = '', text = '-', level = '';
+        var tip = [tool + ' · ' + it.label];
+        if (!c) {
+            cls.push('ts-na');
+            tip.push('沒有資料');
+        } else if (c.v === null) {
+            text = c.s;
+            var sc = state.data.statusColors[String(c.s).toLowerCase()];
+            if (sc) {
+                style = 'background:' + sc + ';color:' + textOn(sc);
+            }
+            cls.push('ts-status');
+            tip.push('狀態：' + c.s);
+        } else {
+            text = fmt(c.v, it.decimals);
+            level = judge(c.v, s);
+            tip.push('值：' + text + (it.unit ? ' ' + it.unit : '') + '　判定：' + (level === 'oos' ? 'OOS' : (level === 'ooc' ? 'OOC' : '正常')));
+            if (level) {
+                var bg = bgOf(it, level);
+                style = 'background:' + bg + ';color:' + textOn(bg);
+                cls.push('ts-' + level);
+            }
+        }
+        if (c && c.t) {
+            tip.push('資料時間：' + c.t);
+        }
+        if (it.offset) {
+            tip.push('此機台 target ' + specText(targetOf(it, tool)));
+        }
+        if (ovr || it.offset) {
+            if (ovr) {
+                cls.push('ts-ovr');
+            }
+            tip.push('此機台 spec：uOOS ' + specText(s[0]) + ' / uOOC ' + specText(s[1]) +
+                ' / lOOC ' + specText(s[2]) + ' / lOOS ' + specText(s[3]));
+        }
+        var href = c ? hrefOf(it, tool) : '';
+        var inner = esc(text);
+        if (href) {
+            tip.push(it.href.indexOf('{tool}') >= 0 ? '點擊開啟 ' + tool + ' 的 chart' : '點擊開啟 chart');
+            inner = '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">' + inner + '</a>';
+        }
+        return '<td class="' + cls.join(' ') + '"' + (style ? ' style="' + style + '"' : '') +
+            ' title="' + esc(tip.join('\n')) + '">' + inner + '</td>';
+    }
+
+    function render() {
+        var d = state.data;
+        if (!d) {
+            return;
+        }
+        var tools = visibleTools();
+        var items = visibleItems(tools);
+        $('#ts-summary').text('顯示 ' + items.length + ' / ' + d.items.length + ' 項、' + tools.length + ' / ' + d.tools.length + ' 台');
+        $('#ts-clear').toggleClass('is-active', !!(keys(state.hiddenCats).length || keys(state.hiddenTools).length || state.q || state.oocOnly));
+
+        if (!d.items.length) {
+            $('#ts-wrap').html('<div class="dim ts-empty">&gt; 這個機型還沒有設定任何項目（config/tool_select/' + esc(d.model) + '.ini 的 [item.*]）</div>');
+            return;
+        }
+
+        var catLabel = {};
+        $.each(d.categories, function (i, c) { catLabel[c.code] = c.label; });
+
+        var h = '<table class="ts-table"><thead><tr>' +
+            '<th class="ts-c0">分類</th><th class="ts-c1">項目</th>';
+        for (var k = 0; k < 4; k++) {
+            h += '<th class="ts-spec ts-c' + (k + 2) + '">' + SPEC_NAMES[k] + '</th>';
+        }
+        $.each(tools, function (i, t) { h += '<th class="ts-tool">' + esc(t) + '</th>'; });
+        h += '</tr></thead><tbody>';
+
+        if (!items.length) {
+            h += '<tr><td colspan="' + (6 + tools.length) + '" class="dim ts-none">&gt; 沒有符合篩選條件的項目</td></tr>';
+        }
+        // 同分類連續的列合併分類格
+        for (var i = 0; i < items.length; i++) {
+            var it = items[i];
+            h += '<tr>';
+            if (i === 0 || items[i - 1].category !== it.category) {
+                var span = 1;
+                while (i + span < items.length && items[i + span].category === it.category) {
+                    span++;
+                }
+                h += '<td class="ts-c0 ts-cat" rowspan="' + span + '">' + esc(catLabel[it.category]) + '</td>';
+            }
+            var href = hrefOf(it, '');
+            var label = esc(it.label);
+            if (href) {
+                label = '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer" title="開啟 chart">' + label + '</a>';
+            }
+            h += '<td class="ts-c1 ts-item">' + label + (it.unit ? ' <small class="dim">' + esc(it.unit) + '</small>' : '') +
+                (it.offset ? ' <small class="dim ts-target" title="spec 是距離各機台 target 的偏移量（滑鼠移到數值格看該台的 target 與 spec）">±T</small>' : '') + '</td>';
+            for (k = 0; k < 4; k++) {
+                h += '<td class="ts-spec ts-c' + (k + 2) + '">' + specCell(it, k) + '</td>';
+            }
+            var vals = d.values[it.id] || {};
+            for (var j = 0; j < tools.length; j++) {
+                h += cellHtml(it, tools[j], vals[tools[j]]);
+            }
+            h += '</tr>';
+        }
+        h += '</tbody></table>';
+        if (!tools.length) {
+            h += '<div class="dim ts-empty">&gt; 請在「機台」選單勾選至少一台機台</div>';
+        }
+        $('#ts-wrap').html(h);
+    }
+
+    function renderLegend() {
+        var c = state.data.colors, sfx = isLight() ? '_light' : '';
+        var anyOffset = false;
+        $.each(state.data.items, function (i, it) { anyOffset = anyOffset || !!it.offset; });
+        $('#ts-legend').html(
+            '圖例 <span class="ts-swatch" style="background:' + c['ooc_bg' + sfx] + '"></span>OOC ' +
+            '<span class="ts-swatch" style="background:' + c['oos_bg' + sfx] + '"></span>OOS ' +
+            '<span class="ts-swatch ts-swatch-ovr"></span>該機台 spec' + (anyOffset ? ' 或 target' : '') + ' 有覆蓋（滑鼠移上去看）' +
+            (anyOffset ? ' <small class="dim">±T</small> spec 為距離各機台 target 的偏移量' : '')
+        );
+    }
+
+    // ==================================================================
+    // 事件
+    // ==================================================================
+    function exportCsv() {
+        if (!state.data) {
+            return;
+        }
+        var tools = visibleTools();
+        var items = visibleItems(tools);
+        if (!tools.length || !items.length) {
+            $('#ts-msg').text('> 目前沒有可匯出的資料（請確認篩選條件）').show();
+            return;
+        }
+        var url = CFG.urls['export'] + (CFG.urls['export'].indexOf('?') >= 0 ? '&' : '?') +
+            'model=' + encodeURIComponent(state.model) +
+            '&items=' + encodeURIComponent($.map(items, function (it) { return it.id; }).join(',')) +
+            '&tools=' + encodeURIComponent(tools.join(','));
+        window.location.href = url;
+    }
+
+    $(function () {
+        catDd = new MultiDropdown($('#ts-cat'), {
+            search: false, noun: '類',
+            onChange: function (hidden) { state.hiddenCats = $.extend({}, hidden); saveFilter(); render(); }
+        });
+        toolDd = new MultiDropdown($('#ts-tool'), {
+            search: true, noun: '台', placeholder: '搜尋機台，例 05',
+            onChange: function (hidden) { state.hiddenTools = $.extend({}, hidden); saveFilter(); render(); }
+        });
+
+        var qTimer = null;
+        $('#ts-q').on('input keyup', function () {
+            var v = $(this).val();
+            clearTimeout(qTimer);
+            qTimer = setTimeout(function () {
+                if (v !== state.q) {
+                    state.q = v;
+                    saveFilter();
+                    render();
+                }
+            }, 150);
+        });
+        $('#ts-ooc-only').on('change', function () {
+            state.oocOnly = this.checked;
+            saveFilter();
+            render();
+        });
+        $('#ts-clear').on('click', function () {
+            state.hiddenCats = {};
+            state.hiddenTools = {};
+            state.q = '';
+            state.oocOnly = false;
+            $('#ts-q').val('');
+            $('#ts-ooc-only').prop('checked', false);
+            saveFilter();
+            if (state.data) {
+                catDd.setOptions(catDd.list, {});
+                toolDd.setOptions(toolDd.list, {});
+                render();
+            }
+        });
+        $('#ts-refresh').on('click', load);
+        $('#ts-export').on('click', exportCsv);
+        $('#ts-fs').on('click', toggleFull);
+        $('#ts-tabs').on('click', '.pi-tab', function (e) {
+            e.preventDefault();
+            var m = $(this).data('model');
+            if (m !== state.model) {
+                selectModel(m);
+            }
+        });
+        $(document).on('aisle:theme', function () {
+            if (state.data) {
+                renderLegend();
+                render();
+            }
+        });
+
+        selectModel(CFG.model || store(MODEL_KEY) || '');
+    });
+})(window.jQuery);
+#@@@ FILE scripts/python/check_config.py sha1=22c1d8e3becf13ac983567e538a3010e4780a29a base=08b07f55bb7560a758c1fc9442875eac61c050a9 mode=755 enc=text nl=1
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+檢查 config/config.ini 是否正確（Python 2.7）
+
+檢查項目：
+  - [access] 的每個身份都定義在 [roles]，列出的頁面都有 [page.xxx]
+  - 每個 [page.xxx] 的 route 指向的檔案存在
+      module:<資料夾>  → modules/<資料夾>/controller.php
+      pages/xxx.php    → 檔案存在
+      public/xxx.php   → 檔案存在，且第一段程式有 require auth_check.php
+  - action.<動作> 的身份都有效
+  - 頁面的 group 有對應的 [group.xxx]，[group.xxx] 有被頁面使用（警告）
+  - [register] 的 listed_role / unlisted_role 有效且不是超級身份 ("*")
+  - [ee_accounts] 名單帳號格式正確、沒有重複
+  - 沒有任何身份能使用的頁面、modules/ 下沒登記的資料夾（警告）
+  - 圖表（route = module:charts 的頁面）：charts/<名稱>.ini 存在且格式正確、
+    source = php 時 charts/<名稱>.php 存在且有 <名稱>Chart 類別、
+    target / target.<機台> / target.<機台>.<參數> 是數字、參數在 params 裡（偏移模式 spec 規則）、
+    charts/ 底下沒有頁面使用的 chart（警告）
+  - 借機 / PM 看板（有 [page.tool_board] 時）：config/tool_board.ini 與每個機型的
+    config/tool_board/<機型>.ini 存在且格式正確、顏色是 Hex、機台沒有重複列在多個機型、
+    每個機型至少一個 [wip.*]、[editors] 帳號是否在 [ee_accounts]（警告）、
+    可用率公式檔存在、PM JSON 檔可解析（單引號格式只警告）
+  - 設備選機表（有 [page.tool_select] 時）：config/tool_select.ini 與每個機型的
+    config/tool_select/<機型>.ini 存在且格式正確、顏色是 Hex、項目的分類存在、
+    spec（含機台覆蓋）大小關係正確、覆蓋的機台在 [tools] 裡、href 格式、數值 JSON 檔可解析、
+    target / target.<機台> 是數字且機台在 [tools] 裡（偏移模式時 spec 必須 >= 0、同側 OOS >= OOC）
+  - 列出每個身份可用的頁面
+
+用法：python scripts/python/check_config.py
+回傳碼：0 = 正常，1 = 有錯誤
+"""
+from __future__ import print_function
+
+import os
+import re
+import sys
+from ConfigParser import RawConfigParser  # Python 2.7；RawConfigParser 不會把 % 當成變數
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+INI = os.path.join(ROOT, 'config', 'config.ini')
+MODULES = os.path.join(ROOT, 'modules')
+CHARTS = os.path.join(ROOT, 'charts')
+RE_CHART = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')
+RE_PLOT = re.compile(r'^plot\.[a-z][a-z0-9_]{0,63}$')
+RE_KEY = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
+RE_ACCOUNT = re.compile(r'^[A-Za-z0-9_.-]{3,64}$')
+
+GREEN = '\033[32m'
+RED = '\033[31m'
+YELLOW = '\033[33m'
+RESET = '\033[0m'
+
+
+def unquote(value):
+    value = value.strip()
+    if not value.startswith('"'):
+        value = value.split(';', 1)[0].strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+    return value
+
+
+def split_list(value):
+    return [v.strip() for v in unquote(value).split(',') if v.strip()]
+
+
+def read_array(section_name, key, path=None):
+    """account[] 是 PHP 陣列語法，ConfigParser 遇到重複 key 只留最後一個，所以逐行讀"""
+    values = []
+    section = None
+    pattern = re.compile(r'^' + re.escape(key) + r'\[\]\s*=')
+    with open(path or INI) as fp:
+        for line in fp:
+            line = line.strip()
+            if line.startswith('['):
+                section = line.strip('[]')
+            elif section == section_name and pattern.match(line):
+                values.append(unquote(line.split('=', 1)[1]))
+    return values
+
+
+def chart_names():
+    """charts/ 底下的 chart 名稱（不含 _ 開頭的範本）"""
+    if not os.path.isdir(CHARTS):
+        return []
+    return sorted(f[:-4] for f in os.listdir(CHARTS) if f.endswith('.ini') and RE_CHART.match(f[:-4]))
+
+
+DB_KEYS = ('ip', 'port', 'name', 'user', 'password', 'charset')
+SPEC_KEYS = ('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos')
+
+
+def check_chart_db(label, parser, get, errors):
+    """[db]：只能有 DB_KEYS；port 為整數；ip 留空時 name / user / password 也要留空"""
+    for opt in parser.options('db'):
+        if opt not in DB_KEYS:
+            errors.append('%s [db] 不認得的欄位：%s（可用：%s）' % (label, opt, '、'.join(DB_KEYS)))
+    ip = get('db', 'ip')
+    if ip and not re.match(r'^[A-Za-z0-9._:-]+$', ip):
+        errors.append('%s [db] ip 格式錯誤（只能是 IP 或主機名稱）' % label)
+    port = get('db', 'port')
+    if port and (not port.isdigit() or not 1 <= int(port) <= 65535):
+        errors.append('%s [db] port 必須是 1 ~ 65535 的整數' % label)
+    for key in ('name', 'charset'):
+        v = get('db', key)
+        if v and not re.match(r'^[A-Za-z0-9_$-]+$', v):
+            errors.append('%s [db] %s 只能有英文、數字、底線、$、-' % (label, key))
+    if not ip:
+        for key in ('name', 'user', 'password'):
+            if get('db', key):
+                errors.append('%s [db] 有填 %s 但沒有填 ip（ip 留空 = 使用 AISLE 自己的資料庫）' % (label, key))
+
+
+def check_offset_spec(where, vals, errors):
+    """偏移模式（有寫 target）：spec 是距離 target 的偏移量，>= 0；同側 OOS >= OOC；上下同一層不能同時為 0"""
+    for key in SPEC_KEYS:
+        if vals.get(key) is not None and vals[key] < 0:
+            errors.append('%s：有寫 target 時 %s 是距離 target 的偏移量，必須 >= 0' % (where, key))
+    for side in ('upper', 'lower'):
+        oos, ooc = vals.get(side + '_oos'), vals.get(side + '_ooc')
+        if oos is not None and ooc is not None and oos < ooc:
+            errors.append('%s：%s_oos（%s）必須大於等於 %s_ooc（%s）' % (where, side, oos, side, ooc))
+    for lv in ('ooc', 'oos'):
+        if vals.get('upper_' + lv) == 0 and vals.get('lower_' + lv) == 0:
+            errors.append('%s：upper_%s 與 lower_%s 不能同時為 0' % (where, lv, lv))
+
+
+def check_chart_target(label, section, parser, get, errors):
+    """target / target.<機台> / target.<機台>.<參數>：數字或留空，參數在 params 裡。回傳是否為偏移模式"""
+    params = split_list(get(section, 'params'))
+    offset = False
+    for opt in parser.options(section):
+        if opt != 'target' and not opt.startswith('target.'):
+            continue
+        offset = True
+        v = get(section, opt)
+        if v:
+            try:
+                float(v)
+            except ValueError:
+                errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, opt, v))
+        if opt == 'target':
+            continue
+        rest = opt[len('target.'):].split('.', 1)
+        if not rest[0].strip() or (len(rest) > 1 and not rest[1].strip()):
+            errors.append('%s [%s] %s 格式錯誤，應為 target.<機台> 或 target.<機台>.<參數>' % (label, section, opt))
+        elif len(rest) > 1 and rest[1].strip() not in params:
+            errors.append('%s [%s] %s 的參數 %s 不在 params 裡（區分大小寫）' % (label, section, opt, rest[1].strip()))
+    return offset
+
+
+def check_spec(label, section, get, errors, offset=False):
+    """spec 線：數字或留空；絕對值模式 lower_oos <= lower_ooc < upper_ooc <= upper_oos"""
+    vals = {}
+    for key in SPEC_KEYS:
+        v = get(section, key)
+        if not v:
+            continue
+        try:
+            vals[key] = float(v)
+        except ValueError:
+            errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, key, v))
+    if offset:
+        check_offset_spec('%s [%s]' % (label, section), vals, errors)
+        return
+    for i, a in enumerate(SPEC_KEYS):
+        for b in SPEC_KEYS[i + 1:]:
+            if a not in vals or b not in vals:
+                continue
+            same_side = a[:5] == b[:5]
+            if (vals[a] < vals[b]) if same_side else (vals[a] <= vals[b]):
+                errors.append('%s [%s] %s（%s）必須%s %s（%s）' % (
+                    label, section, a, vals[a], '大於等於' if same_side else '大於', b, vals[b]))
+
+
+def check_chart(name, errors, warnings):
+    """檢查一張 chart 的 ini 與 php"""
+    label = 'charts/%s.ini' % name
+    parser = RawConfigParser()
+    parser.optionxform = str
+    try:
+        with open(os.path.join(CHARTS, name + '.ini')) as fp:
+            parser.readfp(fp)
+    except Exception as e:  # 語法錯誤
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def get(section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    source = (get('page', 'source') or 'php').lower() if parser.has_section('page') else 'php'
+    if source not in ('php', 'sample'):
+        errors.append('%s [page] source 只能是 php 或 sample' % label)
+    for key in ('default_days', 'max_days'):
+        v = get('page', key) if parser.has_section('page') else ''
+        if v and (not v.isdigit() or int(v) < 1):
+            errors.append('%s [page] %s 必須是正整數' % (label, key))
+
+    if parser.has_section('db'):
+        check_chart_db(label, parser, get, errors)
+
+    plots = 0
+    for section in parser.sections():
+        if section in ('page', 'db'):
+            continue
+        if not RE_PLOT.match(section):
+            errors.append('%s 區段名稱錯誤：[%s]，應為 [page]、[db] 或 [plot.<小寫代號>]' % (label, section))
+            continue
+        plots += 1
+        if not split_list(get(section, 'params')):
+            errors.append('%s [%s] 沒有設定 params' % (label, section))
+        for opt in parser.options(section):
+            if opt.endswith('ymin') or opt.endswith('ymax'):
+                v = get(section, opt)
+                if v:
+                    try:
+                        float(v)
+                    except ValueError:
+                        errors.append('%s [%s] %s 必須是數字：%s' % (label, section, opt, v))
+        check_spec(label, section, get, errors, check_chart_target(label, section, parser, get, errors))
+    if plots == 0:
+        errors.append('%s 沒有任何 [plot.xxx] 圖' % label)
+
+    php = os.path.join(CHARTS, name + '.php')
+    if source == 'php':
+        if not os.path.isfile(php):
+            errors.append('charts/%s.php 不存在（尚未寫好時可先把 ini 的 source 設為 sample）' % name)
+        else:
+            with open(php) as fp:
+                code = fp.read()
+            if not re.search(r'class\s+' + re.escape(name) + r'Chart\s+extends\s+ChartSource\b', code):
+                errors.append('charts/%s.php 裡找不到 class %sChart extends ChartSource' % (name, name))
+            if '尚未實作' in code:
+                warnings.append('charts/%s.php 似乎還沒寫好 SQL（仍有「尚未實作」），但 ini 的 source = php' % name)
+
+
+RE_HEX = re.compile(r'^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$')
+RE_TOOL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$')
+RE_CODE = re.compile(r'^[a-z][a-z0-9_]{0,31}$')
+RE_FORMULA = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
+
+
+def check_tool_board(ee_accounts, errors, warnings):
+    """借機 / PM 看板設定"""
+    shared_file = os.path.join(ROOT, 'config', 'tool_board.ini')
+    label = 'config/tool_board.ini'
+    if not os.path.isfile(shared_file):
+        errors.append('找不到 %s' % label)
+        return
+    shared = RawConfigParser()
+    try:
+        with open(shared_file) as fp:
+            shared.readfp(fp)
+    except Exception as e:  # noqa
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def sget(parser, section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    models = [m.upper() for m in shared.options('models')] if shared.has_section('models') else []
+    if not models:
+        errors.append('%s 的 [models] 沒有任何機型' % label)
+
+    def check_categories(parser, where):
+        codes = []
+        for section in parser.sections():
+            if not section.startswith('category.'):
+                continue
+            code = section[len('category.'):]
+            codes.append(code)
+            if not RE_CODE.match(code):
+                errors.append('%s [%s] 類別代碼只能用小寫英數字與底線' % (where, section))
+            color = sget(parser, section, 'color')
+            if color and not RE_HEX.match(color):
+                errors.append('%s [%s] color "%s" 不是 Hex 色號（例 "#E67E22"）' % (where, section, color))
+        return codes
+
+    categories = check_categories(shared, label)
+    if not categories:
+        errors.append('%s 沒有任何 [category.<代碼>]' % label)
+    pm_category = sget(shared, 'pm', 'category') or 'pm'
+    if pm_category not in categories:
+        warnings.append('%s [pm] category "%s" 不是已定義的類別' % (label, pm_category))
+
+    def check_formula(formula, where):
+        """可用率公式：default 或 modules/tool_board/formulas/<Camel>.php 的 <Camel>Availability"""
+        if formula == 'default':
+            return
+        if not RE_FORMULA.match(formula):
+            errors.append('%s [availability] formula "%s" 只能用小寫英數字與底線，且以英文字母開頭' % (where, formula))
+            return
+        camel = ''.join(w.capitalize() for w in formula.split('_'))
+        php = os.path.join(MODULES, 'tool_board', 'formulas', camel + '.php')
+        if not os.path.isfile(php):
+            errors.append('%s [availability] formula "%s" 找不到 modules/tool_board/formulas/%s.php' % (where, formula, camel))
+            return
+        with open(php) as fp:
+            if not re.search(r'class\s+%sAvailability\b' % camel, fp.read()):
+                errors.append('modules/tool_board/formulas/%s.php 裡沒有 class %sAvailability（formula "%s"）' % (camel, camel, formula))
+
+    def check_alert(parser, where):
+        """回傳該檔的 alert_below（沒寫 = None）"""
+        if parser.has_option('availability', 'warn_below'):
+            warnings.append('%s [availability] warn_below 已不使用（只剩 alert_below 紅色門檻），可刪除' % where)
+        v = sget(parser, 'availability', 'alert_below')
+        if v == '':
+            return None
+        try:
+            f = float(v)
+        except ValueError:
+            errors.append('%s [availability] alert_below 必須是數字：%s' % (where, v))
+            return None
+        if f < 0 or f > 100:
+            warnings.append('%s [availability] alert_below = %s 不在 0 ～ 100 之間' % (where, v))
+        return f
+
+    shared_formula = (sget(shared, 'availability', 'formula') or 'default').lower()
+    check_formula(shared_formula, label)
+    shared_alert = check_alert(shared, label)
+    if shared_alert is None:
+        shared_alert = 80.0
+
+    pm_path = sget(shared, 'pm', 'json_path')
+    if pm_path:
+        if not os.path.isfile(pm_path):
+            warnings.append('%s [pm] json_path 檔案不存在：%s（看板會顯示警告，其他功能正常）' % (label, pm_path))
+        else:
+            import json
+            import ast
+            with open(pm_path) as fp:
+                text = fp.read()
+            data = None
+            try:
+                data = json.loads(text)
+            except ValueError:
+                try:
+                    data = ast.literal_eval(text)
+                    warnings.append('PM 檔 %s 不是標準 JSON（單引號），看板會自動轉換；請產生端改用 json.dump' % pm_path)
+                except Exception:  # noqa
+                    errors.append('PM 檔 %s 無法解析' % pm_path)
+            # period（PM 週期，選填）：文字，最多 32 字，超過會被截斷
+            if isinstance(data, dict):
+                for tool, pms in data.items():
+                    if not isinstance(pms, dict):
+                        continue
+                    for typ, p in pms.items():
+                        if not isinstance(p, dict) or p.get('period') is None:
+                            continue
+                        per = p.get('period')
+                        if isinstance(per, (dict, list, bool)):
+                            warnings.append('PM 檔 %s / %s 的 period 不是文字，不會顯示' % (tool, typ))
+                            continue
+                        if isinstance(per, str):
+                            per = per.decode('utf-8', 'replace')
+                        if len(unicode(per).strip()) > 32:  # noqa: F821（Python 2.7）
+                            warnings.append('PM 檔 %s / %s 的 period 超過 32 字，會被截斷' % (tool, typ))
+
+    owner = {}
+    defaults_wip = [(c, sget(shared, 'category.' + c, 'default_wip')) for c in categories]
+    for m in models:
+        rel = 'config/tool_board/%s.ini' % m
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            errors.append('找不到機型設定檔 %s' % rel)
+            continue
+        parser = RawConfigParser()
+        try:
+            with open(path) as fp:
+                parser.readfp(fp)
+        except Exception as e:  # noqa
+            errors.append('%s 解析失敗：%s' % (rel, e))
+            continue
+        tools = read_array('tools', 'tool', path)
+        if not tools:
+            warnings.append('%s 的 [tools] 沒有任何機台' % rel)
+        for t in tools:
+            if not RE_TOOL.match(t):
+                errors.append('%s 機台代號格式錯誤：%s' % (rel, t))
+                continue
+            key = t.upper()
+            if key in owner and owner[key] != m:
+                errors.append('機台 %s 同時列在 %s 與 %s' % (key, owner[key], m))
+            elif key in owner:
+                warnings.append('%s 機台重複：%s' % (rel, key))
+            owner[key] = m
+        editors = read_array('editors', 'account', path)
+        if not editors:
+            warnings.append('%s 的 [editors] 沒有任何帳號，這個機型只有 ADMIN 能編輯' % rel)
+        for a in editors:
+            if not RE_ACCOUNT.match(a):
+                errors.append('%s [editors] 帳號格式錯誤：%s' % (rel, a))
+            elif a.lower() not in ee_accounts:
+                warnings.append('%s [editors] %s 不在 [ee_accounts]，若不是 EE 帳號將無法編輯' % (rel, a))
+        wips = []
+        for section in parser.sections():
+            if section.startswith('wip.'):
+                code = section[len('wip.'):]
+                wips.append(code)
+                if not RE_CODE.match(code):
+                    errors.append('%s [%s] WIP 代碼只能用小寫英數字與底線' % (rel, section))
+                color = sget(parser, section, 'text_color')
+                if color and not RE_HEX.match(color):
+                    errors.append('%s [%s] text_color "%s" 不是 Hex 色號' % (rel, section, color))
+        if not wips:
+            errors.append('%s 沒有任何 [wip.<代碼>]（WIP 處理方式）' % rel)
+        check_categories(parser, rel)
+        for cat, dw in defaults_wip:
+            if dw and dw not in wips:
+                warnings.append('%s 沒有 [wip.%s]，類別 %s 的 default_wip 在這個機型改選第一個' % (rel, dw, cat))
+        # 可用率：機型檔沒寫的項目沿用共用檔
+        formula = (sget(parser, 'availability', 'formula') or shared_formula).lower()
+        if parser.has_option('availability', 'formula'):
+            check_formula(formula, rel)
+        alert = check_alert(parser, rel)
+        if alert is None:
+            alert = shared_alert
+        print('== 借機看板 %s：機台 %d 台、可編輯 %s、WIP %s、可用率公式 %s（低於 %g 紅）==' % (
+            m, len(tools), ', '.join(editors) or '-', ', '.join(wips) or '-', formula, alert))
+
+
+RE_TS_CODE = re.compile(r'^[a-z0-9_]{1,32}$')
+RE_TS_ITEM = re.compile(r'^[a-z0-9_]{1,64}$')
+TS_ITEM_KEYS = ('category', 'label', 'key', 'unit', 'decimals', 'href',
+                'ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light') + SPEC_KEYS
+
+
+def check_tool_select(errors, warnings):
+    """設備選機表設定"""
+    shared_file = os.path.join(ROOT, 'config', 'tool_select.ini')
+    label = 'config/tool_select.ini'
+    if not os.path.isfile(shared_file):
+        errors.append('找不到 %s' % label)
+        return
+    shared = RawConfigParser()
+    try:
+        with open(shared_file) as fp:
+            shared.readfp(fp)
+    except Exception as e:  # noqa
+        errors.append('%s 解析失敗：%s' % (label, e))
+        return
+
+    def sget(parser, section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    models = [m.upper() for m in shared.options('models')] if shared.has_section('models') else []
+    if not models:
+        errors.append('%s 的 [models] 沒有任何機型' % label)
+    for sec in ('color', 'status'):
+        if shared.has_section(sec):
+            for opt in shared.options(sec):
+                v = sget(shared, sec, opt)
+                if v and not RE_HEX.match(v):
+                    errors.append('%s [%s] %s "%s" 不是 Hex 色號（例 "#7A0000"）' % (label, sec, opt, v))
+
+    def number(v, where):
+        if v == '':
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            errors.append('%s 必須是數字或留空：%s' % (where, v))
+            return None
+
+    def check_order(vals, where):
+        uoos, uooc, looc, loos = vals
+        pairs = ((loos, looc, False), (looc, uooc, True), (uooc, uoos, False),
+                 (loos, uoos, True), (loos, uooc, True), (looc, uoos, True))
+        for lo, hi, strict in pairs:
+            if lo is None or hi is None:
+                continue
+            if (lo >= hi) if strict else (lo > hi):
+                errors.append('%s：spec 必須符合 lower_oos <= lower_ooc < upper_ooc <= upper_oos' % where)
+                return
+
+    for m in models:
+        rel = 'config/tool_select/%s.ini' % m
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            errors.append('找不到機型設定檔 %s' % rel)
+            continue
+        parser = RawConfigParser()
+        try:
+            with open(path) as fp:
+                parser.readfp(fp)
+        except Exception as e:  # noqa
+            errors.append('%s 解析失敗：%s' % (rel, e))
+            continue
+        tools = []
+        for t in read_array('tools', 'tool', path):
+            if not RE_TOOL.match(t):
+                errors.append('%s 機台代號格式錯誤：%s' % (rel, t))
+            elif t.upper() in tools:
+                warnings.append('%s 機台重複：%s' % (rel, t))
+            else:
+                tools.append(t.upper())
+        if not tools:
+            warnings.append('%s 的 [tools] 沒有任何機台' % rel)
+        cats = parser.options('category') if parser.has_section('category') else []
+        for c in cats:
+            if not RE_TS_CODE.match(c):
+                errors.append('%s [category] 代號只能用小寫英文、數字、底線：%s' % (rel, c))
+        if not cats:
+            errors.append('%s 沒有 [category]（分類）' % rel)
+
+        items = 0
+        keys = {}
+        for section in parser.sections():
+            if not section.startswith('item.'):
+                continue
+            items += 1
+            iid = section[len('item.'):]
+            where = '%s [%s]' % (rel, section)
+            if not RE_TS_ITEM.match(iid):
+                errors.append('%s 項目代號只能用小寫英文、數字、底線' % where)
+            cat = sget(parser, section, 'category')
+            if cat not in cats:
+                errors.append('%s category "%s" 不在 [category] 裡' % (where, cat))
+            key = (sget(parser, section, 'key') or iid).lower()
+            if key in keys:
+                warnings.append('%s 的 JSON key "%s" 和 [%s] 重複，兩個項目會顯示相同的值' % (where, key, keys[key]))
+            keys[key] = section
+            spec = [number(sget(parser, section, k), '%s %s' % (where, k)) for k in SPEC_KEYS]
+            offset = False
+            for opt in parser.options(section):
+                if opt == 'target' or opt.startswith('target.'):
+                    offset = True
+                    number(sget(parser, section, opt), '%s %s' % (where, opt))
+                    tool = opt[len('target.'):].strip().upper()
+                    if opt != 'target' and tool not in tools:
+                        errors.append('%s %s 的機台 %s 不在 [tools] 裡' % (where, opt, tool))
+
+            def check_vals(vals, w):
+                if offset:
+                    check_offset_spec(w, dict(zip(SPEC_KEYS, vals)), errors)
+                else:
+                    check_order(vals, w)
+
+            check_vals(spec, where)
+            overrides = {}
+            for opt in parser.options(section):
+                if opt == 'target' or opt.startswith('target.'):
+                    continue
+                if '.' in opt:
+                    base, tool = opt.split('.', 1)
+                    tool = tool.upper()
+                    if base not in SPEC_KEYS:
+                        errors.append('%s 不認得的欄位 %s（機台覆蓋只能用 %s）' % (where, opt, ' / '.join(SPEC_KEYS)))
+                        continue
+                    if tool not in tools:
+                        errors.append('%s %s 的機台 %s 不在 [tools] 裡' % (where, opt, tool))
+                        continue
+                    overrides.setdefault(tool, list(spec))[SPEC_KEYS.index(base)] = \
+                        number(sget(parser, section, opt), '%s %s' % (where, opt))
+                elif opt not in TS_ITEM_KEYS:
+                    warnings.append('%s 不認得的欄位：%s（會被忽略）' % (where, opt))
+            for tool, vals in overrides.items():
+                check_vals(vals, '%s 機台 %s' % (where, tool))
+            for k in ('ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light'):
+                v = sget(parser, section, k)
+                if v and not RE_HEX.match(v):
+                    errors.append('%s %s "%s" 不是 Hex 色號' % (where, k, v))
+            href = sget(parser, section, 'href')
+            if href and (re.search(r'[\s"\'<>\\]', href) or not re.match(r'^(\?|/(?!/)|https?://)', href, re.I)):
+                errors.append('%s href 只能是 "?m=..."、"/..." 或 http(s):// 開頭：%s' % (where, href))
+            dec = sget(parser, section, 'decimals')
+            if dec and not dec.isdigit():
+                errors.append('%s decimals 必須是 0 以上的整數' % where)
+        if not items:
+            warnings.append('%s 沒有任何 [item.<代號>]（項目）' % rel)
+
+        sample = sget(parser, 'page', 'sample').lower() in ('1', 'on', 'yes', 'true')
+        json_path = sget(parser, 'page', 'json_path')
+        status = '範例值' if sample else (json_path or '未設定 json_path')
+        if not sample and json_path:
+            if not os.path.isfile(json_path):
+                warnings.append('%s [page] json_path 檔案不存在：%s（頁面會顯示警告，數值顯示 "-"）' % (rel, json_path))
+            else:
+                import json
+                import ast
+                with open(json_path) as fp:
+                    text = fp.read()
+                try:
+                    json.loads(text)
+                except ValueError:
+                    try:
+                        ast.literal_eval(text)
+                        warnings.append('數值檔 %s 不是標準 JSON（單引號），頁面會自動轉換；請產生端改用 json.dump' % json_path)
+                    except Exception:  # noqa
+                        errors.append('數值檔 %s 無法解析' % json_path)
+        print('== 選機表 %s：機台 %d 台、分類 %d、項目 %d、數值 %s ==' % (m, len(tools), len(cats), items, status))
+
+
+def main():
+    errors = []
+    warnings = []
+
+    parser = RawConfigParser()
+    parser.optionxform = str  # 保留 key 大小寫（EE / PE）
+    with open(INI) as fp:
+        parser.readfp(fp)
+
+    def get(section, key):
+        return unquote(parser.get(section, key)) if parser.has_option(section, key) else ''
+
+    roles = parser.options('roles') if parser.has_section('roles') else []
+
+    # 選單分類
+    groups = set()
+    for section in parser.sections():
+        if section.startswith('group.'):
+            key = section[len('group.'):]
+            if not RE_KEY.match(key):
+                errors.append('[%s] 分類代號格式錯誤' % section)
+            groups.add(key)
+    used_groups = set()
+
+    # 頁面
+    pages = {}
+    for section in parser.sections():
+        if not section.startswith('page.'):
+            continue
+        key = section[len('page.'):]
+        if not RE_KEY.match(key):
+            errors.append('[%s] 頁面代號格式錯誤' % section)
+            continue
+        route = get(section, 'route') or ('module:' + key)
+        pages[key] = route
+        if route.startswith('module:'):
+            target = os.path.join(MODULES, route[len('module:'):].strip(), 'controller.php')
+            if not os.path.isfile(target):
+                errors.append('[%s] 找不到 %s' % (section, os.path.relpath(target, ROOT)))
+        else:
+            target = os.path.join(ROOT, route.lstrip('/'))
+            if not os.path.isfile(target):
+                errors.append('[%s] route 檔案不存在：%s' % (section, route))
+            elif route.lstrip('/').startswith('public/'):
+                with open(target) as fp:
+                    head = fp.read(4000)
+                if 'auth_check.php' not in head:
+                    errors.append('[%s] 獨立頁面 %s 沒有 require core/auth_check.php，任何人都能直接開啟' % (section, route))
+        group = get(section, 'group')
+        if group:
+            used_groups.add(group)
+            if group not in groups:
+                warnings.append('[%s] group "%s" 沒有對應的 [group.%s]，將以代號當分類標題' % (section, group, group))
+        for opt in parser.options(section):
+            if opt.startswith('action.'):
+                for r in split_list(parser.get(section, opt)):
+                    if r not in roles:
+                        errors.append('[%s] %s 的身份 %s 未定義' % (section, opt, r))
+
+    for g in sorted(groups - used_groups):
+        warnings.append('[group.%s] 沒有任何頁面使用' % g)
+
+    # 身份 → 頁面
+    access = {}
+    superusers = []
+    if not parser.has_section('access'):
+        errors.append('缺少 [access] 區段')
+    else:
+        for role in parser.options('access'):
+            if role not in roles:
+                errors.append('[access] 身份 %s 未定義於 [roles]' % role)
+            items = split_list(parser.get('access', role))
+            if '*' in items:
+                superusers.append(role)
+                access[role] = sorted(pages.keys())
+                continue
+            for p in items:
+                if p not in pages:
+                    errors.append('[access] %s 的頁面 %s 沒有對應的 [page.%s]' % (role, p, p))
+            access[role] = [p for p in items if p in pages]
+    for role in roles:
+        if role not in access:
+            warnings.append('身份 %s 沒有寫在 [access]，登入後看不到任何頁面' % role)
+
+    for key in sorted(pages):
+        if not any(key in access[r] for r in access if r not in superusers):
+            warnings.append('頁面 %s 只有 * 身份能使用（若是刻意的可忽略）' % key)
+
+    module_dirs = set(r[len('module:'):].strip() for r in pages.values() if r.startswith('module:'))
+    for name in sorted(os.listdir(MODULES)):
+        if os.path.isdir(os.path.join(MODULES, name)) and not name.startswith('_') and name not in module_dirs:
+            warnings.append('modules/%s 沒有登記在 config.ini，目前無法存取' % name)
+
+    # 圖表
+    names = chart_names()
+    lower = {}
+    for n in names:
+        if n.lower() in lower:
+            errors.append('charts/%s.ini 與 charts/%s.ini 只差大小寫，頁面代號會衝突' % (lower[n.lower()], n))
+        lower[n.lower()] = n
+    chart_pages = [k for k, r in pages.items() if r == 'module:charts']
+    for key in sorted(chart_pages):
+        if key not in lower:
+            errors.append('[page.%s] route = module:charts，但 charts/ 裡沒有同名（不分大小寫）的 ini' % key)
+        else:
+            check_chart(lower[key], errors, warnings)
+    for n in names:
+        if n.lower() not in chart_pages:
+            warnings.append('charts/%s.ini 沒有對應的 [page.%s]（route = "module:charts"），目前無法存取' % (n, n.lower()))
+
+    # 註冊
+    if parser.has_section('register'):
+        for key in ('listed_role', 'unlisted_role'):
+            role = get('register', key)
+            if key == 'unlisted_role' and role == '':
+                continue
+            if role not in roles:
+                errors.append('[register] %s "%s" 未定義於 [roles]' % (key, role))
+            elif role in superusers:
+                errors.append('[register] %s 不可設為超級身份 %s' % (key, role))
+    seen = set()
+    for account in read_array('ee_accounts', 'account'):
+        if not RE_ACCOUNT.match(account):
+            errors.append('[ee_accounts] 帳號格式錯誤：%s' % account)
+        if account.lower() in seen:
+            warnings.append('[ee_accounts] 帳號重複：%s' % account)
+        seen.add(account.lower())
+
+    if 'tool_board' in pages:
+        check_tool_board(seen, errors, warnings)
+    if 'tool_select' in pages:
+        check_tool_select(errors, warnings)
+
+    print('== 身份可用頁面 ==')
+    for role in roles:
+        note = ' (*)' if role in superusers else ''
+        print('  %-6s%s: %s' % (role, note, ', '.join(access.get(role, [])) or '-'))
+    print('== EE 名單 (%d) ==' % len(seen))
+    print('  ' + (', '.join(sorted(seen)) or '-'))
+    print()
+    for w in warnings:
+        print(YELLOW + '[WARN]  ' + w + RESET)
+    for e in errors:
+        print(RED + '[ERROR] ' + e + RESET)
+    if not errors:
+        print(GREEN + '[OK] config.ini 檢查通過' + RESET)
+    return 1 if errors else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+#@@@ END count=8

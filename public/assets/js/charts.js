@@ -192,7 +192,32 @@
         if (t && t.hasOwnProperty('*')) {
             return t['*'];
         }
+        var model = CFG.models[tool];
+        if (model && group.targetModel && group.targetModel.hasOwnProperty(model)) {
+            return group.targetModel[model];
+        }
         return group.target || 0;
+    }
+
+    /**
+     * 某台機台的 spec：每一條依 機台覆蓋 → 機型覆蓋 → 整組 取值（ini 的 upper_ooc.<機台或機型>）
+     * 覆蓋值 null = 這台不畫這一條；tool 省略時為整組的 spec
+     */
+    function specOf(group, tool) {
+        var out = {};
+        var byTool = tool !== undefined && group.specTool ? group.specTool[String(tool).toLowerCase()] : null;
+        var model = tool !== undefined ? CFG.models[tool] : '';
+        var byModel = model && group.specModel ? group.specModel[model] : null;
+        $.each(SPEC_KEYS, function (i, k) {
+            var v = group.spec ? group.spec[k.key] : null;
+            if (byTool && byTool.hasOwnProperty(k.key)) {
+                v = byTool[k.key];
+            } else if (byModel && byModel.hasOwnProperty(k.key)) {
+                v = byModel[k.key];
+            }
+            out[k.key] = v;
+        });
+        return out;
     }
 
     /** 扣掉 target 的偏差，去掉浮點誤差（28.2 - 27 = 1.2 而不是 1.1999999） */
@@ -222,12 +247,14 @@
      *   偏移模式 single：依所選機台每個參數的 target 算出 target ± 偏移與 target 線；
      *                    各參數 target 相同時只有一組線，不同時每個參數各一組，標籤加參數簡稱
      *   偏移模式 newest / tbt：+偏移 / 0（target）/ -偏移
+     *   spec 依 specOf(group, tool) 取得（含機台 / 機型覆蓋）；newest / tbt 各台不同時見 spanLines()
      */
     function specLines(group, kind, tool) {
         var lines = [];
+        var spec = specOf(group, tool);
         function add(t, prefix) {
             $.each(SPEC_KEYS, function (i, k) {
-                var v = group.spec ? group.spec[k.key] : null;
+                var v = spec[k.key];
                 if (v === null || v === undefined) {
                     return;
                 }
@@ -261,6 +288,47 @@
             });
         }
         return lines;
+    }
+
+    /**
+     * newest / tbt：spans = [{ tool, from, to }]（X 軸類別的起訖位置）
+     * 各台的 spec 線都相同 → 回傳一般水平線；不同 → 每台在自己的位置畫一段（line 多了 from / to / pad），
+     * 標籤只在和前一台不同時顯示
+     */
+    function spanLines(group, kind, spans) {
+        if (!spans.length) {
+            return specLines(group, kind);
+        }
+        var sets = $.map(spans, function (s) { return [specLines(group, kind, s.tool)]; });
+        function sig(set) {
+            return $.map(set, function (l) { return l.key + '=' + l.value; }).join('|');
+        }
+        var same = true;
+        for (var i = 1; i < sets.length; i++) {
+            if (sig(sets[i]) !== sig(sets[0])) {
+                same = false;
+                break;
+            }
+        }
+        if (same) {
+            return sets[0];
+        }
+        var out = [];
+        var prev = {};
+        $.each(spans, function (i, s) {
+            var cur = {};
+            $.each(sets[i], function (j, l) {
+                cur[l.key] = l.value;
+                out.push($.extend({}, l, {
+                    from: s.from,
+                    to: s.to,
+                    pad: kind === 'newest',
+                    showLabel: prev[l.key] !== l.value
+                }));
+            });
+            prev = cur;
+        });
+        return out;
     }
 
     function fmtNum(v) {
@@ -301,6 +369,9 @@
     function specSeries(specs) {
         var lines = [];
         $.each(specs, function (i, l) {
+            if (l.from !== undefined) {
+                return;   // 分段線另外畫（specSegments）
+            }
             lines.push({
                 name: l.key,
                 yAxis: l.value,
@@ -326,11 +397,68 @@
         };
     }
 
+    /**
+     * 各台 spec 不同時的分段線（newest：每根長條的寬度；tbt：每台的區段）
+     * 用 custom series 畫：data = [from, to, y, 第幾段]，位置由 X 軸類別索引換算
+     */
+    function specSegments(specs) {
+        var segs = $.grep(specs, function (l) { return l.from !== undefined; });
+        if (!segs.length) {
+            return null;
+        }
+        var DASH = { solid: null, dashed: [6, 4], dotted: [2, 3] };
+        return {
+            name: '_spec',
+            type: 'custom',
+            silent: true,
+            z: 5,
+            clip: true,
+            animation: false,
+            encode: { x: [0, 1], y: 2 },
+            data: $.map(segs, function (l, i) { return [[l.from, l.to, l.value, i]]; }),
+            renderItem: function (params, api) {
+                var l = segs[api.value(3)];
+                var a = api.coord([api.value(0), api.value(2)]);
+                var b = api.coord([api.value(1), api.value(2)]);
+                if (l.pad) {
+                    var w = api.size([1, 0])[0] * 0.45;
+                    a[0] -= w;
+                    b[0] += w;
+                }
+                var lower = l.key.indexOf('lower') === 0;
+                var children = [{
+                    type: 'line',
+                    shape: { x1: a[0], y1: a[1], x2: b[0], y2: b[1] },
+                    style: { stroke: T[l.colorKey], lineWidth: 1.5, lineDash: DASH[l.type] || null }
+                }];
+                if (l.showLabel) {
+                    children.push({
+                        type: 'text',
+                        x: b[0] - 2,
+                        y: a[1] + (lower ? 2 : -2),
+                        style: {
+                            text: l.text,
+                            fill: T[l.colorKey],
+                            font: '11px ' + FONT,
+                            align: 'right',
+                            verticalAlign: lower ? 'top' : 'bottom'
+                        }
+                    });
+                }
+                return { type: 'group', children: children };
+            }
+        };
+    }
+
     /** 有 spec 時把輔助 series 加到 series 陣列最後 */
     function pushSpec(series, specs) {
         var s = specSeries(specs);
         if (s) {
             series.push(s);
+        }
+        var seg = specSegments(specs);
+        if (seg) {
+            series.push(seg);
         }
     }
 
@@ -562,6 +690,9 @@
             }
             var html = '<b>' + AISLE.escape(params[0].name) + '</b>';
             $.each(params, function (i, p) {
+                if (p.seriesName === '_spec') {
+                    return;
+                }
                 html += '<br>' + p.marker + AISLE.escape(p.seriesName) + '：<b>' + fmt(rawOf(p)) + '</b>' +
                     ' <span style="color:' + INK_DIM + '">(' + fmt(p.data.date) + ')</span>';
             });
@@ -574,7 +705,7 @@
             axisTick: { show: false },
             axisLabel: { color: INK, interval: 0, rotate: tools.length > 14 ? 45 : 0 }
         };
-        var specs = specLines(group, 'newest');
+        var specs = spanLines(group, 'newest', $.map(tools, function (t, i) { return [{ tool: t, from: i, to: i }]; }));
         opt.yAxis = valueAxis(group, 'newest', specs);
         pushSpec(series, specs);
         opt.series = series;
@@ -685,12 +816,13 @@
             },
             splitLine: { show: false }
         };
-        var specs = specLines(group, 'tbt');
+        var specs = spanLines(group, 'tbt', segments);
         opt.yAxis = valueAxis(group, 'tbt', specs);
+        // weakFilter：縮放時橫跨視窗邊界的 spec 分段線（各台 spec 不同時）也會保留，一般資料線不受影響
         opt.dataZoom = [
-            { type: 'inside' },
+            { type: 'inside', filterMode: 'weakFilter' },
             {
-                type: 'slider', height: 18, bottom: 12,
+                type: 'slider', height: 18, bottom: 12, filterMode: 'weakFilter',
                 borderColor: AXIS, fillerColor: T.ZOOM_FILL,
                 handleStyle: { color: INK_DIM }, moveHandleStyle: { color: INK_DIM },
                 dataBackground: { lineStyle: { color: AXIS }, areaStyle: { color: T.ZOOM_AREA } },

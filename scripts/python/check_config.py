@@ -151,28 +151,71 @@ def check_chart_target(label, section, parser, get, errors):
     return offset
 
 
-def check_spec(label, section, get, errors, offset=False):
-    """spec 線：數字或留空；絕對值模式 lower_oos <= lower_ooc < upper_ooc <= upper_oos"""
-    vals = {}
-    for key in SPEC_KEYS:
-        v = get(section, key)
-        if not v:
-            continue
-        try:
-            vals[key] = float(v)
-        except ValueError:
-            errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, key, v))
+def check_spec_values(where, vals, offset, errors):
+    """一套 spec（key → 數字或 None）的大小關係"""
     if offset:
-        check_offset_spec('%s [%s]' % (label, section), vals, errors)
+        check_offset_spec(where, vals, errors)
         return
     for i, a in enumerate(SPEC_KEYS):
         for b in SPEC_KEYS[i + 1:]:
-            if a not in vals or b not in vals:
+            if vals.get(a) is None or vals.get(b) is None:
                 continue
             same_side = a[:5] == b[:5]
             if (vals[a] < vals[b]) if same_side else (vals[a] <= vals[b]):
-                errors.append('%s [%s] %s（%s）必須%s %s（%s）' % (
-                    label, section, a, vals[a], '大於等於' if same_side else '大於', b, vals[b]))
+                errors.append('%s %s（%s）必須%s %s（%s）' % (
+                    where, a, vals[a], '大於等於' if same_side else '大於', b, vals[b]))
+
+
+def check_spec(label, section, parser, get, errors, offset=False, models=None):
+    """spec 線：數字或留空；絕對值模式 lower_oos <= lower_ooc < upper_ooc <= upper_oos
+    upper_ooc.<機台或機型> 等覆蓋：合併後（機台 → 機型 → 整組）也要符合"""
+    def num(key):
+        v = get(section, key)
+        if not v:
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            errors.append('%s [%s] %s 必須是數字或留空：%s' % (label, section, key, v))
+            return None
+    vals = dict((key, num(key)) for key in SPEC_KEYS)
+    where = '%s [%s]' % (label, section)
+    check_spec_values(where, vals, offset, errors)
+
+    models = models or {}
+
+    def model_of_name(name):
+        for m, needle in models.items():
+            if name.lower() in (m.lower(), needle.lower()):
+                return m
+        return None
+
+    by_model, by_tool = {}, {}
+    for opt in parser.options(section):
+        base = opt.split('.', 1)[0]
+        if '.' not in opt or base not in SPEC_KEYS:
+            continue
+        name = opt.split('.', 1)[1].strip()
+        if not name:
+            errors.append('%s %s 格式錯誤，應為 %s.<機台或機型>' % (where, opt, base))
+            continue
+        m = model_of_name(name)
+        if m is not None:
+            by_model.setdefault(m, {})[base] = num(opt)
+        else:
+            by_tool.setdefault(name.lower(), {})[base] = num(opt)
+    for m, o in by_model.items():
+        merged = dict(vals)
+        merged.update(o)
+        check_spec_values('%s 機型 %s' % (where, m), merged, offset, errors)
+    for tool, o in by_tool.items():
+        merged = dict(vals)
+        for m, needle in models.items():
+            if needle.lower() in tool:
+                merged.update(by_model.get(m, {}))
+                break
+        merged.update(o)
+        check_spec_values('%s 機台 %s' % (where, tool.upper()), merged, offset, errors)
 
 
 def check_chart(name, errors, warnings):
@@ -201,6 +244,12 @@ def check_chart(name, errors, warnings):
     if parser.has_section('db'):
         check_chart_db(label, parser, get, errors)
 
+    models = {}
+    if parser.has_section('page'):
+        for opt in parser.options('page'):
+            if opt.startswith('model.') and opt[6:] and get('page', opt):
+                models[opt[6:]] = get('page', opt)
+
     plots = 0
     for section in parser.sections():
         if section in ('page', 'db'):
@@ -219,7 +268,8 @@ def check_chart(name, errors, warnings):
                         float(v)
                     except ValueError:
                         errors.append('%s [%s] %s 必須是數字：%s' % (label, section, opt, v))
-        check_spec(label, section, get, errors, check_chart_target(label, section, parser, get, errors))
+        check_spec(label, section, parser, get, errors,
+                   check_chart_target(label, section, parser, get, errors), models)
     if plots == 0:
         errors.append('%s 沒有任何 [plot.xxx] 圖' % label)
 

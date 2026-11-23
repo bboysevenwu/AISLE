@@ -15,7 +15,8 @@
  *                   ip 沒填（或沒有 [db]）時沿用 AISLE 自己的資料庫（config/app.ini 的 [database]）
  *   [plot.<代號>]   一組圖：title、params、unit、single / newest / tbt、connect、ymin / ymax、<區塊>_ymin / <區塊>_ymax、
  *                   spec 線 upper_oos / upper_ooc / lower_ooc / lower_oos（可留空）、
- *                   target / target.<機台> / target.<機台>.<參數>（有寫任何一行 → 偏移模式）
+ *                   target / target.<機台或機型> / target.<機台>.<參數>（有寫任何一行 → 偏移模式）、
+ *                   spec 覆蓋 upper_ooc.<機台或機型> 等（機型 = [page] model.<機型> 的名稱或比對字）
  *
  * $cfg->plots() 回傳（依檔案順序）：
  *   array(
@@ -24,13 +25,17 @@
  *           'limits' => array('single' => array('min' => 0, 'max' => 5), 'newest' => array(...), 'tbt' => array(...)),
  *           'spec'   => array('upper_oos' => 6, 'upper_ooc' => 5, 'lower_ooc' => null, 'lower_oos' => null),
  *           'offset' => true, 'target' => 0,
- *           'targets' => array('apan01' => array('*' => 27, 'M1BF_Z_C2' => 26.5))),
+ *           'targets' => array('apan01' => array('*' => 27, 'M1BF_Z_C2' => 26.5)),
+ *           'targetModel' => array('2000' => 26),
+ *           'specTool'  => array('apap01' => array('upper_ooc' => 4.6, 'lower_oos' => null)),
+ *           'specModel' => array('2000' => array('upper_ooc' => 4.8))),
  *     ...
  *   )
  *   min / max 為 null 表示自動；spec 為 null 表示不畫線
  *   offset = false：spec 是絕對值（沒寫任何 target 的組，維持原本行為）
  *   offset = true ：spec 是距離 target 的偏移量（一律 >= 0），線畫在 target ± 偏移；
  *                   targets 的機台一律小寫（比對不分大小寫），'*' = 該台所有參數
+ *   specTool / specModel：只列有覆蓋的條；null = 這台 / 這個機型不畫這一條。每一條依 機台 → 機型 → 整組 取值
  *
  * [db] 只給伺服器端的 ChartSource 使用，不會出現在 plots()，不會送到瀏覽器。
  */
@@ -95,6 +100,7 @@ class ChartConfig
             throw new RuntimeException($label . ' 解析失敗，請檢查引號與語法');
         }
 
+        $plotSections = array();
         foreach ($ini as $section => $conf) {
             if ($section === 'page') {
                 $this->page = $conf;
@@ -107,16 +113,21 @@ class ChartConfig
             if (!preg_match('/^plot\.([a-z][a-z0-9_]{0,63})$/', $section, $m)) {
                 throw new RuntimeException($label . ' 區段名稱錯誤：[' . $section . ']，應為 [page]、[db] 或 [plot.<小寫代號>]');
             }
-            $this->plots[] = $this->plot($m[1], $conf, $label, $section);
-        }
-        if (!$this->plots) {
-            throw new RuntimeException($label . ' 沒有任何 [plot.xxx] 圖');
+            $plotSections[] = array($m[1], $conf, $section);
         }
 
+        // 機型要先讀，[plot.x] 的機型覆蓋（upper_ooc.PAP、target.2000）需要用到
         foreach ($this->page as $k => $v) {
             if (strpos($k, 'model.') === 0 && substr($k, 6) !== '' && trim((string) $v) !== '') {
                 $this->models[substr($k, 6)] = trim((string) $v);
             }
+        }
+
+        foreach ($plotSections as $ps) {
+            $this->plots[] = $this->plot($ps[0], $ps[1], $label, $ps[2]);
+        }
+        if (!$this->plots) {
+            throw new RuntimeException($label . ' 沒有任何 [plot.xxx] 圖');
         }
 
         $this->checkPage($label);
@@ -296,22 +307,84 @@ class ChartConfig
                 'tbt'    => self::limits($conf, 'tbt', $label, $section),
             ),
         );
-        $t = self::targets($conf, $params, $label, $section);
+        $t = $this->targets($conf, $params, $label, $section);
         $out['spec'] = self::spec($conf, $label, $section, $t['offset']);
-        return array_merge($out, $t);
+        $out = array_merge($out, $t, $this->specOverrides($conf, $out['spec'], $t['offset'], $label, $section));
+        return $out;
     }
 
     /**
-     * target：寫了任何一行 target / target.<機台> / target.<機台>.<參數>（含留空的 target =）→ 偏移模式
-     * 取值順序：target.<機台>.<參數> → target.<機台> → target → 0
-     * 機台不分大小寫（存成小寫）；參數必須在這組的 params 裡（區分大小寫）
+     * 名稱是機型嗎？與 [page] model.<機型> 的機型名稱（例 2000）或比對字（例 PAP）相同（不分大小寫）
+     * 是的話回傳機型名稱，否則回傳 null（當成機台）
+     */
+    private function modelKey($name)
+    {
+        foreach ($this->models as $model => $needle) {
+            if (strcasecmp((string) $model, $name) === 0 || strcasecmp($needle, $name) === 0) {
+                return (string) $model;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * spec 覆蓋：upper_oos.<機台或機型> 等（只寫要不同的那幾條；留空 = 這台 / 這個機型不畫這一條）
+     * 每一條各自依 機台 → 機型 → 整組 取值。偏移模式時覆蓋值也是偏移量
+     * 回傳 array('specTool' => array(機台小寫 => array(key => 值|null)), 'specModel' => array(機型 => array(key => 值|null)))
+     * 整組、每個機型、每台有覆蓋的機台（合併機型後）都檢查大小關係
+     */
+    private function specOverrides($conf, $spec, $offset, $label, $section)
+    {
+        $keys = array('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos');
+        $byTool = array();
+        $byModel = array();
+        foreach ($conf as $k => $v) {
+            $k = (string) $k;
+            $dot = strpos($k, '.');
+            if ($dot === false || !in_array(substr($k, 0, $dot), $keys, true)) {
+                continue;
+            }
+            $key = substr($k, 0, $dot);
+            $name = trim(substr($k, $dot + 1));
+            if ($name === '') {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 格式錯誤，應為 ' . $key . '.<機台或機型>');
+            }
+            $raw = trim((string) $v);
+            if ($raw !== '' && !is_numeric($raw)) {
+                throw new RuntimeException($label . ' [' . $section . '] ' . $k . ' 必須是數字或留空：' . $raw);
+            }
+            $val = $raw === '' ? null : (float) $raw;
+            $model = $this->modelKey($name);
+            if ($model !== null) {
+                $byModel[$model][$key] = $val;
+            } else {
+                $byTool[strtolower($name)][$key] = $val;
+            }
+        }
+        $where = $label . ' [' . $section . '] ';
+        foreach ($byModel as $model => $o) {
+            self::checkSpecValues(array_merge($spec, $o), $where . '機型 ' . $model . '：', $offset);
+        }
+        foreach ($byTool as $tool => $o) {
+            $model = $this->modelOf($tool);
+            $base = ($model !== '' && isset($byModel[$model])) ? array_merge($spec, $byModel[$model]) : $spec;
+            self::checkSpecValues(array_merge($base, $o), $where . '機台 ' . strtoupper($tool) . '：', $offset);
+        }
+        return array('specTool' => $byTool, 'specModel' => $byModel);
+    }
+
+    /**
+     * target：寫了任何一行 target / target.<機台或機型> / target.<機台>.<參數>（含留空的 target =）→ 偏移模式
+     * 取值順序：target.<機台>.<參數> → target.<機台> → target.<機型> → target → 0
+     * 機台不分大小寫（存成小寫）；機型寫機型名稱或比對字都可以；參數必須在這組的 params 裡（區分大小寫）
      * 機台不檢查是否存在（機台清單是執行時從資料庫取得），不存在的機台就用不到
      */
-    private static function targets($conf, $params, $label, $section)
+    private function targets($conf, $params, $label, $section)
     {
         $offset = false;
         $default = 0.0;
         $targets = array();
+        $modelTargets = array();
         foreach ($conf as $k => $v) {
             $k = (string) $k;
             if ($k !== 'target' && strpos($k, 'target.') !== 0) {
@@ -341,12 +414,17 @@ class ChartConfig
             if ($raw === '') {
                 continue;   // 留空 = 沒寫，往下一層找
             }
+            $model = $param === '*' ? $this->modelKey($rest[0]) : null;
+            if ($model !== null) {
+                $modelTargets[$model] = (float) $raw;
+                continue;
+            }
             if (!isset($targets[$tool])) {
                 $targets[$tool] = array();
             }
             $targets[$tool][$param] = (float) $raw;
         }
-        return array('offset' => $offset, 'target' => $default, 'targets' => $targets);
+        return array('offset' => $offset, 'target' => $default, 'targets' => $targets, 'targetModel' => $modelTargets);
     }
 
     /**
@@ -368,26 +446,33 @@ class ChartConfig
                 $out[$k] = (float) $raw;
             }
         }
+        self::checkSpecValues($out, $label . ' [' . $section . '] ', $offset);
+        return $out;
+    }
+
+    /** 檢查一套 spec（array(key => 值|null)）的大小關係；$where 為錯誤訊息前綴 */
+    private static function checkSpecValues($s, $where, $offset)
+    {
         if ($offset) {
-            self::checkOffsetSpec($out, $label . ' [' . $section . '] ');
-            return $out;
+            self::checkOffsetSpec($s, $where);
+            return;
         }
         // 由上到下：upper_oos >= upper_ooc > lower_ooc >= lower_oos（同一側的 OOC 與 OOS 可以相等）
+        $keys = array('upper_oos', 'upper_ooc', 'lower_ooc', 'lower_oos');
         for ($i = 0; $i < count($keys); $i++) {
             for ($j = $i + 1; $j < count($keys); $j++) {
-                $a = $out[$keys[$i]];
-                $b = $out[$keys[$j]];
+                $a = $s[$keys[$i]];
+                $b = $s[$keys[$j]];
                 if ($a === null || $b === null) {
                     continue;
                 }
                 $sameSide = substr($keys[$i], 0, 5) === substr($keys[$j], 0, 5);
                 if ($sameSide ? $a < $b : $a <= $b) {
-                    throw new RuntimeException($label . ' [' . $section . '] ' . $keys[$i] . '（' . $a . '）必須' .
+                    throw new RuntimeException($where . $keys[$i] . '（' . $a . '）必須' .
                         ($sameSide ? '大於等於 ' : '大於 ') . $keys[$j] . '（' . $b . '）');
                 }
             }
         }
-        return $out;
     }
 
     private static function checkOffsetSpec($s, $where)

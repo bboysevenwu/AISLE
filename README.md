@@ -495,10 +495,13 @@ tbt_ymax = 6
 - Y 軸上下限：`ymin` / `ymax` 套用到該組三張圖；`single_ymin`、`newest_ymax`、`tbt_ymin` 等只套用到該區塊並優先；不設或留空為自動，超出範圍的資料會被裁切
 - spec 線：`upper_oos` / `upper_ooc` / `lower_ooc` / `lower_oos`，可省略或留空（不畫）。三個區塊都畫成水平線，OOS 紅色實線、OOC 橘色虛線；有填的值須符合 `lower_oos <= lower_ooc < upper_ooc <= upper_oos`。Y 軸自動時會把 spec 線納入範圍
 - 各機台 target（偏移模式）：組內寫了任何一行 `target` / `target.<機台>` / `target.<機台>.<參數>`（含留空的 `target =`）時，四個 spec 改成距離 target 的偏移量（一律 >= 0，同側 OOS >= OOC，上下同一層不能同時為 0）
-  - target 取值順序：`target.<機台>.<參數>` → `target.<機台>` → `target` → 0；機台不分大小寫，寫了不存在的機台會被忽略；參數必須在 `params` 裡
+  - target 取值順序：`target.<機台>.<參數>` → `target.<機台>` → `target.<機型>` → `target` → 0；機台不分大小寫，寫了不存在的機台會被忽略；機型寫 `[page]` 的機型名稱（例 `2000`）或比對字（例 `PAP`）都可以；參數必須在 `params` 裡
   - single：畫原始值，spec 線在所選機台的 `target + upper_xxx`、`target - lower_xxx`，另畫 target 線（青色點線）；同組參數 target 不同時每個參數各一組線，標籤加參數名稱
   - newest / tbt：畫「值 - target」，各機台放在同一個基準比較，spec 線為 +偏移 / 0 / -偏移；tooltip 與資料表仍顯示原始值；`newest_ymin`、`tbt_ymax` 等是偏差值的範圍
   - 沒寫任何 target 的組維持原本的絕對值 spec（例 m1bf_ry）
+- 依機台 / 機型覆蓋 spec 寬度：`upper_ooc.APAP01 = 4.6`（機台）、`upper_ooc.PAP = 4.8`（機型，寫機型名稱 `2000` 也可以），四條都可以覆蓋，只寫要不同的那幾條；留空（`lower_oos.APAN03 =`）= 這台不畫這一條
+  - 每一條各自依 機台 → 機型 → 整組 取值，合併後的值一樣要符合大小關係；偏移模式時覆蓋值也是偏移量
+  - single 用所選機台的 spec；newest / tbt 各台相同時畫一條橫線，不同時每台在自己的長條 / 區段畫一段線，標籤只在和前一台不同時顯示
 - 存檔後重新整理頁面即生效；格式錯誤時頁面會顯示錯誤（`modules/charts/ChartConfig.php` 檢查）
 
 ### 資料來源：`charts/<名稱>.php`

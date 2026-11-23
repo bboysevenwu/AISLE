@@ -742,6 +742,27 @@ ooc_bg    = "#A0522D"         ; 選用，這個項目自己的 OOC 底色（還�
   - spec 欄顯示帶正負號的偏移量（例 `+1.5 / +1.2 / -1.2 / -1.5`），項目名稱旁標 `±T`；CSV 的 spec 欄同畫面，不另加 target 欄
   - 格子 tooltip 顯示該台的 target 與換算後的 spec；target 與預設不同的機台也有右上角小三角
 
+**限定身份檢視**（分類 `<代號>.view`、項目 `view`）
+
+```ini
+[category]
+focus  = "Focus"
+hand18 = "18掌"
+hand18.view = "EE"          ; 只有 EE（與 ADMIN）看得到這個分類
+
+[item.m1bf_ry]
+category = "focus"
+view     = "EE,PE"          ; 項目層級：只有 EE、PE（與 ADMIN）看得到這一項
+```
+
+- 值是逗號分隔的身份（同 `action.export` 寫法），身份必須在 `config/config.ini [roles]`；**沒寫 = 能進選機表的人都看得到**
+- 留空（`hand18.view = ""`）= 只有 ADMIN 看得到；ADMIN 一律看得到
+- 兩層都要符合才看得到：分類限 EE、項目寫 `"EE,PE"` → PE 仍看不到（`check_config.py` 會警告）；分類底下的項目全看不到時，分類也不顯示
+- 在伺服器端過濾：看不到的分類、項目與數值不會送到瀏覽器，匯出 CSV 手動帶項目代號也匯不出來
+- 看得到的人在分類 / 項目名稱旁看到小標記（例 `[EE]`），提醒這是限定內容；CSV 不加標記
+- 某機型一個分類都看不到時，頁籤照常顯示，表格區顯示「此機型沒有你可檢視的分類」
+- 項目 href 連到的 chart 頁不受影響，權限照 `config.ini [access]`
+
 **超規判定與底色**
 
 | 判定 | 條件 | 底色 |

@@ -8,6 +8,8 @@
  *   index    頁面（表格、篩選都由 tool_select.js 處理）
  *   data     GET  該機型：機台、分類、項目（含每台有效 spec）、數值、資料時間
  *   export   GET  CSV：目前篩選的項目 × 機台（items=id,id&tools=T1,T2；不給 = 全部）
+ *
+ * 分類 <代號>.view / 項目 view 限定身份：modelConfig() 先依目前身份過濾，data 與 export 都拿不到看不到的分類、項目
  */
 require_once dirname(__FILE__) . '/SelectConfig.php';
 require_once dirname(__FILE__) . '/ValueSource.php';
@@ -59,7 +61,11 @@ class ToolSelectController extends Controller
 
         $categories = array();
         foreach ($cfg['categories'] as $code => $label) {
-            $categories[] = array('code' => $code, 'label' => $label);
+            $categories[] = array(
+                'code'  => $code,
+                'label' => $label,
+                'view'  => isset($cfg['restricted'][$code]) ? $cfg['restricted'][$code] : '',
+            );
         }
         $items = array();
         foreach ($cfg['items'] as $it) {
@@ -77,6 +83,7 @@ class ToolSelectController extends Controller
                 'abs'      => (object) $it['abs'],
                 'colors'   => (object) $it['colors'],
                 'href'     => $it['href'],
+                'view'     => $it['view'] === null ? '' : ToolSelectConfig::roleTag($it['view']),
             );
         }
 
@@ -86,6 +93,7 @@ class ToolSelectController extends Controller
             'label'      => $cfg['label'],
             'tools'      => $cfg['tools'],
             'categories' => $categories,
+            'noAccess'   => $cfg['noAccess'],
             'items'      => $items,
             'values'     => (object) $vals['values'],
             'status'     => $vals['status'],
@@ -170,7 +178,8 @@ class ToolSelectController extends Controller
                 $this->json(array('ok' => false, 'error' => '沒有這個機型：' . $model), 404);
                 return null;
             }
-            return ToolSelectConfig::forModel($model);
+            // 依身份拿掉看不到的分類、項目：data、export、數值都只剩看得到的
+            return ToolSelectConfig::forRole(ToolSelectConfig::forModel($model), $this->user['role']);
         } catch (ToolSelectConfigException $e) {
             $this->json(array('ok' => false, 'error' => $e->getMessage()), 500);
             return null;

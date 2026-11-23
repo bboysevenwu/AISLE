@@ -22,7 +22,8 @@
     config/tool_board/<機型>.ini 存在且格式正確、顏色是 Hex、機台沒有重複列在多個機型、
     每個機型至少一個 [wip.*]、[editors] 帳號是否在 [ee_accounts]（警告）、
     可用率公式檔存在、PM JSON 檔可解析（單引號格式只警告）
-  - 設備選機表（有 [page.tool_select] 時）：config/tool_select.ini 與每個機型的
+  - 設備選機表（有 [page.tool_select] 時）：分類 <代號>.view 與項目 view 的身份都在 [roles]；
+    config/tool_select.ini 與每個機型的
     config/tool_select/<機型>.ini 存在且格式正確、顏色是 Hex、項目的分類存在、
     spec（含機台覆蓋）大小關係正確、覆蓋的機台在 [tools] 裡、href 格式、數值 JSON 檔可解析、
     target / target.<機台> 是數字且機台在 [tools] 裡（偏移模式時 spec 必須 >= 0、同側 OOS >= OOC）
@@ -473,11 +474,11 @@ def check_tool_board(ee_accounts, errors, warnings):
 
 RE_TS_CODE = re.compile(r'^[a-z0-9_]{1,32}$')
 RE_TS_ITEM = re.compile(r'^[a-z0-9_]{1,64}$')
-TS_ITEM_KEYS = ('category', 'label', 'key', 'unit', 'decimals', 'href',
+TS_ITEM_KEYS = ('category', 'label', 'key', 'unit', 'decimals', 'href', 'view',
                 'ooc_bg', 'oos_bg', 'ooc_bg_light', 'oos_bg_light') + SPEC_KEYS
 
 
-def check_tool_select(errors, warnings):
+def check_tool_select(roles, errors, warnings):
     """設備選機表設定"""
     shared_file = os.path.join(ROOT, 'config', 'tool_select.ini')
     label = 'config/tool_select.ini'
@@ -548,10 +549,32 @@ def check_tool_select(errors, warnings):
                 tools.append(t.upper())
         if not tools:
             warnings.append('%s 的 [tools] 沒有任何機台' % rel)
-        cats = parser.options('category') if parser.has_section('category') else []
+        opts = parser.options('category') if parser.has_section('category') else []
+        cats = [c for c in opts if '.' not in c]
         for c in cats:
             if not RE_TS_CODE.match(c):
                 errors.append('%s [category] 代號只能用小寫英文、數字、底線：%s' % (rel, c))
+
+        def role_list(value, where):
+            # "EE,PE" → ['EE', 'PE']；留空 = 只有 ADMIN
+            out = [r.strip() for r in value.split(',') if r.strip()]
+            for r in out:
+                if r not in roles:
+                    errors.append('%s：身份 "%s" 未定義於 config.ini [roles]' % (where, r))
+            return out
+
+        cat_view = {}
+        for c in opts:
+            if '.' not in c:
+                continue
+            base, suffix = c.split('.', 1)
+            where = '%s [category] %s' % (rel, c)
+            if suffix != 'view':
+                errors.append('%s 不認得的寫法（只能用 <代號>.view 限定身份）' % where)
+            elif base not in cats:
+                errors.append('%s 的分類 "%s" 不存在' % (where, base))
+            else:
+                cat_view[base] = role_list(sget(parser, 'category', c), where)
         if not cats:
             errors.append('%s 沒有 [category]（分類）' % rel)
 
@@ -568,6 +591,13 @@ def check_tool_select(errors, warnings):
             cat = sget(parser, section, 'category')
             if cat not in cats:
                 errors.append('%s category "%s" 不在 [category] 裡' % (where, cat))
+            if parser.has_option(section, 'view'):
+                iview = role_list(sget(parser, section, 'view'), '%s view' % where)
+                if cat in cat_view:
+                    wider = [r for r in iview if r not in cat_view[cat]]
+                    if wider:
+                        warnings.append('%s view 含 %s，但分類 %s 只限 %s；兩層都要符合才看得到，%s 仍看不到' % (
+                            where, ','.join(wider), cat, ','.join(cat_view[cat]) or 'ADMIN', ','.join(wider)))
             key = (sget(parser, section, 'key') or iid).lower()
             if key in keys:
                 warnings.append('%s 的 JSON key "%s" 和 [%s] 重複，兩個項目會顯示相同的值' % (where, key, keys[key]))
@@ -774,7 +804,7 @@ def main():
     if 'tool_board' in pages:
         check_tool_board(seen, errors, warnings)
     if 'tool_select' in pages:
-        check_tool_select(errors, warnings)
+        check_tool_select(roles, errors, warnings)
 
     print('== 身份可用頁面 ==')
     for role in roles:

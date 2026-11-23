@@ -5,6 +5,7 @@
  *   ToolSelectConfig::shared()       共用設定（機型、超規底色、狀態底色）
  *   ToolSelectConfig::models()       機型代碼 => 顯示名稱
  *   ToolSelectConfig::forModel($m)   該機型的機台、分類、項目（含每台的有效 spec）
+ *   ToolSelectConfig::forRole($c, $r) 依身份拿掉看不到的分類、項目（<分類>.view / 項目 view）
  *   ToolSelectConfig::judge($v, $s)  數值 + spec → '' | 'ooc' | 'oos'
  *
  * 每次請求只讀一次檔案。設定錯誤丟 ToolSelectConfigException，頁面會顯示訊息
@@ -104,13 +105,30 @@ class ToolSelectConfig
             }
         }
 
+        // 分類：代號 = 名稱；<代號>.view = "EE,PE" 限定哪些身份看得到（留空 = 只有 ADMIN）
         $categories = array();
+        $catViewRaw = array();
         foreach (array_get($ini, 'category', array()) as $code => $label) {
             $code = trim((string) $code);
+            if (strpos($code, '.') !== false) {
+                list($base, $suffix) = explode('.', $code, 2);
+                if ($suffix !== 'view') {
+                    throw new ToolSelectConfigException($rel . ' [category] 不認得的寫法「' . $code . '」（只能用 <代號>.view 限定身份）');
+                }
+                $catViewRaw[$base] = $label;
+                continue;
+            }
             if (!preg_match('/^[a-z0-9_]{1,32}$/', $code)) {
                 throw new ToolSelectConfigException($rel . ' [category] 的代號「' . $code . '」只能用小寫英文、數字、底線');
             }
             $categories[$code] = (string) $label;
+        }
+        $catView = array();
+        foreach ($catViewRaw as $base => $roles) {
+            if (!isset($categories[$base])) {
+                throw new ToolSelectConfigException($rel . ' [category] ' . $base . '.view：分類「' . $base . '」不存在');
+            }
+            $catView[$base] = self::roleList($roles, $rel . ' [category] ' . $base . '.view');
         }
 
         $items = array();
@@ -213,6 +231,9 @@ class ToolSelectConfig
                 throw new ToolSelectConfigException($where . '：href 只能是 "?m=..."、"/..." 或 http(s):// 開頭');
             }
 
+            // view = "EE"：只有這些身份看得到這一項（留空 = 只有 ADMIN；沒寫 = 看得到分類的人都看得到）
+            $view = array_key_exists('view', $v) ? self::roleList($v['view'], $where . ' view') : null;
+
             $dec = trim((string) array_get($v, 'decimals', ''));
             $key = trim((string) array_get($v, 'key', ''));
             $items[] = array(
@@ -230,6 +251,7 @@ class ToolSelectConfig
                 'abs'      => $abs,
                 'colors'   => $colors,
                 'href'     => $href,
+                'view'     => $view,
                 '_cat'     => array_search($cat, array_keys($categories), true),
                 '_order'   => $order++,
             );
@@ -253,9 +275,66 @@ class ToolSelectConfig
             'sample'     => (bool) array_get($page, 'sample', false),
             'tools'      => $tools,
             'categories' => $categories,
+            'catView'    => $catView,
             'items'      => $items,
         );
         return self::$models[$model];
+    }
+
+    /**
+     * 依身份過濾：拿掉看不到的分類與項目（回傳複本，不動 forModel 的快取）
+     * - 分類有 .view 且身份不在清單 → 整個分類與底下項目都拿掉
+     * - 項目有 view 且身份不在清單 → 拿掉該項目（兩層都要符合才看得到）
+     * - 分類原本有項目、但項目全被拿掉 → 分類也不顯示
+     * - ADMIN（超級身份）一律看得到
+     * 另外加上：'noAccess' => 原本有分類、過濾後一個都不剩；'restricted' => array(代號 => "EE,PE") 供畫面標記
+     */
+    public static function forRole($cfg, $role)
+    {
+        $cats = array();
+        foreach ($cfg['categories'] as $code => $label) {
+            if (!isset($cfg['catView'][$code]) || Acl::roleMatches($role, $cfg['catView'][$code])) {
+                $cats[$code] = $label;
+            }
+        }
+        $had = array();
+        $kept = array();
+        $items = array();
+        foreach ($cfg['items'] as $it) {
+            $had[$it['category']] = true;
+            if (!isset($cats[$it['category']])) {
+                continue;
+            }
+            if ($it['view'] !== null && !Acl::roleMatches($role, $it['view'])) {
+                continue;
+            }
+            $kept[$it['category']] = true;
+            $items[] = $it;
+        }
+        foreach ($cats as $code => $label) {
+            if (isset($had[$code]) && !isset($kept[$code])) {
+                unset($cats[$code]);
+            }
+        }
+        $restricted = array();
+        foreach ($cfg['catView'] as $code => $roles) {
+            if (isset($cats[$code])) {
+                $restricted[$code] = self::roleTag($roles);
+            }
+        }
+
+        $out = $cfg;
+        $out['categories'] = $cats;
+        $out['items'] = $items;
+        $out['restricted'] = $restricted;
+        $out['noAccess'] = !empty($cfg['categories']) && empty($cats);
+        return $out;
+    }
+
+    /** 身份清單 → 畫面標記文字；空清單 = 只有 ADMIN */
+    public static function roleTag($roles)
+    {
+        return $roles ? implode(',', $roles) : 'ADMIN';
     }
 
     /** 該項目在某台機台的有效 spec（絕對值；偏移模式時已換算成 target ± 偏移） */
@@ -296,6 +375,25 @@ class ToolSelectConfig
     }
 
     // ------------------------------------------------------------------
+
+    /** "EE, PE" → array('EE', 'PE')；身份必須在 config/config.ini 的 [roles] 裡；留空 → array()（只有 ADMIN） */
+    private static function roleList($value, $where)
+    {
+        $out = array();
+        foreach (explode(',', (string) $value) as $r) {
+            $r = trim($r);
+            if ($r === '') {
+                continue;
+            }
+            if (!Acl::roleExists($r)) {
+                throw new ToolSelectConfigException($where . '：身份「' . $r . '」不在 config/config.ini 的 [roles] 裡');
+            }
+            if (!in_array($r, $out, true)) {
+                $out[] = $r;
+            }
+        }
+        return $out;
+    }
 
     private static function parse($file, $label)
     {

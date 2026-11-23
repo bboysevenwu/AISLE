@@ -395,7 +395,7 @@
                 } else {
                     $('#ts-msg').hide();
                 }
-                catDd.setOptions($.map(res.categories, function (c) { return { value: c.code, label: c.label }; }), state.hiddenCats);
+                catDd.setOptions($.map(res.categories, function (c) { return { value: c.code, label: c.label + (c.view ? ' [' + c.view + ']' : '') }; }), state.hiddenCats);
                 toolDd.setOptions($.map(res.tools, function (t) { return { value: t, label: t }; }), state.hiddenTools);
                 state.hiddenCats = $.extend({}, catDd.hidden);
                 state.hiddenTools = $.extend({}, toolDd.hidden);
@@ -517,6 +517,11 @@
             ' title="' + esc(tip.join('\n')) + '">' + inner + '</td>';
     }
 
+    /** 限定身份的分類 / 項目：只有看得到的人才會收到，加小標記提醒（例 [EE]） */
+    function viewTag(view) {
+        return view ? ' <small class="ts-view" title="限定身份：只有 ' + esc(view) + '（與 ADMIN）看得到">[' + esc(view) + ']</small>' : '';
+    }
+
     function render() {
         var d = state.data;
         if (!d) {
@@ -527,13 +532,17 @@
         $('#ts-summary').text('顯示 ' + items.length + ' / ' + d.items.length + ' 項、' + tools.length + ' / ' + d.tools.length + ' 台');
         $('#ts-clear').toggleClass('is-active', !!(keys(state.hiddenCats).length || keys(state.hiddenTools).length || state.q || state.oocOnly));
 
+        if (d.noAccess) {
+            $('#ts-wrap').html('<div class="dim ts-empty">&gt; 此機型沒有你可檢視的分類</div>');
+            return;
+        }
         if (!d.items.length) {
             $('#ts-wrap').html('<div class="dim ts-empty">&gt; 這個機型還沒有設定任何項目（config/tool_select/' + esc(d.model) + '.ini 的 [item.*]）</div>');
             return;
         }
 
-        var catLabel = {};
-        $.each(d.categories, function (i, c) { catLabel[c.code] = c.label; });
+        var catLabel = {}, catView = {};
+        $.each(d.categories, function (i, c) { catLabel[c.code] = c.label; catView[c.code] = c.view || ''; });
 
         var h = '<table class="ts-table"><thead><tr>' +
             '<th class="ts-c0">分類</th><th class="ts-c1">項目</th>';
@@ -555,14 +564,14 @@
                 while (i + span < items.length && items[i + span].category === it.category) {
                     span++;
                 }
-                h += '<td class="ts-c0 ts-cat" rowspan="' + span + '">' + esc(catLabel[it.category]) + '</td>';
+                h += '<td class="ts-c0 ts-cat" rowspan="' + span + '">' + esc(catLabel[it.category]) + viewTag(catView[it.category]) + '</td>';
             }
             var href = hrefOf(it, '');
             var label = esc(it.label);
             if (href) {
                 label = '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer" title="開啟 chart">' + label + '</a>';
             }
-            h += '<td class="ts-c1 ts-item">' + label + (it.unit ? ' <small class="dim">' + esc(it.unit) + '</small>' : '') +
+            h += '<td class="ts-c1 ts-item">' + label + viewTag(it.view) + (it.unit ? ' <small class="dim">' + esc(it.unit) + '</small>' : '') +
                 (it.offset ? ' <small class="dim ts-target" title="spec 是距離各機台 target 的偏移量（滑鼠移到數值格看該台的 target 與 spec）">±T</small>' : '') + '</td>';
             for (k = 0; k < 4; k++) {
                 h += '<td class="ts-spec ts-c' + (k + 2) + '">' + specCell(it, k) + '</td>';
